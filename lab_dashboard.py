@@ -59,7 +59,7 @@ ODOO_URL = "https://lab.odoo.works/jsonrpc"
 ODOO_DB = "bluezebra-works-nl-vestingh-production-13415483"
 ODOO_UID = 37
 
-# API Key - probeer secrets, anders vraag via sidebar
+# API Key - probeer secrets, anders gebruik session state (input in main)
 def get_api_key():
     # Probeer eerst uit secrets
     try:
@@ -69,26 +69,8 @@ def get_api_key():
     except:
         pass
     
-    # Fallback: vraag via sidebar
-    if "api_key" not in st.session_state:
-        st.session_state.api_key = ""
-    
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 🔑 API Configuratie")
-        api_input = st.text_input(
-            "Odoo API Key", 
-            value=st.session_state.api_key,
-            type="password",
-            help="Voer je Odoo API key in"
-        )
-        if api_input:
-            st.session_state.api_key = api_input
-            return api_input
-    
-    return st.session_state.api_key
-
-ODOO_API_KEY = get_api_key()
+    # Fallback: uit session state (wordt gezet in main())
+    return st.session_state.get("api_key", "")
 
 COMPANIES = {
     1: "LAB Conceptstore",
@@ -301,7 +283,6 @@ def odoo_call(model, method, domain, fields, limit=None, timeout=120):
     """Generieke Odoo JSON-RPC call met verbeterde timeout handling"""
     api_key = get_api_key()
     if not api_key:
-        st.warning("👈 Voer je Odoo API Key in via de sidebar om te beginnen")
         return []
     
     args = [ODOO_DB, ODOO_UID, api_key, model, method, [domain]]
@@ -834,6 +815,32 @@ def main():
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
+    
+    # API Key input (alleen tonen als niet in secrets)
+    api_from_secrets = False
+    try:
+        if st.secrets.get("ODOO_API_KEY", ""):
+            api_from_secrets = True
+    except:
+        pass
+    
+    if not api_from_secrets:
+        st.sidebar.markdown("### 🔑 API Configuratie")
+        api_input = st.sidebar.text_input(
+            "Odoo API Key", 
+            value=st.session_state.get("api_key", ""),
+            type="password",
+            help="Voer je Odoo API key in",
+            key="api_key_input"
+        )
+        if api_input:
+            st.session_state.api_key = api_input
+        st.sidebar.markdown("---")
+    
+    # Check of we een API key hebben
+    if not get_api_key():
+        st.warning("👈 Voer je Odoo API Key in via de sidebar om te beginnen")
+        st.stop()
     
     # Dynamische jaarlijst
     current_year = datetime.now().year
