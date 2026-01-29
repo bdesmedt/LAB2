@@ -279,7 +279,7 @@ def get_category_name(account_code):
 # ODOO API HELPERS
 # =============================================================================
 
-def odoo_call(model, method, domain, fields, limit=None, timeout=120):
+def odoo_call(model, method, domain, fields, limit=None, timeout=120, include_archived=False):
     """Generieke Odoo JSON-RPC call met verbeterde timeout handling"""
     api_key = get_api_key()
     if not api_key:
@@ -289,6 +289,8 @@ def odoo_call(model, method, domain, fields, limit=None, timeout=120):
     kwargs = {"fields": fields}
     if limit:
         kwargs["limit"] = limit
+    if include_archived:
+        kwargs["context"] = {"active_test": False}
     args.append(kwargs)
     
     payload = {
@@ -539,12 +541,13 @@ def get_product_sales(year, company_id=None):
 
 @st.cache_data(ttl=300)
 def get_product_categories():
-    """Haal alle producten op met hun categorie"""
+    """Haal alle producten op met hun categorie (inclusief gearchiveerde)"""
     products = odoo_call(
         "product.product", "search_read",
         [],
         ["id", "name", "categ_id"],
-        limit=5000
+        limit=10000,
+        include_archived=True  # Belangrijk: ook gearchiveerde producten ophalen
     )
     return {p["id"]: p.get("categ_id", [None, "Onbekend"]) for p in products}
 
