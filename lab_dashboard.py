@@ -442,9 +442,12 @@ def get_cost_data(year, company_id=None):
     return odoo_call(
         "account.move.line", "search_read",
         domain,
-        ["date", "account_id", "company_id", "balance", "name"],
+        ["date", "account_id", "company_id", "balance", "name", "partner_id"],
         limit=15000
     )
+
+# Intercompany partner IDs (LAB Conceptstore, LAB Shops, LAB Projects)
+INTERCOMPANY_PARTNERS = [1, 7, 8]
 
 @st.cache_data(ttl=300)
 def get_receivables_payables(company_id=None):
@@ -540,14 +543,36 @@ def get_product_sales(year, company_id=None):
     )
 
 @st.cache_data(ttl=300)
+def get_product_categories_for_ids(product_ids_tuple):
+    """Haal categorieën op voor specifieke product IDs (inclusief gearchiveerde)
+    
+    Args:
+        product_ids_tuple: tuple van product IDs (tuple voor caching)
+    """
+    if not product_ids_tuple:
+        return {}
+    
+    product_ids = list(product_ids_tuple)
+    
+    # Haal producten op inclusief gearchiveerde
+    products = odoo_call(
+        "product.product", "search_read",
+        [["id", "in", product_ids]],
+        ["id", "name", "categ_id"],
+        limit=len(product_ids) + 100,
+        include_archived=True
+    )
+    return {p["id"]: p.get("categ_id", [None, "Onbekend"]) for p in products}
+
+@st.cache_data(ttl=300)
 def get_product_categories():
-    """Haal alle producten op met hun categorie (inclusief gearchiveerde)"""
+    """Backward compatibility - haalt eerste batch producten op"""
     products = odoo_call(
         "product.product", "search_read",
         [],
         ["id", "name", "categ_id"],
-        limit=10000,
-        include_archived=True  # Belangrijk: ook gearchiveerde producten ophalen
+        limit=50000,
+        include_archived=True
     )
     return {p["id"]: p.get("categ_id", [None, "Onbekend"]) for p in products}
 
@@ -858,6 +883,16 @@ def main():
     if selected_entity != "Alle bedrijven":
         company_id = [k for k, v in COMPANIES.items() if v == selected_entity][0]
     
+    # Intercompany filter (alleen bij "Alle bedrijven")
+    exclude_intercompany = False
+    if selected_entity == "Alle bedrijven":
+        st.sidebar.markdown("---")
+        exclude_intercompany = st.sidebar.checkbox(
+            "🔄 Intercompany uitsluiten",
+            value=False,
+            help="Sluit intercompany boekingen uit (kan kosten beïnvloeden bij consolidatie)"
+        )
+    
     st.sidebar.markdown("---")
     st.sidebar.caption(f"⏱️ Laatste update: {datetime.now().strftime('%H:%M:%S')}")
     if st.sidebar.button("🔄 Ververs data"):
@@ -885,7 +920,15 @@ def main():
             receivables, payables = get_receivables_payables(company_id)
         
         total_revenue = -sum(r.get("balance", 0) for r in revenue_data)
-        total_costs = sum(c.get("balance", 0) for c in cost_data)
+        
+        # Filter intercompany kosten indien geselecteerd
+        if exclude_intercompany:
+            filtered_costs = [c for c in cost_data 
+                            if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
+            total_costs = sum(c.get("balance", 0) for c in filtered_costs)
+        else:
+            total_costs = sum(c.get("balance", 0) for c in cost_data)
+        
         result = total_revenue - total_costs
         
         # Filter bank voor geselecteerde company
@@ -898,7 +941,8 @@ def main():
         with col1:
             st.metric("💰 Omzet YTD", f"€{total_revenue:,.0f}")
         with col2:
-            st.metric("📉 Kosten YTD", f"€{total_costs:,.0f}")
+            cost_label = "📉 Kosten YTD" + (" (excl. IC)" if exclude_intercompany else "")
+            st.metric(cost_label, f"€{total_costs:,.0f}")
         with col3:
             st.metric("📊 Resultaat", f"€{result:,.0f}", 
                      delta=f"{result/total_revenue*100:.1f}%" if total_revenue else "0%")
@@ -1156,11 +1200,16 @@ def main():
             if is_conceptstore:
                 st.caption("📍 Data uit POS orders (Conceptstore)")
                 pos_sales = get_pos_product_sales(selected_year, company_id)
-                product_cats = get_product_categories()
                 product_sales = pos_sales  # Voor compatibiliteit
             else:
                 product_sales = get_product_sales(selected_year, company_id)
-                product_cats = get_product_categories()
+            
+            # Verzamel product IDs en haal categorieën on-demand op
+            product_cats = {}
+            if product_sales:
+                product_ids = tuple(set(p.get("product_id", [None])[0] for p in product_sales if p.get("product_id")))
+                if product_ids:
+                    product_cats = get_product_categories_for_ids(product_ids)
             
             if product_sales:
                 # Groepeer per categorie
@@ -1416,8 +1465,15 @@ def main():
     # =========================================================================
     with tabs[5]:
         st.header("📉 Kostenanalyse")
+        if exclude_intercompany:
+            st.caption("🔄 Intercompany boekingen uitgesloten")
         
         cost_data = get_cost_data(selected_year, company_id)
+        
+        # Filter intercompany indien geselecteerd
+        if exclude_intercompany and cost_data:
+            cost_data = [c for c in cost_data 
+                        if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
         
         if cost_data:
             # Groepeer per account
