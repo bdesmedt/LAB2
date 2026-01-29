@@ -422,7 +422,7 @@ def get_revenue_data(year, company_id=None):
         "account.move.line", "search_read",
         domain,
         ["date", "account_id", "company_id", "balance", "name", "partner_id"],
-        limit=10000
+        limit=100000
     )
 
 @st.cache_data(ttl=300)
@@ -443,7 +443,7 @@ def get_cost_data(year, company_id=None):
         "account.move.line", "search_read",
         domain,
         ["date", "account_id", "company_id", "balance", "name", "partner_id"],
-        limit=15000
+        limit=100000
     )
 
 # Intercompany partner IDs (LAB Conceptstore, LAB Shops, LAB Projects)
@@ -708,7 +708,7 @@ def get_top_products(year, company_id=None, limit=20):
         "account.move.line", "search_read",
         domain,
         ["product_id", "price_subtotal", "quantity"],
-        limit=15000
+        limit=100000
     )
     
     # Groepeer per product
@@ -1411,10 +1411,10 @@ def main():
         # Subtab 3: Verf vs Behang (alleen relevant voor Projects)
         with prod_subtabs[2]:
             if not company_id or company_id == 3:
-                st.subheader(f"🎨 LAB Projects: Verf vs Behang Analyse {year}")
+                st.subheader(f"🎨 LAB Projects: Verf vs Behang Analyse {selected_year}")
                 
                 with st.spinner("Verf vs Behang data ophalen..."):
-                    vb_data = get_verf_behang_analysis(year)
+                    vb_data = get_verf_behang_analysis(selected_year)
                 
                 if vb_data:
                     verf_omzet = vb_data["verf"]["omzet"]
