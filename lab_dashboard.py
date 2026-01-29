@@ -421,7 +421,7 @@ def get_revenue_data(year, company_id=None):
     return odoo_call(
         "account.move.line", "search_read",
         domain,
-        ["date", "account_id", "company_id", "balance", "name"],
+        ["date", "account_id", "company_id", "balance", "name", "partner_id"],
         limit=10000
     )
 
@@ -609,6 +609,87 @@ def get_pos_product_sales(year, company_id=None):
     )
     
     return lines
+
+@st.cache_data(ttl=300)
+def get_verf_behang_analysis(year):
+    """Haal Verf vs Behang analyse op voor LAB Projects (company 3)
+    
+    Logica:
+    - Arbeid (ID 735083) op factuur → Verfproject
+    - Arbeid Behanger (ID 735084, 777873) op factuur → Behangproject
+    - Arbeid regels = dienst omzet
+    - Overige regels op zelfde factuur = materiaalkosten
+    """
+    ARBEID_VERF_ID = 735083
+    ARBEID_BEHANG_IDS = [735084, 777873]
+    
+    # Haal alle factuurregels op voor LAB Projects
+    lines = odoo_call(
+        "account.move.line", "search_read",
+        [
+            ["move_id.move_type", "=", "out_invoice"],
+            ["move_id.state", "=", "posted"],
+            ["move_id.invoice_date", ">=", f"{year}-01-01"],
+            ["move_id.invoice_date", "<=", f"{year}-12-31"],
+            ["company_id", "=", 3],  # LAB Projects
+            ["account_id.code", "=like", "8%"]  # Omzet rekeningen
+        ],
+        ["move_id", "product_id", "price_subtotal"],
+        limit=50000
+    )
+    
+    if not lines:
+        return None
+    
+    # Groepeer per factuur
+    invoices = {}
+    for line in lines:
+        move_id = line["move_id"][0] if line["move_id"] else None
+        if not move_id:
+            continue
+        if move_id not in invoices:
+            invoices[move_id] = []
+        invoices[move_id].append(line)
+    
+    # Analyseer per factuur
+    verf_omzet = 0
+    verf_materiaal = 0
+    behang_omzet = 0
+    behang_materiaal = 0
+    
+    for move_id, lines in invoices.items():
+        # Bepaal type factuur op basis van Arbeid regels
+        is_verf = False
+        is_behang = False
+        
+        for line in lines:
+            product_id = line["product_id"][0] if line["product_id"] else None
+            if product_id == ARBEID_VERF_ID:
+                is_verf = True
+            elif product_id in ARBEID_BEHANG_IDS:
+                is_behang = True
+        
+        # Tel omzet en materiaal
+        if is_verf or is_behang:
+            for line in lines:
+                product_id = line["product_id"][0] if line["product_id"] else None
+                amount = line.get("price_subtotal", 0) or 0
+                
+                if is_behang and not is_verf:  # Alleen behang
+                    if product_id in ARBEID_BEHANG_IDS:
+                        behang_omzet += amount
+                    else:
+                        behang_materiaal += amount
+                elif is_verf:  # Verf (ook als beide, default naar verf)
+                    if product_id == ARBEID_VERF_ID:
+                        verf_omzet += amount
+                    elif product_id not in ARBEID_BEHANG_IDS:
+                        verf_materiaal += amount
+    
+    return {
+        "verf": {"omzet": verf_omzet, "materiaal": verf_materiaal},
+        "behang": {"omzet": behang_omzet, "materiaal": behang_materiaal}
+    }
 
 @st.cache_data(ttl=300)
 def get_top_products(year, company_id=None, limit=20):
@@ -883,15 +964,19 @@ def main():
     if selected_entity != "Alle bedrijven":
         company_id = [k for k, v in COMPANIES.items() if v == selected_entity][0]
     
-    # Intercompany filter (alleen bij "Alle bedrijven")
-    exclude_intercompany = False
-    if selected_entity == "Alle bedrijven":
-        st.sidebar.markdown("---")
-        exclude_intercompany = st.sidebar.checkbox(
-            "🔄 Intercompany uitsluiten",
-            value=False,
-            help="Sluit intercompany boekingen uit (kan kosten beïnvloeden bij consolidatie)"
-        )
+    # Intercompany filter (beschikbaar voor alle entiteiten)
+    # Gebruik session_state om de waarde te behouden bij jaar/entiteit wijzigingen
+    st.sidebar.markdown("---")
+    if "exclude_intercompany" not in st.session_state:
+        st.session_state.exclude_intercompany = False
+    
+    exclude_intercompany = st.sidebar.checkbox(
+        "🔄 Intercompany uitsluiten",
+        value=st.session_state.exclude_intercompany,
+        key="exclude_intercompany_checkbox",
+        help="Sluit boekingen met andere LAB-entiteiten uit (bijv. facturen tussen LAB Shops en LAB Projects)"
+    )
+    st.session_state.exclude_intercompany = exclude_intercompany
     
     st.sidebar.markdown("---")
     st.sidebar.caption(f"⏱️ Laatste update: {datetime.now().strftime('%H:%M:%S')}")
@@ -919,14 +1004,16 @@ def main():
             bank_data = get_bank_balances()
             receivables, payables = get_receivables_payables(company_id)
         
-        total_revenue = -sum(r.get("balance", 0) for r in revenue_data)
-        
-        # Filter intercompany kosten indien geselecteerd
+        # Filter intercompany indien geselecteerd
         if exclude_intercompany:
+            filtered_revenue = [r for r in revenue_data 
+                              if not (r.get("partner_id") and r["partner_id"][0] in INTERCOMPANY_PARTNERS)]
             filtered_costs = [c for c in cost_data 
                             if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
+            total_revenue = -sum(r.get("balance", 0) for r in filtered_revenue)
             total_costs = sum(c.get("balance", 0) for c in filtered_costs)
         else:
+            total_revenue = -sum(r.get("balance", 0) for r in revenue_data)
             total_costs = sum(c.get("balance", 0) for c in cost_data)
         
         result = total_revenue - total_costs
@@ -938,11 +1025,11 @@ def main():
         else:
             bank_total = sum(b.get("current_statement_balance", 0) for b in bank_data)
         
+        ic_suffix = " (excl. IC)" if exclude_intercompany else ""
         with col1:
-            st.metric("💰 Omzet YTD", f"€{total_revenue:,.0f}")
+            st.metric(f"💰 Omzet YTD{ic_suffix}", f"€{total_revenue:,.0f}")
         with col2:
-            cost_label = "📉 Kosten YTD" + (" (excl. IC)" if exclude_intercompany else "")
-            st.metric(cost_label, f"€{total_costs:,.0f}")
+            st.metric(f"📉 Kosten YTD{ic_suffix}", f"€{total_costs:,.0f}")
         with col3:
             st.metric("📊 Resultaat", f"€{result:,.0f}", 
                      delta=f"{result/total_revenue*100:.1f}%" if total_revenue else "0%")
@@ -963,18 +1050,29 @@ def main():
         
         # Omzet vs Kosten grafiek
         st.markdown("---")
-        st.subheader("📈 Omzet vs Kosten per maand")
+        chart_title = "📈 Omzet vs Kosten per maand" + (" (excl. IC)" if exclude_intercompany else "")
+        st.subheader(chart_title)
         
-        if revenue_data:
+        # Gebruik gefilterde data voor grafiek
+        if exclude_intercompany:
+            chart_revenue = [r for r in revenue_data 
+                          if not (r.get("partner_id") and r["partner_id"][0] in INTERCOMPANY_PARTNERS)]
+            chart_costs = [c for c in cost_data 
+                        if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
+        else:
+            chart_revenue = revenue_data
+            chart_costs = cost_data
+        
+        if chart_revenue:
             # Groepeer per maand
             monthly = {}
-            for r in revenue_data:
+            for r in chart_revenue:
                 month = r.get("date", "")[:7]
                 if month not in monthly:
                     monthly[month] = {"omzet": 0, "kosten": 0}
                 monthly[month]["omzet"] += -r.get("balance", 0)
             
-            for c in cost_data:
+            for c in chart_costs:
                 month = c.get("date", "")[:7]
                 if month in monthly:
                     monthly[month]["kosten"] += c.get("balance", 0)
@@ -1313,49 +1411,66 @@ def main():
         # Subtab 3: Verf vs Behang (alleen relevant voor Projects)
         with prod_subtabs[2]:
             if not company_id or company_id == 3:
-                st.subheader("🎨 LAB Projects: Verf vs Behang Analyse")
+                st.subheader(f"🎨 LAB Projects: Verf vs Behang Analyse {year}")
                 
-                # Hardcoded data from earlier analysis
-                verf_data = {"Omzet": 740383, "Materiaal": 181940, "Onderaannemers": 420721}
-                behang_data = {"Omzet": 261488, "Materiaal": 77974, "Onderaannemers": 117402}
+                with st.spinner("Verf vs Behang data ophalen..."):
+                    vb_data = get_verf_behang_analysis(year)
                 
-                verf_marge = verf_data["Omzet"] - verf_data["Materiaal"] - verf_data["Onderaannemers"]
-                behang_marge = behang_data["Omzet"] - behang_data["Materiaal"] - behang_data["Onderaannemers"]
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("### 🖌️ Verfprojecten (73.9%)")
-                    st.metric("Omzet", f"€{verf_data['Omzet']:,}")
-                    st.metric("Materiaalkosten", f"€{verf_data['Materiaal']:,}")
-                    st.metric("Onderaannemers", f"€{verf_data['Onderaannemers']:,}")
-                    st.metric("Bruto Marge", f"€{verf_marge:,}", 
-                             delta=f"{verf_marge/verf_data['Omzet']*100:.1f}%")
-                
-                with col2:
-                    st.markdown("### 🎭 Behangprojecten (26.1%)")
-                    st.metric("Omzet", f"€{behang_data['Omzet']:,}")
-                    st.metric("Materiaalkosten", f"€{behang_data['Materiaal']:,}")
-                    st.metric("Onderaannemers", f"€{behang_data['Onderaannemers']:,}")
-                    st.metric("Bruto Marge", f"€{behang_marge:,}", 
-                             delta=f"{behang_marge/behang_data['Omzet']*100:.1f}%")
-                
-                st.warning("⚠️ **Let op:** Behangprojecten hebben een hogere marge (25.3%) dan verfprojecten (18.6%). "
-                          "Van de Fabriek vertegenwoordigt 52% van de verfonderaanneming - concentratierisico!")
-                
-                # Vergelijkingsgrafiek
-                st.markdown("---")
-                fig = go.Figure()
-                
-                categories = ["Omzet", "Materiaal", "Onderaannemers", "Marge"]
-                verf_values = [verf_data["Omzet"], verf_data["Materiaal"], verf_data["Onderaannemers"], verf_marge]
-                behang_values = [behang_data["Omzet"], behang_data["Materiaal"], behang_data["Onderaannemers"], behang_marge]
-                
-                fig.add_trace(go.Bar(name="Verf", x=categories, y=verf_values, marker_color="#1e3a5f"))
-                fig.add_trace(go.Bar(name="Behang", x=categories, y=behang_values, marker_color="#4682B4"))
-                
-                fig.update_layout(barmode="group", height=400, title="Vergelijking Verf vs Behang")
-                st.plotly_chart(fig, use_container_width=True)
+                if vb_data:
+                    verf_omzet = vb_data["verf"]["omzet"]
+                    verf_materiaal = vb_data["verf"]["materiaal"]
+                    behang_omzet = vb_data["behang"]["omzet"]
+                    behang_materiaal = vb_data["behang"]["materiaal"]
+                    
+                    # Bereken marge (omzet - materiaal)
+                    verf_marge = verf_omzet - verf_materiaal
+                    behang_marge = behang_omzet - behang_materiaal
+                    
+                    # Bereken percentages
+                    totaal_omzet = verf_omzet + behang_omzet
+                    verf_pct = (verf_omzet / totaal_omzet * 100) if totaal_omzet > 0 else 0
+                    behang_pct = (behang_omzet / totaal_omzet * 100) if totaal_omzet > 0 else 0
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown(f"### 🖌️ Verfprojecten ({verf_pct:.1f}%)")
+                        st.metric("Omzet (arbeid)", f"€{verf_omzet:,.0f}")
+                        st.metric("Materiaalkosten", f"€{verf_materiaal:,.0f}")
+                        if verf_omzet > 0:
+                            st.metric("Bruto Marge", f"€{verf_marge:,.0f}", 
+                                     delta=f"{verf_marge/verf_omzet*100:.1f}%")
+                        else:
+                            st.metric("Bruto Marge", "€0")
+                    
+                    with col2:
+                        st.markdown(f"### 🎭 Behangprojecten ({behang_pct:.1f}%)")
+                        st.metric("Omzet (arbeid)", f"€{behang_omzet:,.0f}")
+                        st.metric("Materiaalkosten", f"€{behang_materiaal:,.0f}")
+                        if behang_omzet > 0:
+                            st.metric("Bruto Marge", f"€{behang_marge:,.0f}", 
+                                     delta=f"{behang_marge/behang_omzet*100:.1f}%")
+                        else:
+                            st.metric("Bruto Marge", "€0")
+                    
+                    st.info("ℹ️ **Toelichting:** Arbeid = omzet op factuur met product 'Arbeid' of 'Arbeid Behanger'. "
+                           "Materiaal = overige regels op dezelfde factuur. Onderaannemers niet beschikbaar (vereist leverancier-tagging).")
+                    
+                    # Vergelijkingsgrafiek
+                    st.markdown("---")
+                    fig = go.Figure()
+                    
+                    categories = ["Omzet", "Materiaal", "Marge"]
+                    verf_values = [verf_omzet, verf_materiaal, verf_marge]
+                    behang_values = [behang_omzet, behang_materiaal, behang_marge]
+                    
+                    fig.add_trace(go.Bar(name="Verf", x=categories, y=verf_values, marker_color="#1e3a5f"))
+                    fig.add_trace(go.Bar(name="Behang", x=categories, y=behang_values, marker_color="#4682B4"))
+                    
+                    fig.update_layout(barmode="group", height=400, title=f"Vergelijking Verf vs Behang - {year}")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("⚠️ Geen Verf/Behang data gevonden voor dit jaar.")
             else:
                 st.info("ℹ️ De Verf vs Behang analyse is alleen beschikbaar voor LAB Projects. "
                        "Selecteer 'LAB Projects' of 'Alle bedrijven' in de sidebar.")
