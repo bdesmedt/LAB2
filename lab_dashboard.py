@@ -1467,7 +1467,7 @@ def main():
                     fig.add_trace(go.Bar(name="Verf", x=categories, y=verf_values, marker_color="#1e3a5f"))
                     fig.add_trace(go.Bar(name="Behang", x=categories, y=behang_values, marker_color="#4682B4"))
                     
-                    fig.update_layout(barmode="group", height=400, title=f"Vergelijking Verf vs Behang - {year}")
+                    fig.update_layout(barmode="group", height=400, title=f"Vergelijking Verf vs Behang - {selected_year}")
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.warning("⚠️ Geen Verf/Behang data gevonden voor dit jaar.")
@@ -1727,3 +1727,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
