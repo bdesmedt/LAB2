@@ -611,11 +611,13 @@ def get_weekly_revenue(year, company_id=None):
                 if len(parts) == 2:
                     week_num = int(parts[0].replace("W", ""))
                     week_year = int(parts[1])
-                    # Maak datum van eerste dag van de week
+                    # Maak datum van eerste dag van de week (maandag)
                     from datetime import datetime
-                    date = datetime.strptime(f"{week_year}-W{week_num:02d}-1", "%Y-W%W-%w")
+                    # ISO week: gebruik isocalendar format
+                    date = datetime.strptime(f"{week_year}-W{week_num:02d}-1", "%G-W%V-%u")
                     weekly_data.append({
                         "week": week_str,
+                        "week_num": week_num,
                         "date": date.strftime("%Y-%m-%d"),
                         "omzet": balance
                     })
@@ -625,6 +627,44 @@ def get_weekly_revenue(year, company_id=None):
     # Sorteer op datum
     weekly_data.sort(key=lambda x: x.get("date", ""))
     return weekly_data
+
+@st.cache_data(ttl=3600)
+def get_daily_revenue(year, company_id=None):
+    """Haal dagelijkse omzetdata op via read_group (geen record limiet)"""
+    domain = [
+        ("account_id.code", ">=", "800000"),
+        ("account_id.code", "<", "900000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain.append(("company_id", "=", company_id))
+    
+    # Groepeer op dag
+    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:day"])
+    
+    # Converteer naar lijst met datum en omzet
+    daily_data = []
+    for r in result:
+        date_str = r.get("date:day", "")
+        balance = -r.get("balance", 0)  # Negatief -> positief voor omzet
+        if date_str and balance != 0:
+            try:
+                # Parse "01 Jan 2025" format
+                from datetime import datetime
+                date = datetime.strptime(date_str, "%d %b %Y")
+                daily_data.append({
+                    "date": date.strftime("%Y-%m-%d"),
+                    "dag": date_str,
+                    "omzet": balance
+                })
+            except:
+                pass
+    
+    # Sorteer op datum
+    daily_data.sort(key=lambda x: x.get("date", ""))
+    return daily_data
 
 # Legacy functies voor compatibiliteit (niet meer primair gebruikt)
 @st.cache_data(ttl=300)
@@ -1368,76 +1408,170 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
         
         # =====================================================================
-        # WEEKOMZET GRAFIEK MET INTERACTIEVE SLIDER
+        # OMZET GRAFIEK MET INTERACTIEVE SLIDER (WEEK/DAG TOGGLE)
         # =====================================================================
         st.markdown("---")
-        st.subheader("📊 Weekomzet" + (" (excl. IC)" if exclude_intercompany else ""))
-        st.caption("🔍 Gebruik de schuifbalk onder de grafiek om in/uit te zoomen of sleep om te navigeren")
+        st.subheader("📊 Omzet Tijdlijn" + (" (excl. IC)" if exclude_intercompany else ""))
         
-        weekly_data = get_weekly_revenue(selected_year, company_id)
-        
-        if weekly_data:
-            df_weekly = pd.DataFrame(weekly_data)
-            
-            # Maak interactieve lijn/bar grafiek met range slider
-            fig_weekly = go.Figure()
-            
-            fig_weekly.add_trace(go.Bar(
-                x=df_weekly["date"],
-                y=df_weekly["omzet"],
-                name="Weekomzet",
-                marker_color="#1e3a5f",
-                hovertemplate="<b>%{x}</b><br>Omzet: €%{y:,.0f}<extra></extra>"
-            ))
-            
-            # Voeg trendlijn toe
-            fig_weekly.add_trace(go.Scatter(
-                x=df_weekly["date"],
-                y=df_weekly["omzet"].rolling(window=4, min_periods=1).mean(),
-                name="4-weeks gemiddelde",
-                line=dict(color="#FF6B6B", width=2, dash="dash"),
-                hovertemplate="<b>%{x}</b><br>Gemiddelde: €%{y:,.0f}<extra></extra>"
-            ))
-            
-            fig_weekly.update_layout(
-                height=450,
-                xaxis=dict(
-                    title="Week",
-                    rangeslider=dict(
-                        visible=True,
-                        thickness=0.1
-                    ),
-                    type="date",
-                    tickformat="%d %b",
-                ),
-                yaxis=dict(
-                    title="Omzet (€)",
-                    tickformat=",.0f"
-                ),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                ),
-                hovermode="x unified"
+        # Toggle voor week/dag weergave
+        view_col1, view_col2 = st.columns([1, 4])
+        with view_col1:
+            time_view = st.radio(
+                "Weergave",
+                ["📅 Week", "📆 Dag"],
+                horizontal=True,
+                label_visibility="collapsed"
             )
+        with view_col2:
+            st.caption("💡 Kies 'Dag' voor detail • Gebruik de schuifbalk om te navigeren • Sleep de randen om in te zoomen")
+        
+        if time_view == "📅 Week":
+            # WEEKWEERGAVE
+            weekly_data = get_weekly_revenue(selected_year, company_id)
             
-            st.plotly_chart(fig_weekly, use_container_width=True)
-            
-            # Statistieken
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("📈 Totaal", f"€{df_weekly['omzet'].sum():,.0f}")
-            with col2:
-                st.metric("📊 Gemiddeld/week", f"€{df_weekly['omzet'].mean():,.0f}")
-            with col3:
-                st.metric("🔝 Beste week", f"€{df_weekly['omzet'].max():,.0f}")
-            with col4:
-                st.metric("📉 Laagste week", f"€{df_weekly['omzet'].min():,.0f}")
+            if weekly_data:
+                df_weekly = pd.DataFrame(weekly_data)
+                
+                fig_weekly = go.Figure()
+                
+                fig_weekly.add_trace(go.Bar(
+                    x=df_weekly["date"],
+                    y=df_weekly["omzet"],
+                    name="Weekomzet",
+                    marker_color="#1e3a5f",
+                    hovertemplate="<b>Week %{customdata}</b><br>Omzet: €%{y:,.0f}<extra></extra>",
+                    customdata=df_weekly["week_num"]
+                ))
+                
+                # Trendlijn (4-weeks voortschrijdend gemiddelde)
+                fig_weekly.add_trace(go.Scatter(
+                    x=df_weekly["date"],
+                    y=df_weekly["omzet"].rolling(window=4, min_periods=1).mean(),
+                    name="4-weeks gemiddelde",
+                    line=dict(color="#FF6B6B", width=2, dash="dash"),
+                    hovertemplate="Gemiddelde: €%{y:,.0f}<extra></extra>"
+                ))
+                
+                fig_weekly.update_layout(
+                    height=500,
+                    xaxis=dict(
+                        title="",
+                        rangeslider=dict(
+                            visible=True,
+                            thickness=0.08,
+                            bgcolor="#f0f2f6"
+                        ),
+                        type="date",
+                        tickformat="Week %W<br>%b",
+                        dtick="M1",  # Eén tick per maand
+                        ticklabelmode="period",
+                        range=[df_weekly["date"].min(), df_weekly["date"].max()],  # Toon hele jaar
+                    ),
+                    yaxis=dict(
+                        title="Omzet (€)",
+                        tickformat=",.0f",
+                        gridcolor="#e0e0e0"
+                    ),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    hovermode="x unified",
+                    plot_bgcolor="white",
+                    margin=dict(b=80)
+                )
+                
+                st.plotly_chart(fig_weekly, use_container_width=True)
+                
+                # Statistieken
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("📈 Totaal", f"€{df_weekly['omzet'].sum():,.0f}")
+                with col2:
+                    st.metric("📊 Gemiddeld/week", f"€{df_weekly['omzet'].mean():,.0f}")
+                with col3:
+                    best_week = df_weekly.loc[df_weekly['omzet'].idxmax()]
+                    st.metric("🔝 Beste week", f"€{best_week['omzet']:,.0f}", f"Week {best_week['week_num']}")
+                with col4:
+                    worst_week = df_weekly.loc[df_weekly['omzet'].idxmin()]
+                    st.metric("📉 Laagste week", f"€{worst_week['omzet']:,.0f}", f"Week {worst_week['week_num']}")
+            else:
+                st.info("Geen weekdata beschikbaar voor geselecteerde periode")
+        
         else:
-            st.info("Geen weekdata beschikbaar voor geselecteerde periode")
+            # DAGWEERGAVE
+            daily_data = get_daily_revenue(selected_year, company_id)
+            
+            if daily_data:
+                df_daily = pd.DataFrame(daily_data)
+                
+                fig_daily = go.Figure()
+                
+                fig_daily.add_trace(go.Bar(
+                    x=df_daily["date"],
+                    y=df_daily["omzet"],
+                    name="Dagomzet",
+                    marker_color="#2ecc71",
+                    hovertemplate="<b>%{x|%a %d %b}</b><br>Omzet: €%{y:,.0f}<extra></extra>"
+                ))
+                
+                # Trendlijn (7-daags voortschrijdend gemiddelde)
+                fig_daily.add_trace(go.Scatter(
+                    x=df_daily["date"],
+                    y=df_daily["omzet"].rolling(window=7, min_periods=1).mean(),
+                    name="7-daags gemiddelde",
+                    line=dict(color="#e74c3c", width=2, dash="dash"),
+                    hovertemplate="Gemiddelde: €%{y:,.0f}<extra></extra>"
+                ))
+                
+                fig_daily.update_layout(
+                    height=500,
+                    xaxis=dict(
+                        title="",
+                        rangeslider=dict(
+                            visible=True,
+                            thickness=0.08,
+                            bgcolor="#f0f2f6"
+                        ),
+                        type="date",
+                        tickformat="%d %b",
+                        range=[df_daily["date"].min(), df_daily["date"].max()],  # Toon hele jaar
+                    ),
+                    yaxis=dict(
+                        title="Omzet (€)",
+                        tickformat=",.0f",
+                        gridcolor="#e0e0e0"
+                    ),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    hovermode="x unified",
+                    plot_bgcolor="white",
+                    margin=dict(b=80)
+                )
+                
+                st.plotly_chart(fig_daily, use_container_width=True)
+                
+                # Statistieken
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("📈 Totaal", f"€{df_daily['omzet'].sum():,.0f}")
+                with col2:
+                    st.metric("📊 Gemiddeld/dag", f"€{df_daily['omzet'].mean():,.0f}")
+                with col3:
+                    best_day = df_daily.loc[df_daily['omzet'].idxmax()]
+                    st.metric("🔝 Beste dag", f"€{best_day['omzet']:,.0f}", best_day['dag'])
+                with col4:
+                    st.metric("📅 Aantal dagen", f"{len(df_daily)}")
+            else:
+                st.info("Geen dagdata beschikbaar voor geselecteerde periode")
     
     # =========================================================================
     # TAB 2: BANK
@@ -1448,16 +1582,27 @@ def main():
         bank_data = get_bank_balances()
         rc_data = get_rc_balances()
         
-        if bank_data:
+        # Filter op geselecteerde entiteit
+        if selected_entity != "Alle bedrijven":
+            bank_data_filtered = [b for b in bank_data if b.get("company_id", [None])[0] == company_id]
+            rc_data_filtered = [r for r in rc_data if r.get("company_id", [None])[0] == company_id] if rc_data else []
+            companies_to_show = {company_id: COMPANIES[company_id]}
+        else:
+            bank_data_filtered = bank_data
+            rc_data_filtered = rc_data
+            companies_to_show = COMPANIES
+        
+        if bank_data_filtered:
             # Totaal
-            total_bank = sum(b.get("current_statement_balance", 0) for b in bank_data)
-            st.metric("💰 Totaal Banksaldo", f"€{total_bank:,.0f}")
+            total_bank = sum(b.get("current_statement_balance", 0) for b in bank_data_filtered)
+            entity_label = COMPANIES.get(company_id, "Alle Entiteiten") if selected_entity != "Alle bedrijven" else "Alle Entiteiten"
+            st.metric(f"💰 Banksaldo {entity_label}", f"€{total_bank:,.0f}")
             
             # Per bedrijf
             st.markdown("---")
             
-            for comp_id, comp_name in COMPANIES.items():
-                comp_banks = [b for b in bank_data if b.get("company_id", [None])[0] == comp_id]
+            for comp_id, comp_name in companies_to_show.items():
+                comp_banks = [b for b in bank_data_filtered if b.get("company_id", [None])[0] == comp_id]
                 if comp_banks:
                     comp_total = sum(b.get("current_statement_balance", 0) for b in comp_banks)
                     with st.expander(f"🏢 {comp_name} — €{comp_total:,.0f}", expanded=True):
@@ -1467,14 +1612,14 @@ def main():
                             st.write(f"  • {name}: **€{balance:,.0f}**")
             
             # R/C Intercompany sectie
-            if rc_data:
+            if rc_data_filtered:
                 st.markdown("---")
                 st.subheader("🔄 R/C Intercompany Posities")
                 st.info("💡 Dit zijn rekening-courant posities met groepsmaatschappijen, geen bankrekeningen. "
                        "Rekeningen in de **12xxx** reeks zijn vorderingen, **14xxx** zijn schulden.")
                 
-                for comp_id, comp_name in COMPANIES.items():
-                    comp_rc = [r for r in rc_data if r.get("company_id", [None])[0] == comp_id]
+                for comp_id, comp_name in companies_to_show.items():
+                    comp_rc = [r for r in rc_data_filtered if r.get("company_id", [None])[0] == comp_id]
                     if comp_rc:
                         comp_total = sum(r.get("current_statement_balance", 0) for r in comp_rc)
                         label = "Netto vordering" if comp_total >= 0 else "Netto schuld"
@@ -1487,24 +1632,25 @@ def main():
                                 indicator = "📈" if acc_type == "Vordering" else "📉"
                                 st.write(f"  {indicator} {name} ({code}): **€{balance:,.0f}** ({acc_type})")
             
-            # Grafiek
-            st.markdown("---")
-            st.subheader("📊 Verdeling per Entiteit")
-            
-            comp_totals = []
-            for comp_id, comp_name in COMPANIES.items():
-                comp_total = sum(b.get("current_statement_balance", 0) for b in bank_data 
-                               if b.get("company_id", [None])[0] == comp_id)
-                if comp_total > 0:
-                    comp_totals.append({"Entiteit": comp_name, "Saldo": comp_total})
-            
-            if comp_totals:
-                df_bank = pd.DataFrame(comp_totals)
-                fig = px.pie(df_bank, values="Saldo", names="Entiteit",
-                           color_discrete_sequence=["#1e3a5f", "#4682B4", "#87CEEB"])
-                st.plotly_chart(fig, use_container_width=True)
+            # Grafiek - alleen tonen als "Alle bedrijven" is geselecteerd
+            if selected_entity == "Alle bedrijven":
+                st.markdown("---")
+                st.subheader("📊 Verdeling per Entiteit")
+                
+                comp_totals = []
+                for comp_id, comp_name in COMPANIES.items():
+                    comp_total = sum(b.get("current_statement_balance", 0) for b in bank_data 
+                                   if b.get("company_id", [None])[0] == comp_id)
+                    if comp_total > 0:
+                        comp_totals.append({"Entiteit": comp_name, "Saldo": comp_total})
+                
+                if comp_totals:
+                    df_bank = pd.DataFrame(comp_totals)
+                    fig = px.pie(df_bank, values="Saldo", names="Entiteit",
+                               color_discrete_sequence=["#1e3a5f", "#4682B4", "#87CEEB"])
+                    st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Geen bankgegevens beschikbaar")
+            st.info("Geen bankgegevens beschikbaar voor deze entiteit")
     
     # =========================================================================
     # TAB 3: FACTUREN
@@ -1992,13 +2138,19 @@ def main():
     with tabs[6]:
         st.header("📈 Cashflow Prognose")
         
-        st.info("💡 Dit is een vereenvoudigde 12-weken cashflow prognose gebaseerd op huidige saldi en gemiddelden.")
+        entity_label = "alle entiteiten" if selected_entity == "Alle bedrijven" else COMPANIES.get(company_id, "")
+        st.info(f"💡 Cashflow prognose voor **{entity_label}** gebaseerd op huidige saldi en gemiddelden.")
         
-        # Huidige posities
+        # Huidige posities - gefilterd op geselecteerde entiteit
         bank_data = get_bank_balances()
         receivables, payables = get_receivables_payables(company_id)
         
-        current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data)
+        # Filter banksaldo op geselecteerde entiteit
+        if selected_entity == "Alle bedrijven":
+            current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data)
+        else:
+            current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data 
+                             if b.get("company_id", [None])[0] == company_id)
         current_rec = sum(r.get("amount_residual", 0) for r in receivables)
         current_pay = abs(sum(p.get("amount_residual", 0) for p in payables))
         
