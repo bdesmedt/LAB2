@@ -1,12 +1,14 @@
 """
-LAB Groep Financial Dashboard v9 OPTIMIZED
-==========================================
+LAB Groep Financial Dashboard v9.1 OPTIMIZED
+============================================
 Server-side aggregation for 10x faster load times
 
 Optimizations:
 - read_group() for revenue/cost data (Odoo aggregates instead of fetching 100K records)
 - Cache TTL extended from 5 min to 1 hour
 - Smart fallback: read_group when IC filter OFF, legacy when IC filter ON
+
+v9.1 FIX: Revenue accounts start with 8 (not 7), costs are 4 and 6 only
 
 Expected performance:
 - Overview tab: ~3 sec (was ~30 sec)
@@ -47,8 +49,8 @@ COMPANIES = {
     4: "LAB Projects B.V."
 }
 
-# Revenue account codes (70xxxx)
-REVENUE_ACCOUNTS = ['700000', '700010', '700015', '700020', '700100', '700105', '700110', '700200', '703000', '704000', '705000', '706000', '707000', '708000', '708001', '709000']
+# Revenue account codes (8xxxxx) - FIXED: was incorrectly 7xxxxx
+REVENUE_ACCOUNTS = ['800000', '800010', '800015', '800020', '800100', '800105', '800110', '800200', '803000', '804000', '805000', '806000', '807000', '808000', '808001', '809000']
 
 # Intercompany partner IDs for filtering
 INTERCOMPANY_PARTNER_IDS = [1, 37, 38]  # LAB Shops, LAB Conceptstore, LAB Projects
@@ -175,6 +177,8 @@ def get_revenue_data_fast(year, company_id=None):
     """
     OPTIMIZED: Get revenue data using read_group for server-side aggregation.
     Returns dict with monthly totals instead of individual records.
+    
+    FIXED: Revenue accounts start with 8 (not 7)
     """
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
@@ -182,7 +186,7 @@ def get_revenue_data_fast(year, company_id=None):
     domain = [
         ("date", ">=", start_date),
         ("date", "<=", end_date),
-        ("account_id.code", "=like", "7%"),
+        ("account_id.code", "=like", "8%"),  # FIXED: was "7%"
         ("parent_state", "=", "posted")
     ]
     
@@ -218,7 +222,8 @@ def get_revenue_data_fast(year, company_id=None):
 def get_cost_data_fast(year, company_id=None):
     """
     OPTIMIZED: Get cost data using read_group for server-side aggregation.
-    Cost accounts: 4xxxxx, 6xxxxx, 8xxxxx
+    
+    FIXED: Cost accounts are 4xxxxx and 6xxxxx only (removed 8xxxxx which is revenue)
     """
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
@@ -226,7 +231,8 @@ def get_cost_data_fast(year, company_id=None):
     # We need to query each account range separately due to Odoo domain limitations
     monthly_data = {}
     
-    for prefix in ['4', '6', '8']:
+    # FIXED: Only 4 and 6 (removed 8 which is revenue)
+    for prefix in ['4', '6']:
         domain = [
             ("date", ">=", start_date),
             ("date", "<=", end_date),
@@ -300,14 +306,14 @@ def get_revenue_vs_cost_fast(year, company_id=None):
 
 @st.cache_data(ttl=CACHE_TTL)
 def get_revenue_data(year, company_id=None):
-    """Get revenue data (account codes starting with 7) - LEGACY for detailed analysis"""
+    """Get revenue data (account codes starting with 8) - LEGACY for detailed analysis"""
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
     
     domain = [
         ("date", ">=", start_date),
         ("date", "<=", end_date),
-        ("account_id.code", "=like", "7%"),
+        ("account_id.code", "=like", "8%"),  # FIXED: was "7%"
         ("parent_state", "=", "posted")
     ]
     
@@ -321,13 +327,14 @@ def get_revenue_data(year, company_id=None):
 
 @st.cache_data(ttl=CACHE_TTL)
 def get_cost_data(year, company_id=None):
-    """Get cost data (accounts 4x, 6x, 8x) - LEGACY for detailed analysis"""
+    """Get cost data (accounts 4x, 6x) - LEGACY for detailed analysis"""
     start_date = f"{year}-01-01"
     end_date = f"{year}-12-31"
     
     all_data = []
     
-    for prefix in ['4', '6', '8']:
+    # FIXED: Only 4 and 6 (removed 8 which is revenue)
+    for prefix in ['4', '6']:
         domain = [
             ("date", ">=", start_date),
             ("date", "<=", end_date),
@@ -355,7 +362,7 @@ def get_top_customers(year, company_id=None, limit=10):
     domain = [
         ("date", ">=", start_date),
         ("date", "<=", end_date),
-        ("account_id.code", "=like", "7%"),
+        ("account_id.code", "=like", "8%"),  # FIXED: was "7%"
         ("parent_state", "=", "posted"),
         ("partner_id", "!=", False)
     ]
@@ -399,6 +406,7 @@ def get_top_suppliers(year, company_id=None, limit=10):
     
     all_data = []
     
+    # FIXED: Only 4 and 6 (removed 8 which is revenue)
     for prefix in ['4', '6']:
         domain = [
             ("date", ">=", start_date),
@@ -490,7 +498,7 @@ def get_product_sales(year, company_id=None):
     domain = [
         ("date", ">=", start_date),
         ("date", "<=", end_date),
-        ("account_id.code", "=like", "7%"),
+        ("account_id.code", "=like", "8%"),  # FIXED: was "7%"
         ("parent_state", "=", "posted"),
         ("product_id", "!=", False)
     ]
@@ -565,7 +573,7 @@ def get_customers_with_location(year, company_id=None):
     domain = [
         ("date", ">=", start_date),
         ("date", "<=", end_date),
-        ("account_id.code", "=like", "7%"),
+        ("account_id.code", "=like", "8%"),  # FIXED: was "7%"
         ("parent_state", "=", "posted"),
         ("partner_id", "!=", False)
     ]
@@ -618,6 +626,36 @@ def get_customers_with_location(year, company_id=None):
     return result
 
 # =================================================================
+# BANK BALANCES
+# =================================================================
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_bank_balances():
+    """Get current bank balances from account 1030xx"""
+    domain = [
+        ("account_id.code", "=like", "1030%"),
+        ("parent_state", "=", "posted")
+    ]
+    
+    fields = ["balance", "account_id", "company_id"]
+    
+    data = odoo_call("account.move.line", "search_read", domain, fields, limit=RECORD_LIMIT)
+    
+    if not data:
+        return {}
+    
+    # Aggregate by company
+    company_balances = {}
+    for record in data:
+        company = record.get('company_id')
+        if company:
+            company_id = company[0]
+            balance = record.get('balance', 0) or 0
+            company_balances[company_id] = company_balances.get(company_id, 0) + balance
+    
+    return company_balances
+
+# =================================================================
 # HELPER FUNCTIONS
 # =================================================================
 
@@ -666,8 +704,14 @@ def calculate_monthly_totals(data, exclude_ic=False):
 # =================================================================
 
 def main():
+    st.set_page_config(
+        page_title="LAB Groep Dashboard",
+        page_icon="📊",
+        layout="wide"
+    )
+    
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("v9 OPTIMIZED - Server-side aggregatie voor snellere laadtijden")
+    st.caption("v9.1 OPTIMIZED - Omzet fix (8%), kosten fix (4%+6%)")
     
     # Sidebar configuration
     st.sidebar.header("⚙️ Instellingen")
@@ -785,6 +829,16 @@ def main():
             col2.metric("Totale Kosten", format_currency(total_costs))
             col3.metric("Winst", format_currency(total_profit))
             col4.metric("Marge", f"{margin:.1f}%")
+            
+            # Bank balances
+            st.subheader("🏦 Banksaldi")
+            bank_data = get_bank_balances()
+            if bank_data:
+                bank_cols = st.columns(len(COMPANIES))
+                for idx, (comp_id, comp_name) in enumerate(COMPANIES.items()):
+                    with bank_cols[idx]:
+                        balance = bank_data.get(comp_id, 0)
+                        st.metric(comp_name, format_currency(balance))
             
             # Monthly chart
             st.subheader("Maandelijks Overzicht")
