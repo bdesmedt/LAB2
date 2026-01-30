@@ -583,6 +583,49 @@ def get_intercompany_costs(year, company_id=None):
     
     return [{"date:month": k, "balance": v} for k, v in monthly.items()]
 
+@st.cache_data(ttl=3600)
+def get_weekly_revenue(year, company_id=None):
+    """Haal wekelijkse omzetdata op via read_group (geen record limiet)"""
+    domain = [
+        ("account_id.code", ">=", "800000"),
+        ("account_id.code", "<", "900000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain.append(("company_id", "=", company_id))
+    
+    # Groepeer op week (date:week geeft ISO weeknummer)
+    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:week"])
+    
+    # Converteer naar lijst met weeknummer en omzet (omzet is negatief in Odoo)
+    weekly_data = []
+    for r in result:
+        week_str = r.get("date:week", "")
+        balance = -r.get("balance", 0)  # Negatief -> positief voor omzet
+        if week_str and balance != 0:
+            # Parse "W01 2025" format
+            try:
+                parts = week_str.split()
+                if len(parts) == 2:
+                    week_num = int(parts[0].replace("W", ""))
+                    week_year = int(parts[1])
+                    # Maak datum van eerste dag van de week
+                    from datetime import datetime
+                    date = datetime.strptime(f"{week_year}-W{week_num:02d}-1", "%Y-W%W-%w")
+                    weekly_data.append({
+                        "week": week_str,
+                        "date": date.strftime("%Y-%m-%d"),
+                        "omzet": balance
+                    })
+            except:
+                pass
+    
+    # Sorteer op datum
+    weekly_data.sort(key=lambda x: x.get("date", ""))
+    return weekly_data
+
 # Legacy functies voor compatibiliteit (niet meer primair gebruikt)
 @st.cache_data(ttl=300)
 def get_revenue_data(year, company_id=None):
@@ -1111,7 +1154,7 @@ def get_coords_from_postcode(postcode):
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v9.3 - Server-side aggregatie + gearchiveerde records")
+    st.caption("Real-time data uit Odoo | v8 - Met klantenkaart & verbeterde R/C filtering")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -1323,6 +1366,78 @@ def main():
                                     marker_color="#87CEEB"))
                 fig.update_layout(barmode="group", height=400)
                 st.plotly_chart(fig, use_container_width=True)
+        
+        # =====================================================================
+        # WEEKOMZET GRAFIEK MET INTERACTIEVE SLIDER
+        # =====================================================================
+        st.markdown("---")
+        st.subheader("📊 Weekomzet" + (" (excl. IC)" if exclude_intercompany else ""))
+        st.caption("🔍 Gebruik de schuifbalk onder de grafiek om in/uit te zoomen of sleep om te navigeren")
+        
+        weekly_data = get_weekly_revenue(selected_year, company_id)
+        
+        if weekly_data:
+            df_weekly = pd.DataFrame(weekly_data)
+            
+            # Maak interactieve lijn/bar grafiek met range slider
+            fig_weekly = go.Figure()
+            
+            fig_weekly.add_trace(go.Bar(
+                x=df_weekly["date"],
+                y=df_weekly["omzet"],
+                name="Weekomzet",
+                marker_color="#1e3a5f",
+                hovertemplate="<b>%{x}</b><br>Omzet: €%{y:,.0f}<extra></extra>"
+            ))
+            
+            # Voeg trendlijn toe
+            fig_weekly.add_trace(go.Scatter(
+                x=df_weekly["date"],
+                y=df_weekly["omzet"].rolling(window=4, min_periods=1).mean(),
+                name="4-weeks gemiddelde",
+                line=dict(color="#FF6B6B", width=2, dash="dash"),
+                hovertemplate="<b>%{x}</b><br>Gemiddelde: €%{y:,.0f}<extra></extra>"
+            ))
+            
+            fig_weekly.update_layout(
+                height=450,
+                xaxis=dict(
+                    title="Week",
+                    rangeslider=dict(
+                        visible=True,
+                        thickness=0.1
+                    ),
+                    type="date",
+                    tickformat="%d %b",
+                ),
+                yaxis=dict(
+                    title="Omzet (€)",
+                    tickformat=",.0f"
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                hovermode="x unified"
+            )
+            
+            st.plotly_chart(fig_weekly, use_container_width=True)
+            
+            # Statistieken
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📈 Totaal", f"€{df_weekly['omzet'].sum():,.0f}")
+            with col2:
+                st.metric("📊 Gemiddeld/week", f"€{df_weekly['omzet'].mean():,.0f}")
+            with col3:
+                st.metric("🔝 Beste week", f"€{df_weekly['omzet'].max():,.0f}")
+            with col4:
+                st.metric("📉 Laagste week", f"€{df_weekly['omzet'].min():,.0f}")
+        else:
+            st.info("Geen weekdata beschikbaar voor geselecteerde periode")
     
     # =========================================================================
     # TAB 2: BANK
