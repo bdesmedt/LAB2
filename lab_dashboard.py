@@ -405,9 +405,188 @@ def get_rc_balances():
     
     return rc_only
 
+# Intercompany partner IDs (LAB Conceptstore, LAB Shops, LAB Projects)
+# Verplaatst naar boven voor gebruik in aggregatie functies
+INTERCOMPANY_PARTNERS = [1, 7, 8]
+
+def odoo_read_group(model, domain, fields, groupby, timeout=120):
+    """Odoo read_group voor server-side aggregatie - GEEN limiet!
+    
+    Inclusief gearchiveerde records (active_test: False) zodat transacties
+    met gearchiveerde contacten ook meekomen.
+    """
+    api_key = get_api_key()
+    if not api_key:
+        return []
+    
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "service": "object",
+            "method": "execute_kw",
+            "args": [ODOO_DB, ODOO_UID, api_key, model, "read_group", 
+                    [domain], {
+                        "fields": fields, 
+                        "groupby": groupby, 
+                        "lazy": False,
+                        "context": {"active_test": False}  # Inclusief gearchiveerde records
+                    }]
+        },
+        "id": 1
+    }
+    
+    try:
+        response = requests.post(ODOO_URL, json=payload, timeout=timeout)
+        result = response.json()
+        if "error" in result:
+            st.error(f"Odoo read_group error: {result['error']}")
+            return []
+        return result.get("result", [])
+    except Exception as e:
+        st.error(f"Read group error: {e}")
+        return []
+
+@st.cache_data(ttl=3600)  # 1 uur cache
+def get_revenue_aggregated(year, company_id=None):
+    """Server-side geaggregeerde omzetdata - geen limiet!"""
+    domain = [
+        ("account_id.code", ">=", "800000"),
+        ("account_id.code", "<", "900000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain.append(("company_id", "=", company_id))
+    
+    # Groepeer per maand
+    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
+    return result
+
+@st.cache_data(ttl=3600)  # 1 uur cache
+def get_cost_aggregated(year, company_id=None):
+    """Server-side geaggregeerde kostendata - geen limiet!"""
+    # Query voor 4* rekeningen
+    domain_4 = [
+        ("account_id.code", ">=", "400000"),
+        ("account_id.code", "<", "500000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain_4.append(("company_id", "=", company_id))
+    
+    # Query voor 6* rekeningen
+    domain_6 = [
+        ("account_id.code", ">=", "600000"),
+        ("account_id.code", "<", "700000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain_6.append(("company_id", "=", company_id))
+    
+    # Query voor 7* rekeningen (kostprijs verkopen)
+    domain_7 = [
+        ("account_id.code", ">=", "700000"),
+        ("account_id.code", "<", "800000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain_7.append(("company_id", "=", company_id))
+    
+    result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
+    result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
+    result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
+    
+    # Combineer resultaten per maand
+    monthly = {}
+    for r in result_4 + result_6 + result_7:
+        month = r.get("date:month", "Unknown")
+        if month not in monthly:
+            monthly[month] = 0
+        monthly[month] += r.get("balance", 0)
+    
+    return [{"date:month": k, "balance": v} for k, v in monthly.items()]
+
+@st.cache_data(ttl=3600)
+def get_intercompany_revenue(year, company_id=None):
+    """Haal alleen intercompany omzet op voor IC filtering"""
+    domain = [
+        ("account_id.code", ">=", "800000"),
+        ("account_id.code", "<", "900000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted"),
+        ("partner_id", "in", INTERCOMPANY_PARTNERS)
+    ]
+    if company_id:
+        domain.append(("company_id", "=", company_id))
+    
+    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
+    return result
+
+@st.cache_data(ttl=3600)
+def get_intercompany_costs(year, company_id=None):
+    """Haal alleen intercompany kosten op voor IC filtering"""
+    # 4* rekeningen
+    domain_4 = [
+        ("account_id.code", ">=", "400000"),
+        ("account_id.code", "<", "500000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted"),
+        ("partner_id", "in", INTERCOMPANY_PARTNERS)
+    ]
+    if company_id:
+        domain_4.append(("company_id", "=", company_id))
+    
+    # 6* rekeningen
+    domain_6 = [
+        ("account_id.code", ">=", "600000"),
+        ("account_id.code", "<", "700000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted"),
+        ("partner_id", "in", INTERCOMPANY_PARTNERS)
+    ]
+    if company_id:
+        domain_6.append(("company_id", "=", company_id))
+    
+    # 7* rekeningen
+    domain_7 = [
+        ("account_id.code", ">=", "700000"),
+        ("account_id.code", "<", "800000"),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted"),
+        ("partner_id", "in", INTERCOMPANY_PARTNERS)
+    ]
+    if company_id:
+        domain_7.append(("company_id", "=", company_id))
+    
+    result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
+    result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
+    result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
+    
+    monthly = {}
+    for r in result_4 + result_6 + result_7:
+        month = r.get("date:month", "Unknown")
+        if month not in monthly:
+            monthly[month] = 0
+        monthly[month] += r.get("balance", 0)
+    
+    return [{"date:month": k, "balance": v} for k, v in monthly.items()]
+
+# Legacy functies voor compatibiliteit (niet meer primair gebruikt)
 @st.cache_data(ttl=300)
 def get_revenue_data(year, company_id=None):
-    """Haal omzetdata op van 8* rekeningen"""
+    """Haal omzetdata op van 8* rekeningen - LEGACY, gebruik get_revenue_aggregated"""
     domain = [
         ["account_id.code", ">=", "800000"],
         ["account_id.code", "<", "900000"],
@@ -422,12 +601,13 @@ def get_revenue_data(year, company_id=None):
         "account.move.line", "search_read",
         domain,
         ["date", "account_id", "company_id", "balance", "name", "partner_id"],
-        limit=100000
+        limit=100000,
+        include_archived=True  # Inclusief gearchiveerde records
     )
 
 @st.cache_data(ttl=300)
 def get_cost_data(year, company_id=None):
-    """Haal kostendata op van 4*, 6* en 7* rekeningen"""
+    """Haal kostendata op van 4*, 6* en 7* rekeningen - LEGACY"""
     domain = [
         "|", "|",
         "&", ["account_id.code", ">=", "400000"], ["account_id.code", "<", "500000"],
@@ -444,11 +624,9 @@ def get_cost_data(year, company_id=None):
         "account.move.line", "search_read",
         domain,
         ["date", "account_id", "company_id", "balance", "name", "partner_id"],
-        limit=100000
+        limit=100000,
+        include_archived=True  # Inclusief gearchiveerde records
     )
-
-# Intercompany partner IDs (LAB Conceptstore, LAB Shops, LAB Projects)
-INTERCOMPANY_PARTNERS = [1, 7, 8]
 
 @st.cache_data(ttl=300)
 def get_receivables_payables(company_id=None):
@@ -466,7 +644,8 @@ def get_receivables_payables(company_id=None):
         "account.move.line", "search_read",
         rec_domain,
         ["company_id", "amount_residual", "partner_id"],
-        limit=5000
+        limit=5000,
+        include_archived=True  # Inclusief gearchiveerde contacten
     )
     
     # Crediteuren
@@ -482,7 +661,8 @@ def get_receivables_payables(company_id=None):
         "account.move.line", "search_read",
         pay_domain,
         ["company_id", "amount_residual", "partner_id"],
-        limit=5000
+        limit=5000,
+        include_archived=True  # Inclusief gearchiveerde contacten
     )
     
     return receivables, payables
@@ -520,7 +700,8 @@ def get_invoices(year, company_id=None, invoice_type=None, state=None, search_te
         domain,
         ["name", "partner_id", "invoice_date", "amount_total", "amount_residual", 
          "state", "move_type", "company_id", "ref"],
-        limit=500
+        limit=500,
+        include_archived=True  # Inclusief gearchiveerde contacten
     )
 
 @st.cache_data(ttl=300)
@@ -540,7 +721,8 @@ def get_product_sales(year, company_id=None):
         "account.move.line", "search_read",
         domain,
         ["product_id", "price_subtotal", "quantity", "company_id"],
-        limit=10000
+        limit=10000,
+        include_archived=True  # Inclusief gearchiveerde producten
     )
 
 @st.cache_data(ttl=300)
@@ -593,7 +775,8 @@ def get_pos_product_sales(year, company_id=None):
         "pos.order", "search_read",
         domain,
         ["id", "name", "date_order", "amount_total"],
-        limit=50000
+        limit=50000,
+        include_archived=True
     )
     
     if not orders:
@@ -606,7 +789,8 @@ def get_pos_product_sales(year, company_id=None):
         "pos.order.line", "search_read",
         [["order_id", "in", order_ids]],
         ["product_id", "price_subtotal_incl", "price_subtotal", "qty", "order_id"],
-        limit=100000
+        limit=100000,
+        include_archived=True
     )
     
     return lines
@@ -636,7 +820,8 @@ def get_verf_behang_analysis(year):
             ["account_id.code", "=like", "8%"]  # Omzet rekeningen
         ],
         ["move_id", "product_id", "price_subtotal"],
-        limit=50000
+        limit=50000,
+        include_archived=True
     )
     
     if not lines:
@@ -709,7 +894,8 @@ def get_top_products(year, company_id=None, limit=20):
         "account.move.line", "search_read",
         domain,
         ["product_id", "price_subtotal", "quantity"],
-        limit=100000
+        limit=100000,
+        include_archived=True
     )
     
     # Groepeer per product
@@ -740,7 +926,8 @@ def get_customer_locations(company_id=3):
             ["state", "=", "posted"]
         ],
         ["partner_id", "amount_total"],
-        limit=5000
+        limit=5000,
+        include_archived=True
     )
     
     # Verzamel unieke klant IDs met omzet
@@ -762,7 +949,8 @@ def get_customer_locations(company_id=3):
     partners = odoo_call(
         "res.partner", "search_read",
         [["id", "in", partner_ids]],
-        ["id", "name", "street", "zip", "city", "country_id"]
+        ["id", "name", "street", "zip", "city", "country_id"],
+        include_archived=True
     )
     
     # Combineer data
@@ -792,7 +980,8 @@ def get_invoice_lines(invoice_id):
             ["display_type", "in", ["product", False]],
             ["exclude_from_invoice_tab", "=", False]
         ],
-        ["product_id", "name", "quantity", "price_unit", "price_subtotal", "tax_ids"]
+        ["product_id", "name", "quantity", "price_unit", "price_subtotal", "tax_ids"],
+        include_archived=True
     )
 
 def get_invoice_pdf(invoice_id):
@@ -804,7 +993,8 @@ def get_invoice_pdf(invoice_id):
             ["res_id", "=", invoice_id],
             ["mimetype", "=", "application/pdf"]
         ],
-        ["name", "datas"]
+        ["name", "datas"],
+        include_archived=True
     )
     return attachments[0] if attachments else None
 
@@ -921,7 +1111,7 @@ def get_coords_from_postcode(postcode):
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v8 - Met klantenkaart & verbeterde R/C filtering")
+    st.caption("Real-time data uit Odoo | v9.3 - Server-side aggregatie + gearchiveerde records")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -999,23 +1189,30 @@ def main():
         # KPIs
         col1, col2, col3, col4 = st.columns(4)
         
-        with st.spinner("Data laden..."):
-            revenue_data = get_revenue_data(selected_year, company_id)
-            cost_data = get_cost_data(selected_year, company_id)
+        with st.spinner("Data laden via server-side aggregatie..."):
+            # Gebruik read_group voor snelle server-side aggregatie (geen record limiet!)
+            revenue_agg = get_revenue_aggregated(selected_year, company_id)
+            cost_agg = get_cost_aggregated(selected_year, company_id)
             bank_data = get_bank_balances()
             receivables, payables = get_receivables_payables(company_id)
         
+        # Bereken totalen uit geaggregeerde data
+        total_revenue_raw = -sum(r.get("balance", 0) for r in revenue_agg)
+        total_costs_raw = sum(c.get("balance", 0) for c in cost_agg)
+        
         # Filter intercompany indien geselecteerd
         if exclude_intercompany:
-            filtered_revenue = [r for r in revenue_data 
-                              if not (r.get("partner_id") and r["partner_id"][0] in INTERCOMPANY_PARTNERS)]
-            filtered_costs = [c for c in cost_data 
-                            if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
-            total_revenue = -sum(r.get("balance", 0) for r in filtered_revenue)
-            total_costs = sum(c.get("balance", 0) for c in filtered_costs)
+            # Haal IC-bedragen apart op en trek af
+            with st.spinner("Intercompany filtering..."):
+                ic_revenue = get_intercompany_revenue(selected_year, company_id)
+                ic_costs = get_intercompany_costs(selected_year, company_id)
+            ic_revenue_total = -sum(r.get("balance", 0) for r in ic_revenue)
+            ic_costs_total = sum(c.get("balance", 0) for c in ic_costs)
+            total_revenue = total_revenue_raw - ic_revenue_total
+            total_costs = total_costs_raw - ic_costs_total
         else:
-            total_revenue = -sum(r.get("balance", 0) for r in revenue_data)
-            total_costs = sum(c.get("balance", 0) for c in cost_data)
+            total_revenue = total_revenue_raw
+            total_costs = total_costs_raw
         
         result = total_revenue - total_costs
         
@@ -1054,29 +1251,64 @@ def main():
         chart_title = "📈 Omzet vs Kosten per maand" + (" (excl. IC)" if exclude_intercompany else "")
         st.subheader(chart_title)
         
-        # Gebruik gefilterde data voor grafiek
-        if exclude_intercompany:
-            chart_revenue = [r for r in revenue_data 
-                          if not (r.get("partner_id") and r["partner_id"][0] in INTERCOMPANY_PARTNERS)]
-            chart_costs = [c for c in cost_data 
-                        if not (c.get("partner_id") and c["partner_id"][0] in INTERCOMPANY_PARTNERS)]
-        else:
-            chart_revenue = revenue_data
-            chart_costs = cost_data
+        # Helper functie om maandnaam naar sorteerbare datum te converteren
+        def parse_month_key(month_str):
+            """Converteer 'January 2025' naar '2025-01' voor sortering"""
+            month_map = {
+                'January': '01', 'February': '02', 'March': '03', 'April': '04',
+                'May': '05', 'June': '06', 'July': '07', 'August': '08',
+                'September': '09', 'October': '10', 'November': '11', 'December': '12',
+                # Nederlandse maanden
+                'januari': '01', 'februari': '02', 'maart': '03', 'april': '04',
+                'mei': '05', 'juni': '06', 'juli': '07', 'augustus': '08',
+                'september': '09', 'oktober': '10', 'november': '11', 'december': '12'
+            }
+            try:
+                parts = month_str.split()
+                if len(parts) == 2:
+                    month_name, year = parts
+                    month_num = month_map.get(month_name, '00')
+                    return f"{year}-{month_num}"
+                return month_str
+            except:
+                return month_str
         
-        if chart_revenue:
-            # Groepeer per maand
+        # Bouw monthly data van geaggregeerde resultaten
+        if revenue_agg:
             monthly = {}
-            for r in chart_revenue:
-                month = r.get("date", "")[:7]
+            
+            # Omzet per maand
+            for r in revenue_agg:
+                month_raw = r.get("date:month", "Unknown")
+                month = parse_month_key(month_raw)
                 if month not in monthly:
                     monthly[month] = {"omzet": 0, "kosten": 0}
                 monthly[month]["omzet"] += -r.get("balance", 0)
             
-            for c in chart_costs:
-                month = c.get("date", "")[:7]
-                if month in monthly:
-                    monthly[month]["kosten"] += c.get("balance", 0)
+            # Kosten per maand
+            for c in cost_agg:
+                month_raw = c.get("date:month", "Unknown")
+                month = parse_month_key(month_raw)
+                if month not in monthly:
+                    monthly[month] = {"omzet": 0, "kosten": 0}
+                monthly[month]["kosten"] += c.get("balance", 0)
+            
+            # Als IC filter aan: trek IC bedragen af per maand
+            if exclude_intercompany:
+                ic_revenue = get_intercompany_revenue(selected_year, company_id)
+                ic_costs = get_intercompany_costs(selected_year, company_id)
+                
+                for r in ic_revenue:
+                    month_raw = r.get("date:month", "Unknown")
+                    month = parse_month_key(month_raw)
+                    if month in monthly:
+                        monthly[month]["omzet"] -= -r.get("balance", 0)
+                
+                for c in ic_costs:
+                    month_raw = c.get("date:month", "Unknown")
+                    month = parse_month_key(month_raw)
+                    if month in monthly:
+                        monthly[month]["kosten"] -= c.get("balance", 0)
             
             df_monthly = pd.DataFrame([
                 {"Maand": k, "Omzet": v["omzet"], "Kosten": v["kosten"]}
