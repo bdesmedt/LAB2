@@ -606,18 +606,20 @@ def get_weekly_revenue(year, company_id=None, exclude_intercompany=False):
     
     # Converteer naar lijst met weeknummer en omzet (omzet is negatief in Odoo)
     weekly_data = []
+    import re
+    from datetime import datetime
     for r in result:
         week_str = r.get("date:week", "")
         balance = -r.get("balance", 0)  # Negatief -> positief voor omzet
         if week_str and balance != 0:
-            # Parse "W01 2025" format
+            # Parse "W01 2025" of "Week 01 2025" format
             try:
-                parts = week_str.split()
-                if len(parts) == 2:
-                    week_num = int(parts[0].replace("W", ""))
-                    week_year = int(parts[1])
+                # Zoek weeknummer en jaar met regex
+                match = re.search(r'W?(?:eek\s*)?(\d+)\s+(\d{4})', week_str, re.IGNORECASE)
+                if match:
+                    week_num = int(match.group(1))
+                    week_year = int(match.group(2))
                     # Maak datum van eerste dag van de week (maandag)
-                    from datetime import datetime
                     # ISO week: gebruik isocalendar format
                     date = datetime.strptime(f"{week_year}-W{week_num:02d}-1", "%G-W%V-%u")
                     weekly_data.append({
@@ -653,19 +655,31 @@ def get_daily_revenue(year, company_id=None, exclude_intercompany=False):
     
     # Converteer naar lijst met datum en omzet
     daily_data = []
+    # Nederlandse maand mapping
+    dutch_months = {
+        'jan': '01', 'feb': '02', 'mrt': '03', 'apr': '04',
+        'mei': '05', 'jun': '06', 'jul': '07', 'aug': '08',
+        'sep': '09', 'okt': '10', 'nov': '11', 'dec': '12',
+        # Engels als fallback
+        'mar': '03', 'may': '05', 'oct': '10'
+    }
     for r in result:
         date_str = r.get("date:day", "")
         balance = -r.get("balance", 0)  # Negatief -> positief voor omzet
         if date_str and balance != 0:
             try:
-                # Parse "01 Jan 2025" format
-                from datetime import datetime
-                date = datetime.strptime(date_str, "%d %b %Y")
-                daily_data.append({
-                    "date": date.strftime("%Y-%m-%d"),
-                    "dag": date_str,
-                    "omzet": balance
-                })
+                # Parse "01 jan 2025" of "01 Jan 2025" format
+                parts = date_str.lower().split()
+                if len(parts) == 3:
+                    day = parts[0].zfill(2)
+                    month = dutch_months.get(parts[1][:3], "01")
+                    year = parts[2]
+                    iso_date = f"{year}-{month}-{day}"
+                    daily_data.append({
+                        "date": iso_date,
+                        "dag": date_str,
+                        "omzet": balance
+                    })
             except:
                 pass
     
