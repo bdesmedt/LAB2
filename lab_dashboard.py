@@ -2271,8 +2271,8 @@ def main():
             
             accounts = odoo_call(
                 "account.account",
-                "read",
-                [account_ids],
+                "search_read",
+                [("id", "in", account_ids)],
                 fields=["id", "code", "name", "account_type"]
             )
             account_map = {a["id"]: a for a in accounts}
