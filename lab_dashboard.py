@@ -3795,7 +3795,7 @@ def main():
             # =====================================================================
             st.subheader("📊 Historische Cashflow (afgelopen weken)")
 
-            weeks_back = st.slider("Aantal weken terug", 4, 16, 8, key="cf_weeks_back")
+            weeks_back = st.slider("Aantal weken terug", 4, 104, 12, key="cf_weeks_back", help="Maximaal 2 jaar (104 weken) terug")
             historical_data = get_historical_bank_movements(company_id, weeks_back)
 
             # =====================================================================
@@ -3858,7 +3858,7 @@ def main():
                     key="cf_payment_rate"
                 )
 
-            forecast_weeks = st.slider("Aantal weken vooruit", 4, 24, 12, key="cf_forecast_weeks")
+            forecast_weeks = st.slider("Aantal weken vooruit", 4, 52, 12, key="cf_forecast_weeks", help="Maximaal 1 jaar (52 weken) vooruit")
 
             # Import en bereken huidige week (nodig voor BTW berekening)
             from datetime import timedelta
