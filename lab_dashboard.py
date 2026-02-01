@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 def install_packages():
-    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium']
+    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'streamlit-sortables']
     for package in packages:
         try:
             __import__(package.replace('-', '_'))
@@ -1781,6 +1781,208 @@ EXPENSE_CATEGORIES = {
     "66": "Uitzonderlijke Kosten"
 }
 
+# =============================================================================
+# DRAGGABLE MAPPING CONFIGURATION
+# New financial report structure for forecasting
+# =============================================================================
+
+# Report categories with order and calculation rules
+REPORT_CATEGORIES = {
+    # SECTION 1: Revenue and Cost of Sales
+    "netto_omzet": {
+        "name": "Netto Omzet",
+        "section": "revenue",
+        "order": 1,
+        "sign_flip": True,
+        "account_patterns": [],  # Will be populated by user
+        "is_subtotal": False
+    },
+    "kostprijs_omzet": {
+        "name": "Kostprijs van de Omzet",
+        "section": "revenue",
+        "order": 2,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "prijsverschillen": {
+        "name": "Prijsverschillen",
+        "section": "revenue",
+        "order": 3,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "overige_inkoopkosten": {
+        "name": "Overige Inkoopkosten",
+        "section": "revenue",
+        "order": 4,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "voorraadaanpassingen": {
+        "name": "Voorraadaanpassingen",
+        "section": "revenue",
+        "order": 5,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "bruto_omzet_resultaat": {
+        "name": "Bruto Omzet Resultaat",
+        "section": "revenue",
+        "order": 6,
+        "is_subtotal": True,
+        "calculation": "netto_omzet - kostprijs_omzet - prijsverschillen - overige_inkoopkosten - voorraadaanpassingen"
+    },
+
+    # SECTION 2: Operating Expenses
+    "lonen_salarissen": {
+        "name": "Lonen & Salarissen",
+        "section": "operating_expenses",
+        "order": 10,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "overige_personele_kosten": {
+        "name": "Overige Personele Kosten",
+        "section": "operating_expenses",
+        "order": 11,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "management_fee": {
+        "name": "Management Fee",
+        "section": "operating_expenses",
+        "order": 12,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "huisvestingskosten": {
+        "name": "Huisvestingskosten",
+        "section": "operating_expenses",
+        "order": 13,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "verkoopkosten": {
+        "name": "Verkoopkosten",
+        "section": "operating_expenses",
+        "order": 14,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "automatiseringskosten": {
+        "name": "Automatiseringskosten",
+        "section": "operating_expenses",
+        "order": 15,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "vervoerskosten": {
+        "name": "Vervoerskosten",
+        "section": "operating_expenses",
+        "order": 16,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "kantoorkosten": {
+        "name": "Kantoorkosten",
+        "section": "operating_expenses",
+        "order": 17,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "admin_accountantskosten": {
+        "name": "Administratie & Accountantskosten",
+        "section": "operating_expenses",
+        "order": 18,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "algemene_kosten": {
+        "name": "Algemene Kosten",
+        "section": "operating_expenses",
+        "order": 19,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "totaal_operationele_kosten": {
+        "name": "Totaal Operationele Kosten",
+        "section": "operating_expenses",
+        "order": 20,
+        "is_subtotal": True,
+        "calculation": "lonen_salarissen + overige_personele_kosten + management_fee + huisvestingskosten + verkoopkosten + automatiseringskosten + vervoerskosten + kantoorkosten + admin_accountantskosten + algemene_kosten"
+    },
+
+    # SECTION 3: Other Income and Expenses
+    "financieel_resultaat": {
+        "name": "Financieel Resultaat",
+        "section": "other_income_expenses",
+        "order": 30,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "afschrijvingen": {
+        "name": "Afschrijvingen",
+        "section": "other_income_expenses",
+        "order": 31,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "totaal_overige_lasten": {
+        "name": "Totaal Overige Lasten en Opbrengsten",
+        "section": "other_income_expenses",
+        "order": 32,
+        "is_subtotal": True,
+        "calculation": "financieel_resultaat + afschrijvingen"
+    },
+
+    # SECTION 4: Result before tax
+    "resultaat_voor_belasting": {
+        "name": "Resultaat voor Belasting",
+        "section": "result",
+        "order": 40,
+        "is_subtotal": True,
+        "calculation": "bruto_omzet_resultaat - totaal_operationele_kosten - totaal_overige_lasten"
+    },
+
+    # SECTION 5: Taxes
+    "belastingen": {
+        "name": "Belastingen",
+        "section": "taxes",
+        "order": 50,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+
+    # SECTION 6: Net Result
+    "resultaat_na_belasting": {
+        "name": "Resultaat na Belasting",
+        "section": "result",
+        "order": 60,
+        "is_subtotal": True,
+        "calculation": "resultaat_voor_belasting - belastingen"
+    }
+}
+
+# Mapping storage file path
+MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "account_mapping.json")
+
 # Scenario templates with growth rates and expense multipliers
 SCENARIO_TEMPLATES = {
     "conservative": {
@@ -2379,6 +2581,431 @@ def get_account_mapping():
     if "forecast_account_mapping" in st.session_state:
         return st.session_state.forecast_account_mapping
     return DEFAULT_ACCOUNT_MAPPING
+
+
+# =============================================================================
+# DRAGGABLE MAPPING FUNCTIONS
+# =============================================================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_all_accounts_with_details(company_id, year):
+    """
+    Fetch all accounts with their codes, names, and balances for a given year.
+    Returns a list of accounts that can be assigned to report categories.
+    """
+    try:
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31"
+
+        domain = [
+            ["date", ">=", start_date],
+            ["date", "<=", end_date],
+            ["parent_state", "=", "posted"]
+        ]
+        if company_id:
+            domain.append(["company_id", "=", company_id])
+
+        # Fetch all account move lines grouped by account
+        data = odoo_read_group(
+            "account.move.line",
+            domain,
+            ["balance:sum"],
+            ["account_id"]
+        )
+
+        accounts = []
+        for item in data:
+            account = item.get("account_id")
+            if account and isinstance(account, (list, tuple)) and len(account) >= 2:
+                account_id = account[0]
+                account_display = account[1]  # Format: "CODE Description"
+                parts = account_display.split(" ", 1)
+                code = parts[0] if parts else str(account_id)
+                name = parts[1] if len(parts) > 1 else account_display
+                balance = item.get("balance:sum", 0)
+
+                if balance != 0:  # Only include accounts with activity
+                    accounts.append({
+                        "id": account_id,
+                        "code": code,
+                        "name": name,
+                        "display": f"{code} - {name[:50]}",
+                        "balance": balance
+                    })
+
+        # Sort by account code
+        accounts.sort(key=lambda x: x["code"])
+        return accounts
+    except Exception as e:
+        print(f"Error fetching accounts: {e}")
+        return []
+
+
+def save_draggable_mapping(mapping_data):
+    """
+    Save the draggable mapping configuration to a JSON file.
+
+    Args:
+        mapping_data: Dict with category keys and lists of account codes
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        # Add metadata
+        mapping_data["last_modified"] = datetime.now().isoformat()
+        if "created_date" not in mapping_data:
+            mapping_data["created_date"] = datetime.now().isoformat()
+
+        with open(MAPPING_STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(mapping_data, f, ensure_ascii=False, indent=2)
+
+        return True, "Mapping configuratie opgeslagen!"
+    except Exception as e:
+        return False, f"Fout bij opslaan: {str(e)}"
+
+
+def load_draggable_mapping():
+    """
+    Load the draggable mapping configuration from JSON file.
+
+    Returns:
+        Dict with mapping data or empty dict if not found
+    """
+    try:
+        if os.path.exists(MAPPING_STORAGE_FILE):
+            with open(MAPPING_STORAGE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading mapping: {e}")
+    return {}
+
+
+def get_draggable_mapping():
+    """
+    Get the current draggable mapping from session_state or load from file.
+    """
+    if "draggable_mapping" not in st.session_state:
+        # Try to load from file
+        saved_mapping = load_draggable_mapping()
+        if saved_mapping:
+            st.session_state.draggable_mapping = saved_mapping
+        else:
+            # Initialize with empty mapping
+            st.session_state.draggable_mapping = {
+                "categories": {key: [] for key in REPORT_CATEGORIES.keys() if not REPORT_CATEGORIES[key].get("is_subtotal", False)},
+                "unassigned": []
+            }
+    return st.session_state.draggable_mapping
+
+
+def render_draggable_mapping_tool(company_id, year):
+    """
+    Render the draggable mapping tool interface.
+    Allows users to drag accounts from available list to report categories.
+    """
+    try:
+        from streamlit_sortables import sort_items
+    except ImportError:
+        st.warning("streamlit-sortables niet geïnstalleerd. Herlaad de pagina om de installatie te voltooien.")
+        return
+
+    st.subheader("🔄 Sleepbare Rekening Mapping")
+    st.caption("Sleep rekeningen naar de juiste rapportage categorieën om je eigen financiële rapportage structuur te maken.")
+
+    # Get current mapping
+    mapping = get_draggable_mapping()
+
+    # Fetch available accounts
+    col_refresh, col_year = st.columns([1, 2])
+    with col_refresh:
+        if st.button("🔄 Ververs Rekeningen", key="refresh_accounts"):
+            get_all_accounts_with_details.clear()
+            st.rerun()
+    with col_year:
+        st.caption(f"Data van jaar: {year}")
+
+    with st.spinner("Rekeningen ophalen..."):
+        available_accounts = get_all_accounts_with_details(company_id, year)
+
+    if not available_accounts:
+        st.warning("Geen rekeningen gevonden. Controleer de API verbinding.")
+        return
+
+    # Get list of already assigned account codes
+    assigned_codes = set()
+    for cat_key, cat_accounts in mapping.get("categories", {}).items():
+        for acc_code in cat_accounts:
+            assigned_codes.add(acc_code)
+
+    # Filter unassigned accounts
+    unassigned_accounts = [
+        acc for acc in available_accounts
+        if acc["code"] not in assigned_codes
+    ]
+
+    # Create account display mapping for lookup
+    account_lookup = {acc["code"]: acc for acc in available_accounts}
+
+    # Layout: Left = available accounts, Right = category assignments
+    st.markdown("---")
+
+    # Section headers
+    section_headers = {
+        "revenue": "💰 Omzet & Kostprijs",
+        "operating_expenses": "⚙️ Operationele Kosten",
+        "other_income_expenses": "📊 Overige Lasten & Opbrengsten",
+        "taxes": "🏛️ Belastingen"
+    }
+
+    # Group categories by section
+    sections = {}
+    for cat_key, cat_info in REPORT_CATEGORIES.items():
+        if cat_info.get("is_subtotal", False):
+            continue  # Skip subtotals
+        section = cat_info.get("section", "other")
+        if section not in sections:
+            sections[section] = []
+        sections[section].append((cat_key, cat_info))
+
+    # Sort categories within each section by order
+    for section in sections:
+        sections[section].sort(key=lambda x: x[1].get("order", 99))
+
+    # Create tabs for each section
+    section_tabs = st.tabs([
+        section_headers.get(s, s.replace("_", " ").title())
+        for s in ["revenue", "operating_expenses", "other_income_expenses", "taxes"]
+    ])
+
+    # Track changes for saving
+    updated_mapping = {"categories": {}}
+
+    # Available accounts panel (sidebar style in expander)
+    with st.expander("📋 Beschikbare Rekeningen (niet toegewezen)", expanded=True):
+        st.caption(f"{len(unassigned_accounts)} rekeningen beschikbaar")
+
+        # Group unassigned by first digit for easier navigation
+        account_groups = {}
+        for acc in unassigned_accounts:
+            first_digit = acc["code"][0] if acc["code"] else "?"
+            if first_digit not in account_groups:
+                account_groups[first_digit] = []
+            account_groups[first_digit].append(acc)
+
+        # Show grouped accounts
+        group_cols = st.columns(min(len(account_groups), 4) if account_groups else 1)
+        for idx, (digit, accs) in enumerate(sorted(account_groups.items())):
+            with group_cols[idx % len(group_cols)]:
+                with st.expander(f"🔢 {digit}xxx ({len(accs)})", expanded=False):
+                    for acc in accs:
+                        balance_str = f"€{abs(acc['balance']):,.0f}"
+                        sign = "+" if acc["balance"] < 0 else "-" if acc["balance"] > 0 else ""
+                        st.caption(f"`{acc['code']}` {acc['name'][:30]} ({sign}{balance_str})")
+
+    st.markdown("---")
+
+    # Render each section
+    for section_idx, section_key in enumerate(["revenue", "operating_expenses", "other_income_expenses", "taxes"]):
+        with section_tabs[section_idx]:
+            if section_key not in sections:
+                st.info("Geen categorieën in deze sectie")
+                continue
+
+            for cat_key, cat_info in sections[section_key]:
+                st.markdown(f"### {cat_info['name']}")
+
+                # Get currently assigned accounts for this category
+                current_accounts = mapping.get("categories", {}).get(cat_key, [])
+
+                # Show current assignments
+                if current_accounts:
+                    st.caption("Huidige toewijzingen:")
+                    assigned_display = []
+                    for code in current_accounts:
+                        acc = account_lookup.get(code)
+                        if acc:
+                            assigned_display.append(f"{code} - {acc['name'][:40]}")
+                        else:
+                            assigned_display.append(f"{code} (onbekend)")
+
+                    for i, item in enumerate(assigned_display):
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.text(f"• {item}")
+                        with col2:
+                            if st.button("❌", key=f"remove_{cat_key}_{i}"):
+                                current_accounts.remove(current_accounts[i])
+                                mapping["categories"][cat_key] = current_accounts
+                                st.session_state.draggable_mapping = mapping
+                                st.rerun()
+                else:
+                    st.caption("Geen rekeningen toegewezen")
+
+                # Add new accounts via multiselect
+                available_options = [
+                    f"{acc['code']} - {acc['name'][:40]}"
+                    for acc in unassigned_accounts
+                ]
+
+                new_selection = st.multiselect(
+                    "Rekeningen toevoegen:",
+                    options=available_options,
+                    default=[],
+                    key=f"add_{cat_key}",
+                    placeholder="Selecteer rekeningen om toe te voegen..."
+                )
+
+                if new_selection:
+                    if st.button(f"➕ Voeg toe aan {cat_info['name']}", key=f"confirm_add_{cat_key}"):
+                        new_codes = [sel.split(" - ")[0] for sel in new_selection]
+                        current_accounts.extend(new_codes)
+                        mapping["categories"][cat_key] = current_accounts
+                        st.session_state.draggable_mapping = mapping
+                        st.rerun()
+
+                updated_mapping["categories"][cat_key] = current_accounts
+                st.markdown("---")
+
+    # Save button
+    st.markdown("### 💾 Mapping Opslaan")
+    col_save, col_reset = st.columns(2)
+
+    with col_save:
+        if st.button("💾 Opslaan naar bestand", key="save_draggable_mapping", type="primary"):
+            success, message = save_draggable_mapping(st.session_state.draggable_mapping)
+            if success:
+                st.success(f"✅ {message}")
+                # Clear caches to use new mapping
+                get_base_year_data.clear()
+            else:
+                st.error(f"❌ {message}")
+
+    with col_reset:
+        if st.button("🔄 Reset naar standaard", key="reset_mapping"):
+            st.session_state.draggable_mapping = {
+                "categories": {key: [] for key in REPORT_CATEGORIES.keys() if not REPORT_CATEGORIES[key].get("is_subtotal", False)},
+                "unassigned": []
+            }
+            # Also delete the file
+            if os.path.exists(MAPPING_STORAGE_FILE):
+                os.remove(MAPPING_STORAGE_FILE)
+            st.success("Mapping gereset!")
+            st.rerun()
+
+    # Preview of current mapping
+    with st.expander("📊 Preview Huidige Mapping", expanded=False):
+        preview_data = []
+        for cat_key, cat_info in sorted(REPORT_CATEGORIES.items(), key=lambda x: x[1].get("order", 99)):
+            if cat_info.get("is_subtotal", False):
+                preview_data.append({
+                    "Categorie": f"**{cat_info['name']}**",
+                    "Rekeningen": "(berekend)",
+                    "Type": "Subtotaal"
+                })
+            else:
+                assigned = mapping.get("categories", {}).get(cat_key, [])
+                preview_data.append({
+                    "Categorie": cat_info["name"],
+                    "Rekeningen": ", ".join(assigned) if assigned else "-",
+                    "Type": "Invoer"
+                })
+
+        if preview_data:
+            st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
+
+
+def calculate_report_with_mapping(company_id, year, mapping=None):
+    """
+    Calculate the financial report using the draggable mapping configuration.
+
+    Args:
+        company_id: Company ID to calculate for
+        year: Year to calculate
+        mapping: Optional mapping dict, uses saved mapping if not provided
+
+    Returns:
+        Dict with calculated values for each category
+    """
+    if mapping is None:
+        mapping = get_draggable_mapping()
+
+    categories = mapping.get("categories", {})
+    results = {}
+
+    # First pass: calculate non-subtotal categories from account data
+    for cat_key, cat_info in REPORT_CATEGORIES.items():
+        if cat_info.get("is_subtotal", False):
+            continue
+
+        account_codes = categories.get(cat_key, [])
+        if not account_codes:
+            results[cat_key] = 0
+            continue
+
+        # Fetch data for these accounts
+        try:
+            start_date = f"{year}-01-01"
+            end_date = f"{year}-12-31"
+
+            total = 0
+            for code in account_codes:
+                domain = [
+                    ["date", ">=", start_date],
+                    ["date", "<=", end_date],
+                    ["parent_state", "=", "posted"],
+                    ["account_id.code", "=like", f"{code}%"]
+                ]
+                if company_id:
+                    domain.append(["company_id", "=", company_id])
+
+                data = odoo_read_group(
+                    "account.move.line",
+                    domain,
+                    ["balance:sum"],
+                    []
+                )
+
+                if data and len(data) > 0:
+                    balance = data[0].get("balance:sum", 0)
+                    # Apply sign flip if configured
+                    if cat_info.get("sign_flip", False):
+                        balance = -balance
+                    total += balance
+
+            results[cat_key] = total
+        except Exception as e:
+            print(f"Error calculating {cat_key}: {e}")
+            results[cat_key] = 0
+
+    # Second pass: calculate subtotals
+    for cat_key, cat_info in REPORT_CATEGORIES.items():
+        if not cat_info.get("is_subtotal", False):
+            continue
+
+        calculation = cat_info.get("calculation", "")
+        if not calculation:
+            results[cat_key] = 0
+            continue
+
+        # Parse and evaluate the calculation
+        try:
+            # Replace category names with their values
+            expr = calculation
+            for key in results.keys():
+                expr = expr.replace(key, str(results.get(key, 0)))
+
+            # Safely evaluate the expression
+            # Only allow basic math operations
+            allowed_chars = set("0123456789.+-*/()")
+            clean_expr = "".join(c for c in expr if c in allowed_chars or c == " ")
+            results[cat_key] = eval(clean_expr)
+        except Exception as e:
+            print(f"Error calculating subtotal {cat_key}: {e}")
+            results[cat_key] = 0
+
+    return results
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_base_year_data(company_id, base_year, revenue_patterns=None, cogs_patterns=None, expense_categories=None):
@@ -6576,9 +7203,24 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.subheader("🎯 Scenario Templates")
             st.caption("Klik op een scenario om automatisch waarden in te vullen")
 
-            # Account Mapping Configuration
-            with st.expander("⚙️ Rekening Mapping Configuratie", expanded=False):
-                st.caption("Configureer welke rekeningen gebruikt worden voor omzet, COGS en kosten")
+            # Account Mapping Configuration - NEW DRAGGABLE TOOL
+            with st.expander("🔄 Sleepbare Rekening Mapping (Nieuw!)", expanded=False):
+                st.caption("Wijs rekeningen toe aan rapportage categorieën voor je eigen financiële rapportage structuur")
+                st.info("""
+                **Nieuwe Rapportage Structuur:**
+                - **Netto Omzet** → Kostprijs → Prijsverschillen → Overige inkoopkosten → Voorraadaanpassingen = **Bruto Omzet Resultaat**
+                - **Operationele Kosten:** Lonen, Personeel, Management Fee, Huisvesting, Verkoop, IT, Vervoer, Kantoor, Admin, Algemeen
+                - **Overige:** Financieel resultaat, Afschrijvingen
+                - **Resultaat voor Belasting** → Belastingen → **Resultaat na Belasting**
+                """)
+
+                # Get year for account discovery
+                mapping_year = datetime.now().year - 1
+                render_draggable_mapping_tool(forecast_company, mapping_year)
+
+            # Legacy Account Mapping Configuration (collapsed by default)
+            with st.expander("⚙️ Oude Rekening Mapping (Legacy)", expanded=False):
+                st.caption("Configureer welke rekeningen gebruikt worden voor omzet, COGS en kosten (oude methode)")
 
                 # Initialize mapping in session_state if not exists
                 if "forecast_account_mapping" not in st.session_state:
@@ -7469,6 +8111,109 @@ Gegenereerd door LAB Groep Financial Dashboard
                     }
                     df_summary = pd.DataFrame(summary_data)
                     st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+                    # New Financial Report Structure (if mapping is configured)
+                    with st.expander("📊 Financieel Rapport (Nieuwe Structuur)", expanded=False):
+                        st.caption("Resultaten volgens de sleepbare mapping configuratie")
+
+                        # Check if draggable mapping has been configured
+                        draggable_map = get_draggable_mapping()
+                        has_mapping = any(
+                            accounts for accounts in draggable_map.get("categories", {}).values()
+                        )
+
+                        if not has_mapping:
+                            st.info("💡 Configureer eerst de sleepbare mapping in de 'Invoer / Scenario' tab om dit rapport te gebruiken.")
+                        else:
+                            # Calculate using the new mapping structure
+                            forecast_company_id = forecast.get("company_id")
+                            forecast_start_year = forecast.get("start_year", datetime.now().year)
+
+                            report_results = calculate_report_with_mapping(
+                                forecast_company_id,
+                                forecast_start_year,
+                                draggable_map
+                            )
+
+                            if report_results:
+                                # Display the structured report
+                                st.markdown("#### Omzet & Bruto Resultaat")
+
+                                # Revenue section
+                                rev_data = []
+                                revenue_cats = [
+                                    "netto_omzet", "kostprijs_omzet", "prijsverschillen",
+                                    "overige_inkoopkosten", "voorraadaanpassingen", "bruto_omzet_resultaat"
+                                ]
+                                for cat_key in revenue_cats:
+                                    if cat_key in REPORT_CATEGORIES:
+                                        cat_info = REPORT_CATEGORIES[cat_key]
+                                        value = report_results.get(cat_key, 0)
+                                        is_subtotal = cat_info.get("is_subtotal", False)
+                                        rev_data.append({
+                                            "Categorie": f"**{cat_info['name']}**" if is_subtotal else cat_info["name"],
+                                            "Bedrag": f"€ {value:,.0f}",
+                                            "Type": "Subtotaal" if is_subtotal else "Invoer"
+                                        })
+
+                                if rev_data:
+                                    st.dataframe(pd.DataFrame(rev_data), use_container_width=True, hide_index=True)
+
+                                st.markdown("---")
+                                st.markdown("#### Operationele Kosten")
+
+                                # Operating expenses section
+                                op_data = []
+                                op_cats = [
+                                    "lonen_salarissen", "overige_personele_kosten", "management_fee",
+                                    "huisvestingskosten", "verkoopkosten", "automatiseringskosten",
+                                    "vervoerskosten", "kantoorkosten", "admin_accountantskosten",
+                                    "algemene_kosten", "totaal_operationele_kosten"
+                                ]
+                                for cat_key in op_cats:
+                                    if cat_key in REPORT_CATEGORIES:
+                                        cat_info = REPORT_CATEGORIES[cat_key]
+                                        value = report_results.get(cat_key, 0)
+                                        is_subtotal = cat_info.get("is_subtotal", False)
+                                        op_data.append({
+                                            "Categorie": f"**{cat_info['name']}**" if is_subtotal else cat_info["name"],
+                                            "Bedrag": f"€ {value:,.0f}",
+                                            "Type": "Subtotaal" if is_subtotal else "Invoer"
+                                        })
+
+                                if op_data:
+                                    st.dataframe(pd.DataFrame(op_data), use_container_width=True, hide_index=True)
+
+                                st.markdown("---")
+                                st.markdown("#### Overige & Resultaat")
+
+                                # Other and result section
+                                other_data = []
+                                other_cats = [
+                                    "financieel_resultaat", "afschrijvingen", "totaal_overige_lasten",
+                                    "resultaat_voor_belasting", "belastingen", "resultaat_na_belasting"
+                                ]
+                                for cat_key in other_cats:
+                                    if cat_key in REPORT_CATEGORIES:
+                                        cat_info = REPORT_CATEGORIES[cat_key]
+                                        value = report_results.get(cat_key, 0)
+                                        is_subtotal = cat_info.get("is_subtotal", False)
+                                        other_data.append({
+                                            "Categorie": f"**{cat_info['name']}**" if is_subtotal else cat_info["name"],
+                                            "Bedrag": f"€ {value:,.0f}",
+                                            "Type": "Subtotaal" if is_subtotal else "Invoer"
+                                        })
+
+                                if other_data:
+                                    st.dataframe(pd.DataFrame(other_data), use_container_width=True, hide_index=True)
+
+                                # Final summary
+                                st.markdown("---")
+                                final_result = report_results.get("resultaat_na_belasting", 0)
+                                result_color = "green" if final_result >= 0 else "red"
+                                st.markdown(f"### Resultaat na Belasting: :{result_color}[€ {final_result:,.0f}]")
+                            else:
+                                st.warning("Kon rapport niet berekenen. Controleer de mapping configuratie.")
 
                     # Export buttons
                     st.markdown("---")
