@@ -1982,6 +1982,58 @@ REPORT_CATEGORIES = {
 # Mapping storage file path
 MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "account_mapping.json")
 
+# New forecast expense categories based on REPORT_CATEGORIES
+# These match the draggable mapping tool structure
+FORECAST_EXPENSE_CATEGORIES = {
+    # Omzet gerelateerd (niet Netto Omzet zelf, die staat apart)
+    "kostprijs_omzet": "Kostprijs van de Omzet",
+    "prijsverschillen": "Prijsverschillen",
+    "overige_inkoopkosten": "Overige Inkoopkosten",
+    "voorraadaanpassingen": "Voorraadaanpassingen",
+    # Operationele kosten
+    "lonen_salarissen": "Lonen & Salarissen",
+    "overige_personele_kosten": "Overige Personele Kosten",
+    "management_fee": "Management Fee",
+    "huisvestingskosten": "Huisvestingskosten",
+    "verkoopkosten": "Verkoopkosten",
+    "automatiseringskosten": "Automatiseringskosten",
+    "vervoerskosten": "Vervoerskosten",
+    "kantoorkosten": "Kantoorkosten",
+    "admin_accountantskosten": "Administratie & Accountantskosten",
+    "algemene_kosten": "Algemene Kosten",
+    # Overige lasten
+    "financieel_resultaat": "Financieel Resultaat",
+    "afschrijvingen": "Afschrijvingen",
+    # Belastingen
+    "belastingen": "Belastingen"
+}
+
+# Group categories for UI display
+FORECAST_CATEGORY_GROUPS = {
+    "cost_of_sales": {
+        "name": "📦 Kostprijs & Inkoop",
+        "categories": ["kostprijs_omzet", "prijsverschillen", "overige_inkoopkosten", "voorraadaanpassingen"],
+        "subtotal_name": "Bruto Omzet Resultaat"
+    },
+    "operating_expenses": {
+        "name": "⚙️ Operationele Kosten",
+        "categories": ["lonen_salarissen", "overige_personele_kosten", "management_fee",
+                      "huisvestingskosten", "verkoopkosten", "automatiseringskosten",
+                      "vervoerskosten", "kantoorkosten", "admin_accountantskosten", "algemene_kosten"],
+        "subtotal_name": "Totaal Operationele Kosten"
+    },
+    "other_expenses": {
+        "name": "📊 Overige Lasten & Opbrengsten",
+        "categories": ["financieel_resultaat", "afschrijvingen"],
+        "subtotal_name": "Totaal Overige Lasten"
+    },
+    "taxes": {
+        "name": "🏛️ Belastingen",
+        "categories": ["belastingen"],
+        "subtotal_name": "Belastingen"
+    }
+}
+
 # Scenario templates with growth rates and expense multipliers
 SCENARIO_TEMPLATES = {
     "conservative": {
@@ -2181,13 +2233,23 @@ def create_empty_forecast(company_id=None, time_period_months=12, start_month=No
             "date": month_date.strftime("%Y-%m-%d")
         })
 
-    # Create expense structure for each category
+    # Create expense structure for legacy categories (backwards compatibility)
     expense_categories = {}
     for code, name in EXPENSE_CATEGORIES.items():
         expense_categories[code] = {
             "name": name,
             "values": [0.0] * time_period_months,
             "growth_rate": 0.0,  # Per-category growth rate override
+            "notes": ""
+        }
+
+    # Create NEW expense structure based on FORECAST_EXPENSE_CATEGORIES
+    new_expense_categories = {}
+    for code, name in FORECAST_EXPENSE_CATEGORIES.items():
+        new_expense_categories[code] = {
+            "name": name,
+            "values": [0.0] * time_period_months,
+            "growth_rate": 0.0,
             "notes": ""
         }
 
@@ -2198,11 +2260,12 @@ def create_empty_forecast(company_id=None, time_period_months=12, start_month=No
         "company_id": company_id,
         "time_period_months": time_period_months,
         "start_date": start_date.strftime("%Y-%m-%d"),
+        "start_year": start_year or datetime.now().year,
         "created_date": datetime.now().isoformat(),
         "last_modified": datetime.now().isoformat(),
         "periods": periods,
 
-        # Revenue section
+        # Revenue section (Netto Omzet)
         # CASHFLOW_HOOK: Add payment_terms field for AR aging simulation
         "revenue": {
             "values": [0.0] * time_period_months,
@@ -2211,7 +2274,13 @@ def create_empty_forecast(company_id=None, time_period_months=12, start_month=No
             "notes": ""
         },
 
-        # Cost of Goods Sold
+        # NEW: Expense categories based on new report structure
+        # Includes: kostprijs_omzet, prijsverschillen, overige_inkoopkosten, voorraadaanpassingen
+        #           lonen_salarissen, overige_personele_kosten, management_fee, etc.
+        #           financieel_resultaat, afschrijvingen, belastingen
+        "expenses": new_expense_categories,
+
+        # LEGACY: Cost of Goods Sold (kept for backwards compatibility)
         # CASHFLOW_HOOK: Add payment_terms for AP aging simulation
         "cogs": {
             "values": [0.0] * time_period_months,
@@ -2220,7 +2289,7 @@ def create_empty_forecast(company_id=None, time_period_months=12, start_month=No
             "notes": ""
         },
 
-        # Operating Expenses by category
+        # LEGACY: Operating Expenses by category (kept for backwards compatibility)
         "operating_expenses": expense_categories,
 
         # Capital Expenditures
@@ -2347,19 +2416,68 @@ def calculate_forecast_metrics(forecast):
         return {}
 
     revenue = forecast["revenue"]["values"]
-    cogs = forecast["cogs"]["values"]
 
-    # If COGS is percentage-based, calculate values
-    if forecast["cogs"]["input_type"] == "percentage":
-        cogs_pct = forecast["cogs"]["percentage_of_revenue"]
-        cogs = [r * cogs_pct for r in revenue]
+    # Check if using new expense structure or legacy COGS
+    use_new_structure = "expenses" in forecast and any(
+        sum(cat.get("values", [])) > 0
+        for cat in forecast.get("expenses", {}).values()
+    )
 
-    # Sum all operating expenses per period
-    opex_per_period = [0.0] * num_periods
-    for category_data in forecast["operating_expenses"].values():
-        for i, val in enumerate(category_data["values"]):
-            if i < num_periods:
-                opex_per_period[i] += val
+    if use_new_structure:
+        # NEW STRUCTURE: Calculate using the new expense categories
+        expenses = forecast.get("expenses", {})
+
+        # Cost of sales categories
+        cost_of_sales_cats = ["kostprijs_omzet", "prijsverschillen", "overige_inkoopkosten", "voorraadaanpassingen"]
+        cogs = [0.0] * num_periods
+        for cat_code in cost_of_sales_cats:
+            cat_data = expenses.get(cat_code, {}).get("values", [0.0] * num_periods)
+            for i in range(min(len(cat_data), num_periods)):
+                cogs[i] += cat_data[i]
+
+        # Operating expenses categories
+        opex_cats = ["lonen_salarissen", "overige_personele_kosten", "management_fee",
+                     "huisvestingskosten", "verkoopkosten", "automatiseringskosten",
+                     "vervoerskosten", "kantoorkosten", "admin_accountantskosten", "algemene_kosten"]
+        opex_per_period = [0.0] * num_periods
+        for cat_code in opex_cats:
+            cat_data = expenses.get(cat_code, {}).get("values", [0.0] * num_periods)
+            for i in range(min(len(cat_data), num_periods)):
+                opex_per_period[i] += cat_data[i]
+
+        # Other expenses (financieel resultaat, afschrijvingen)
+        other_exp_cats = ["financieel_resultaat", "afschrijvingen"]
+        other_expenses_new = [0.0] * num_periods
+        for cat_code in other_exp_cats:
+            cat_data = expenses.get(cat_code, {}).get("values", [0.0] * num_periods)
+            for i in range(min(len(cat_data), num_periods)):
+                other_expenses_new[i] += cat_data[i]
+
+        # Taxes
+        taxes = expenses.get("belastingen", {}).get("values", [0.0] * num_periods)
+
+        # Depreciation for EBITDA calculation
+        depreciation = expenses.get("afschrijvingen", {}).get("values", [0.0] * num_periods)
+
+    else:
+        # LEGACY STRUCTURE: Use old COGS and operating_expenses
+        cogs = forecast["cogs"]["values"]
+
+        # If COGS is percentage-based, calculate values
+        if forecast["cogs"]["input_type"] == "percentage":
+            cogs_pct = forecast["cogs"]["percentage_of_revenue"]
+            cogs = [r * cogs_pct for r in revenue]
+
+        # Sum all operating expenses per period
+        opex_per_period = [0.0] * num_periods
+        for category_data in forecast.get("operating_expenses", {}).values():
+            for i, val in enumerate(category_data["values"]):
+                if i < num_periods:
+                    opex_per_period[i] += val
+
+        other_expenses_new = [0.0] * num_periods
+        taxes = [0.0] * num_periods
+        depreciation = forecast.get("operating_expenses", {}).get("63", {}).get("values", [0.0] * num_periods)
 
     # Calculate metrics per period
     gross_profit = [revenue[i] - cogs[i] for i in range(num_periods)]
@@ -2369,13 +2487,19 @@ def calculate_forecast_metrics(forecast):
     ebit = [gross_profit[i] - opex_per_period[i] for i in range(num_periods)]
     ebit_margin = [(e / rev * 100) if rev > 0 else 0 for e, rev in zip(ebit, revenue)]
 
-    # Add other income/expenses
+    # Add other income/expenses (from legacy structure)
     other_income = forecast.get("other_income", {}).get("values", [0.0] * num_periods)
-    other_expenses = forecast.get("other_expenses", {}).get("values", [0.0] * num_periods)
+    other_expenses_legacy = forecast.get("other_expenses", {}).get("values", [0.0] * num_periods)
     capex = forecast.get("capex", {}).get("values", [0.0] * num_periods)
 
-    # Net income before one-time events
-    net_income = [ebit[i] + other_income[i] - other_expenses[i] for i in range(num_periods)]
+    # Combine other expenses
+    total_other_expenses = [other_expenses_new[i] + other_expenses_legacy[i] for i in range(num_periods)]
+
+    # Net income before taxes and one-time events
+    income_before_tax = [ebit[i] + other_income[i] - total_other_expenses[i] for i in range(num_periods)]
+
+    # Net income after taxes
+    net_income = [income_before_tax[i] - taxes[i] for i in range(num_periods)]
 
     # Apply one-time events
     one_time = forecast.get("one_time_events", [])
@@ -2389,8 +2513,7 @@ def calculate_forecast_metrics(forecast):
 
     net_margin = [(ni / rev * 100) if rev > 0 else 0 for ni, rev in zip(net_income, revenue)]
 
-    # EBITDA (add back depreciation from category 48)
-    depreciation = forecast["operating_expenses"].get("48", {}).get("values", [0.0] * num_periods)
+    # EBITDA (add back depreciation)
     ebitda = [ebit[i] + depreciation[i] for i in range(num_periods)]
     ebitda_margin = [(eb / rev * 100) if rev > 0 else 0 for eb, rev in zip(ebitda, revenue)]
 
@@ -7620,29 +7743,151 @@ Gegenereerd door LAB Groep Financial Dashboard
                                         key=f"rev_{period_idx}"
                                     )
 
-                # COGS Input
-                with st.expander("📦 Kostprijs Verkopen (COGS)", expanded=False):
-                    cogs_input_type = st.radio(
-                        "COGS Invoermethode",
-                        options=["Percentage van omzet", "Absolute waarden"],
-                        horizontal=True,
-                        key="cogs_input_type"
-                    )
+                # Initialize expenses dict if not present (for backwards compatibility)
+                if "expenses" not in forecast:
+                    forecast["expenses"] = {}
+                    for code, name in FORECAST_EXPENSE_CATEGORIES.items():
+                        forecast["expenses"][code] = {
+                            "name": name,
+                            "values": [0.0] * len(periods),
+                            "growth_rate": 0.0,
+                            "notes": ""
+                        }
 
-                    if cogs_input_type == "Percentage van omzet":
-                        forecast["cogs"]["input_type"] = "percentage"
-                        forecast["cogs"]["percentage_of_revenue"] = st.slider(
-                            "COGS als % van omzet",
-                            min_value=0,
-                            max_value=100,
-                            value=int(forecast["cogs"]["percentage_of_revenue"] * 100),
-                            help="Kostprijs verkopen als percentage van de omzet"
-                        ) / 100
-                        # Calculate COGS values
-                        for i in range(len(forecast["cogs"]["values"])):
-                            forecast["cogs"]["values"][i] = forecast["revenue"]["values"][i] * forecast["cogs"]["percentage_of_revenue"]
-                    else:
-                        forecast["cogs"]["input_type"] = "absolute"
+                # ============================================================
+                # NEW EXPENSE INPUT STRUCTURE (matches mapping tool)
+                # ============================================================
+
+                # Quick-fill helper function
+                def quick_fill_category(cat_code, amount):
+                    if cat_code in forecast["expenses"]:
+                        for i in range(len(forecast["expenses"][cat_code]["values"])):
+                            forecast["expenses"][cat_code]["values"][i] = amount
+                        st.session_state.current_forecast = forecast
+                        st.rerun()
+
+                # Section 1: Kostprijs & Inkoop
+                with st.expander("📦 Kostprijs & Inkoop", expanded=False):
+                    st.caption("Kostprijs van de omzet en gerelateerde inkoopkosten")
+
+                    # Quick-fill for this section
+                    qf_col1, qf_col2, qf_col3 = st.columns([2, 1, 1])
+                    with qf_col1:
+                        cost_cats = FORECAST_CATEGORY_GROUPS["cost_of_sales"]["categories"]
+                        selected_cost_cat = st.selectbox(
+                            "Categorie",
+                            options=cost_cats,
+                            format_func=lambda x: FORECAST_EXPENSE_CATEGORIES.get(x, x),
+                            key="qf_cost_cat"
+                        )
+                    with qf_col2:
+                        qf_cost_amount = st.number_input("Maandelijks", min_value=0.0, value=5000.0, step=500.0, key="qf_cost_amount")
+                    with qf_col3:
+                        if st.button("Vul in", key="qf_cost_btn"):
+                            quick_fill_category(selected_cost_cat, qf_cost_amount)
+
+                    st.markdown("---")
+
+                    for cat_code in FORECAST_CATEGORY_GROUPS["cost_of_sales"]["categories"]:
+                        cat_name = FORECAST_EXPENSE_CATEGORIES.get(cat_code, cat_code)
+                        cat_data = forecast["expenses"].get(cat_code, {"values": [0.0] * len(periods)})
+
+                        with st.expander(f"{cat_name}", expanded=False):
+                            num_cols = min(6, len(periods))
+                            for row_start in range(0, len(periods), num_cols):
+                                row_periods = periods[row_start:row_start + num_cols]
+                                cols = st.columns(len(row_periods))
+                                for col_idx, period in enumerate(row_periods):
+                                    period_idx = row_start + col_idx
+                                    with cols[col_idx]:
+                                        label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                        cat_data["values"][period_idx] = st.number_input(
+                                            label,
+                                            min_value=0.0,
+                                            value=float(cat_data["values"][period_idx]),
+                                            step=100.0,
+                                            key=f"new_exp_{cat_code}_{period_idx}"
+                                        )
+                        forecast["expenses"][cat_code] = cat_data
+
+                # Section 2: Operationele Kosten
+                with st.expander("⚙️ Operationele Kosten", expanded=False):
+                    st.caption("Lonen, personeel, huisvesting, verkoop, IT en overige operationele kosten")
+
+                    # Quick-fill for this section
+                    qf_col1, qf_col2, qf_col3 = st.columns([2, 1, 1])
+                    with qf_col1:
+                        op_cats = FORECAST_CATEGORY_GROUPS["operating_expenses"]["categories"]
+                        selected_op_cat = st.selectbox(
+                            "Categorie",
+                            options=op_cats,
+                            format_func=lambda x: FORECAST_EXPENSE_CATEGORIES.get(x, x),
+                            key="qf_op_cat"
+                        )
+                    with qf_col2:
+                        qf_op_amount = st.number_input("Maandelijks", min_value=0.0, value=5000.0, step=500.0, key="qf_op_amount")
+                    with qf_col3:
+                        if st.button("Vul in", key="qf_op_btn"):
+                            quick_fill_category(selected_op_cat, qf_op_amount)
+
+                    st.markdown("---")
+
+                    for cat_code in FORECAST_CATEGORY_GROUPS["operating_expenses"]["categories"]:
+                        cat_name = FORECAST_EXPENSE_CATEGORIES.get(cat_code, cat_code)
+                        cat_data = forecast["expenses"].get(cat_code, {"values": [0.0] * len(periods)})
+
+                        with st.expander(f"{cat_name}", expanded=False):
+                            num_cols = min(6, len(periods))
+                            for row_start in range(0, len(periods), num_cols):
+                                row_periods = periods[row_start:row_start + num_cols]
+                                cols = st.columns(len(row_periods))
+                                for col_idx, period in enumerate(row_periods):
+                                    period_idx = row_start + col_idx
+                                    with cols[col_idx]:
+                                        label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                        cat_data["values"][period_idx] = st.number_input(
+                                            label,
+                                            min_value=0.0,
+                                            value=float(cat_data["values"][period_idx]),
+                                            step=100.0,
+                                            key=f"new_exp_{cat_code}_{period_idx}"
+                                        )
+                        forecast["expenses"][cat_code] = cat_data
+
+                # Section 3: Overige Lasten & Opbrengsten
+                with st.expander("📊 Overige Lasten & Opbrengsten", expanded=False):
+                    st.caption("Financieel resultaat en afschrijvingen")
+
+                    for cat_code in FORECAST_CATEGORY_GROUPS["other_expenses"]["categories"]:
+                        cat_name = FORECAST_EXPENSE_CATEGORIES.get(cat_code, cat_code)
+                        cat_data = forecast["expenses"].get(cat_code, {"values": [0.0] * len(periods)})
+
+                        with st.expander(f"{cat_name}", expanded=False):
+                            num_cols = min(6, len(periods))
+                            for row_start in range(0, len(periods), num_cols):
+                                row_periods = periods[row_start:row_start + num_cols]
+                                cols = st.columns(len(row_periods))
+                                for col_idx, period in enumerate(row_periods):
+                                    period_idx = row_start + col_idx
+                                    with cols[col_idx]:
+                                        label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                        cat_data["values"][period_idx] = st.number_input(
+                                            label,
+                                            min_value=0.0,
+                                            value=float(cat_data["values"][period_idx]),
+                                            step=100.0,
+                                            key=f"new_exp_{cat_code}_{period_idx}"
+                                        )
+                        forecast["expenses"][cat_code] = cat_data
+
+                # Section 4: Belastingen
+                with st.expander("🏛️ Belastingen", expanded=False):
+                    st.caption("Vennootschapsbelasting en overige belastingen")
+
+                    for cat_code in FORECAST_CATEGORY_GROUPS["taxes"]["categories"]:
+                        cat_name = FORECAST_EXPENSE_CATEGORIES.get(cat_code, cat_code)
+                        cat_data = forecast["expenses"].get(cat_code, {"values": [0.0] * len(periods)})
+
                         num_cols = min(6, len(periods))
                         for row_start in range(0, len(periods), num_cols):
                             row_periods = periods[row_start:row_start + num_cols]
@@ -7651,43 +7896,20 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 period_idx = row_start + col_idx
                                 with cols[col_idx]:
                                     label = period["label"][:3] + " " + str(period["year"])[-2:]
-                                    forecast["cogs"]["values"][period_idx] = st.number_input(
+                                    cat_data["values"][period_idx] = st.number_input(
                                         label,
                                         min_value=0.0,
-                                        value=float(forecast["cogs"]["values"][period_idx]),
-                                        step=500.0,
-                                        key=f"cogs_{period_idx}"
+                                        value=float(cat_data["values"][period_idx]),
+                                        step=100.0,
+                                        key=f"new_exp_{cat_code}_{period_idx}"
                                     )
+                        forecast["expenses"][cat_code] = cat_data
 
-                # Operating Expenses by Category
-                with st.expander("📉 Operationele Kosten per Categorie", expanded=False):
-                    st.caption("Voer maandelijkse kosten in per categorie")
+                # LEGACY: Operating Expenses (hidden, for backwards compatibility)
+                with st.expander("📉 Oude Kosten Categorieën (Legacy)", expanded=False):
+                    st.caption("Oude categorieën voor backwards compatibiliteit met bestaande forecasts")
 
-                    # Quick-fill option
-                    qf_col1, qf_col2, qf_col3 = st.columns([2, 1, 1])
-                    with qf_col1:
-                        selected_cat = st.selectbox(
-                            "Categorie voor quick-fill",
-                            options=list(EXPENSE_CATEGORIES.keys()),
-                            format_func=lambda x: EXPENSE_CATEGORIES.get(x, x)
-                        )
-                    with qf_col2:
-                        qf_amount = st.number_input("Maandelijks bedrag", min_value=0.0, value=5000.0, step=500.0)
-                    with qf_col3:
-                        if st.button("Vul alle maanden"):
-                            for i in range(len(forecast["operating_expenses"][selected_cat]["values"])):
-                                forecast["operating_expenses"][selected_cat]["values"][i] = qf_amount
-                                # Also update the session state keys for the number inputs
-                                widget_key = f"exp_{selected_cat}_{i}"
-                                if widget_key in st.session_state:
-                                    st.session_state[widget_key] = qf_amount
-                            st.session_state.current_forecast = forecast
-                            st.rerun()
-
-                    st.markdown("---")
-
-                    # Detailed expense input per category
-                    for code, cat_data in forecast["operating_expenses"].items():
+                    for code, cat_data in forecast.get("operating_expenses", {}).items():
                         with st.expander(f"{EXPENSE_CATEGORIES.get(code, code)}", expanded=False):
                             num_cols = min(6, len(periods))
                             for row_start in range(0, len(periods), num_cols):
@@ -7702,7 +7924,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                                             min_value=0.0,
                                             value=float(cat_data["values"][period_idx]),
                                             step=100.0,
-                                            key=f"exp_{code}_{period_idx}"
+                                            key=f"legacy_exp_{code}_{period_idx}"
                                         )
 
                 # Capital Expenditures
