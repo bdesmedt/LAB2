@@ -52,7 +52,7 @@ import subprocess
 import sys
 
 def install_packages():
-    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'streamlit-sortables']
+    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium']
     for package in packages:
         try:
             __import__(package.replace('-', '_'))
@@ -1594,8 +1594,7 @@ def get_invoice_lines(invoice_id):
         "account.move.line", "search_read",
         [
             ["move_id", "=", invoice_id],
-            ["display_type", "in", ["product", False]],
-            ["exclude_from_invoice_tab", "=", False]
+            ["display_type", "in", ["product", False]]
         ],
         ["product_id", "name", "quantity", "price_unit", "price_subtotal", "tax_ids"],
         include_archived=True
@@ -2701,17 +2700,11 @@ def get_draggable_mapping():
 
 def render_draggable_mapping_tool(company_id, year):
     """
-    Render the draggable mapping tool interface.
-    Allows users to drag accounts from available list to report categories.
+    Render the mapping tool interface.
+    Allows users to assign accounts to report categories via multiselect.
     """
-    try:
-        from streamlit_sortables import sort_items
-    except ImportError:
-        st.warning("streamlit-sortables niet geïnstalleerd. Herlaad de pagina om de installatie te voltooien.")
-        return
-
-    st.subheader("🔄 Sleepbare Rekening Mapping")
-    st.caption("Sleep rekeningen naar de juiste rapportage categorieën om je eigen financiële rapportage structuur te maken.")
+    st.subheader("🔄 Rekening Mapping Tool")
+    st.caption("Wijs rekeningen toe aan rapportage categorieën door ze te selecteren uit de dropdown.")
 
     # Get current mapping
     mapping = get_draggable_mapping()
