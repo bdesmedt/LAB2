@@ -1927,15 +1927,24 @@ def delete_forecast(filename):
     except Exception as e:
         return False, f"Fout bij verwijderen: {str(e)}"
 
-def create_empty_forecast(company_id=None, time_period_months=12):
+def create_empty_forecast(company_id=None, time_period_months=12, start_month=None, start_year=None):
     """
     Create an empty forecast data structure.
 
     CASHFLOW_HOOK: This structure is designed to feed into cashflow forecasting.
     Revenue and expense timing can be adjusted for cashflow purposes by adding
     payment_timing fields (e.g., payment_delay_days for receivables/payables).
+
+    Args:
+        company_id: Optional company ID filter
+        time_period_months: Number of months for the forecast
+        start_month: Starting month (1-12), defaults to current month
+        start_year: Starting year, defaults to current year
     """
-    start_date = datetime.now().replace(day=1)
+    if start_month is None or start_year is None:
+        start_date = datetime.now().replace(day=1)
+    else:
+        start_date = datetime(start_year, start_month, 1)
 
     # Generate monthly periods
     periods = []
@@ -2029,15 +2038,19 @@ def create_empty_forecast(company_id=None, time_period_months=12):
 
     return forecast
 
-def apply_scenario_template(forecast, scenario_key, base_revenue=None, base_expenses=None):
+def apply_scenario_template(forecast, scenario_key, base_revenue=None, base_expenses=None,
+                           custom_growth_rate=None, custom_cogs_percentage=None, custom_expense_multiplier=None):
     """
     Apply a scenario template to a forecast, optionally using base values.
 
     Args:
         forecast: Forecast dict to modify
-        scenario_key: 'conservative', 'moderate', or 'aggressive'
+        scenario_key: 'conservative', 'moderate', 'aggressive', or 'custom'
         base_revenue: Base monthly revenue (if None, uses existing or 0)
         base_expenses: Dict of base expenses by category (if None, estimates from revenue)
+        custom_growth_rate: Override growth rate (decimal, e.g., 0.05 for 5%)
+        custom_cogs_percentage: Override COGS percentage (decimal, e.g., 0.60 for 60%)
+        custom_expense_multiplier: Override expense multiplier (e.g., 1.1 for +10%)
 
     Returns:
         Modified forecast dict
@@ -2052,20 +2065,23 @@ def apply_scenario_template(forecast, scenario_key, base_revenue=None, base_expe
     if base_revenue is None:
         base_revenue = forecast["revenue"]["values"][0] if forecast["revenue"]["values"][0] > 0 else 100000
 
+    # Use custom values if provided, otherwise use template defaults
+    growth_rate = custom_growth_rate if custom_growth_rate is not None else template["revenue_growth_rate"]
+    cogs_percentage = custom_cogs_percentage if custom_cogs_percentage is not None else template["cogs_percentage"]
+    multiplier = custom_expense_multiplier if custom_expense_multiplier is not None else template["expense_multiplier"]
+
     # Apply revenue with growth
-    growth_rate = template["revenue_growth_rate"]
     for i in range(len(forecast["revenue"]["values"])):
         forecast["revenue"]["values"][i] = base_revenue * ((1 + growth_rate) ** i)
     forecast["revenue"]["growth_rate"] = growth_rate * 100
 
     # Apply COGS as percentage of revenue
-    forecast["cogs"]["percentage_of_revenue"] = template["cogs_percentage"]
+    forecast["cogs"]["percentage_of_revenue"] = cogs_percentage
     forecast["cogs"]["input_type"] = "percentage"
     for i in range(len(forecast["cogs"]["values"])):
-        forecast["cogs"]["values"][i] = forecast["revenue"]["values"][i] * template["cogs_percentage"]
+        forecast["cogs"]["values"][i] = forecast["revenue"]["values"][i] * cogs_percentage
 
     # Apply expense multiplier to operating expenses
-    multiplier = template["expense_multiplier"]
     base_expense_per_category = base_revenue * 0.05  # Rough estimate: 5% of revenue per category
 
     if base_expenses:
@@ -6412,15 +6428,15 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.subheader("📝 Forecast Invoer")
 
             # Sidebar-like controls at top
-            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 2])
+            ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([2, 2, 2, 2])
 
             with ctrl_col1:
                 time_period = st.selectbox(
                     "Prognose Periode",
-                    options=[3, 6, 12, 18, 24],
+                    options=[3, 6, 12, 18, 24, 36, 48, 60],
                     index=2,
-                    format_func=lambda x: f"{x} maanden",
-                    help="Selecteer de periode voor de prognose"
+                    format_func=lambda x: f"{x} maanden ({x//12} jaar)" if x >= 12 and x % 12 == 0 else f"{x} maanden",
+                    help="Selecteer de periode voor de prognose (tot 5 jaar)"
                 )
 
             with ctrl_col2:
@@ -6432,10 +6448,32 @@ Gegenereerd door LAB Groep Financial Dashboard
                 )
 
             with ctrl_col3:
+                # Start period selection
+                current_year = datetime.now().year
+                start_col1, start_col2 = st.columns(2)
+                with start_col1:
+                    forecast_start_month = st.selectbox(
+                        "Start maand",
+                        options=list(range(1, 13)),
+                        index=datetime.now().month - 1,
+                        format_func=lambda x: DUTCH_MONTHS.get(x, f"Maand {x}"),
+                        key="forecast_start_month"
+                    )
+                with start_col2:
+                    forecast_start_year = st.selectbox(
+                        "Start jaar",
+                        options=list(range(current_year - 2, current_year + 5)),
+                        index=2,  # Current year
+                        key="forecast_start_year"
+                    )
+
+            with ctrl_col4:
                 if st.button("🆕 Nieuwe Forecast", type="primary"):
                     st.session_state.current_forecast = create_empty_forecast(
                         company_id=forecast_company,
-                        time_period_months=time_period
+                        time_period_months=time_period,
+                        start_month=forecast_start_month,
+                        start_year=forecast_start_year
                     )
                     st.session_state.forecast_mode = "new"
                     st.rerun()
@@ -6499,10 +6537,42 @@ Gegenereerd door LAB Groep Financial Dashboard
                     with st.container(border=True):
                         st.markdown(f"### {template['icon']} {template['name']}")
                         st.caption(template['description'])
+
+                        # Editable percentage inputs
+                        with st.expander("📊 Percentages aanpassen", expanded=False):
+                            custom_growth = st.number_input(
+                                "Groei % per maand",
+                                min_value=-50.0,
+                                max_value=100.0,
+                                value=float(template['revenue_growth_rate'] * 100),
+                                step=0.5,
+                                key=f"growth_{key}",
+                                help="Maandelijkse omzetgroei in procent"
+                            )
+                            custom_cogs = st.number_input(
+                                "COGS % van omzet",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(template['cogs_percentage'] * 100),
+                                step=1.0,
+                                key=f"cogs_{key}",
+                                help="Kostprijs verkopen als percentage van omzet"
+                            )
+                            custom_expense = st.number_input(
+                                "Kosten aanpassing %",
+                                min_value=-50.0,
+                                max_value=100.0,
+                                value=float((template['expense_multiplier'] - 1) * 100),
+                                step=1.0,
+                                key=f"expense_{key}",
+                                help="Aanpassing van operationele kosten (0% = ongewijzigd)"
+                            )
+
+                        # Show current settings
                         st.markdown(f"""
-                        - **Groei:** {template['revenue_growth_rate']*100:.0f}% per maand
-                        - **COGS:** {template['cogs_percentage']*100:.0f}% van omzet
-                        - **Kosten:** {'+' if template['expense_multiplier'] >= 1 else ''}{(template['expense_multiplier']-1)*100:.0f}%
+                        - **Groei:** {custom_growth:.1f}% per maand
+                        - **COGS:** {custom_cogs:.0f}% van omzet
+                        - **Kosten:** {'+' if custom_expense >= 0 else ''}{custom_expense:.0f}%
                         """)
 
                         # Base revenue input for this scenario (only if not using base year)
@@ -6525,7 +6595,9 @@ Gegenereerd door LAB Groep Financial Dashboard
                         if st.button(f"Toepassen {template['name']}", key=f"apply_{key}"):
                             forecast = create_empty_forecast(
                                 company_id=forecast_company,
-                                time_period_months=time_period
+                                time_period_months=time_period,
+                                start_month=forecast_start_month,
+                                start_year=forecast_start_year
                             )
                             forecast["name"] = f"{template['name']} Scenario"
                             # Store base year info in forecast if used
@@ -6535,10 +6607,19 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 forecast = apply_scenario_template(
                                     forecast, key,
                                     base_revenue=base_year_data["average_monthly_revenue"],
-                                    base_expenses=base_year_data["average_monthly_expenses"]
+                                    base_expenses=base_year_data["average_monthly_expenses"],
+                                    custom_growth_rate=custom_growth / 100,
+                                    custom_cogs_percentage=custom_cogs / 100,
+                                    custom_expense_multiplier=1 + (custom_expense / 100)
                                 )
                             else:
-                                forecast = apply_scenario_template(forecast, key, base_revenue=base_rev)
+                                forecast = apply_scenario_template(
+                                    forecast, key,
+                                    base_revenue=base_rev,
+                                    custom_growth_rate=custom_growth / 100,
+                                    custom_cogs_percentage=custom_cogs / 100,
+                                    custom_expense_multiplier=1 + (custom_expense / 100)
+                                )
                             st.session_state.current_forecast = forecast
                             st.success(f"✅ {template['name']} scenario toegepast!")
                             st.rerun()
