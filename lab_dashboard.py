@@ -1,6 +1,18 @@
 """
-LAB Groep Financial Dashboard v13
+LAB Groep Financial Dashboard v14
 =================================
+Wijzigingen t.o.v. v13:
+- 🔮 Financial Forecast module toegevoegd
+  - Handmatige forecast invoer met omzet, COGS, en operationele kosten
+  - 3 scenario templates: Conservatief, Gematigd, Agressief
+  - Aanpasbare aannames (klantacquisitie, churn, inflatie, seizoensfactoren)
+  - Eenmalige events (inkomsten/uitgaven) toevoegen
+  - Forecast resultaten met grafieken en KPIs
+  - Vergelijking met actuele data uit Odoo
+  - Opslaan en laden van forecasts (JSON)
+  - Export naar CSV en Excel
+  - CASHFLOW_HOOK: Voorbereid voor integratie met cashflow prognose
+
 Wijzigingen t.o.v. v12:
 - 🧾 BTW Analyse module toegevoegd aan Maandafsluiting
   - Checkbox voor maandelijkse vs kwartaal BTW aangifte
@@ -1711,12 +1723,718 @@ def get_coords_from_postcode(postcode):
     return None, None
 
 # =============================================================================
+# FINANCIAL FORECAST MODULE
+# =============================================================================
+# This module provides financial forecasting capabilities including:
+# - Manual forecast input with revenue, COGS, and expense categories
+# - Pre-defined scenario templates (Conservative, Moderate, Aggressive)
+# - Custom assumptions and variables
+# - Actual vs Forecast comparison with visualizations
+# - Data persistence for saving/loading forecasts
+# - Export functionality (CSV, Excel)
+#
+# FUTURE CASHFLOW INTEGRATION:
+# The data model is designed to accommodate future cashflow forecast integration.
+# Forecast outputs can feed directly into a cashflow statement structure.
+# Look for "CASHFLOW_HOOK" comments for integration points.
+# =============================================================================
+
+import os
+from io import BytesIO
+
+# Forecast storage directory
+FORECAST_STORAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecasts")
+
+# Default expense categories matching existing cost structure
+EXPENSE_CATEGORIES = {
+    "40": "Personeelskosten",
+    "41": "Huisvestingskosten",
+    "42": "Vervoerskosten",
+    "43": "Kantoorkosten",
+    "44": "Marketing & Reclame",
+    "45": "Algemene Kosten",
+    "46": "Overige Bedrijfskosten",
+    "47": "Financiële Lasten",
+    "48": "Afschrijvingen",
+    "49": "Overige Kosten"
+}
+
+# Scenario templates with growth rates and expense multipliers
+SCENARIO_TEMPLATES = {
+    "conservative": {
+        "name": "Conservatief",
+        "description": "Lagere groei, hogere kostenramingen - veilige aanpak",
+        "icon": "🐢",
+        "revenue_growth_rate": 0.02,  # 2% groei
+        "cogs_percentage": 0.65,  # 65% van omzet
+        "expense_multiplier": 1.10,  # 10% hogere kosten
+        "assumptions": {
+            "customer_acquisition_rate": 0.05,  # 5% nieuwe klanten
+            "average_transaction_value_growth": 0.01,  # 1% groei
+            "churn_rate": 0.08,  # 8% verloop
+            "seasonal_adjustment": 1.0,  # Geen seizoenscorrectie
+            "inflation_rate": 0.03,  # 3% inflatie
+        }
+    },
+    "moderate": {
+        "name": "Gematigd",
+        "description": "Gebalanceerde groei, realistische kostenramingen",
+        "icon": "⚖️",
+        "revenue_growth_rate": 0.05,  # 5% groei
+        "cogs_percentage": 0.60,  # 60% van omzet
+        "expense_multiplier": 1.0,  # Basis kosten
+        "assumptions": {
+            "customer_acquisition_rate": 0.10,  # 10% nieuwe klanten
+            "average_transaction_value_growth": 0.03,  # 3% groei
+            "churn_rate": 0.05,  # 5% verloop
+            "seasonal_adjustment": 1.0,  # Geen seizoenscorrectie
+            "inflation_rate": 0.025,  # 2.5% inflatie
+        }
+    },
+    "aggressive": {
+        "name": "Agressief",
+        "description": "Hogere groeistreven, optimistische aannames",
+        "icon": "🚀",
+        "revenue_growth_rate": 0.10,  # 10% groei
+        "cogs_percentage": 0.55,  # 55% van omzet
+        "expense_multiplier": 0.95,  # 5% lagere kosten
+        "assumptions": {
+            "customer_acquisition_rate": 0.20,  # 20% nieuwe klanten
+            "average_transaction_value_growth": 0.05,  # 5% groei
+            "churn_rate": 0.03,  # 3% verloop
+            "seasonal_adjustment": 1.0,  # Geen seizoenscorrectie
+            "inflation_rate": 0.02,  # 2% inflatie
+        }
+    }
+}
+
+# Dutch month names for display
+DUTCH_MONTHS = {
+    1: "Januari", 2: "Februari", 3: "Maart", 4: "April",
+    5: "Mei", 6: "Juni", 7: "Juli", 8: "Augustus",
+    9: "September", 10: "Oktober", 11: "November", 12: "December"
+}
+
+def get_forecast_storage_path():
+    """Get the path to the forecast storage directory, creating it if necessary"""
+    if not os.path.exists(FORECAST_STORAGE_DIR):
+        os.makedirs(FORECAST_STORAGE_DIR)
+    return FORECAST_STORAGE_DIR
+
+def save_forecast(forecast_data, filename=None):
+    """
+    Save a forecast to JSON file.
+
+    Args:
+        forecast_data: Dict containing forecast data
+        filename: Optional filename, will be auto-generated if not provided
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        storage_path = get_forecast_storage_path()
+
+        # Add metadata
+        forecast_data["last_modified"] = datetime.now().isoformat()
+        if "created_date" not in forecast_data:
+            forecast_data["created_date"] = datetime.now().isoformat()
+
+        # Generate filename if not provided
+        if not filename:
+            forecast_name = forecast_data.get("name", "forecast")
+            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in forecast_name)
+            filename = f"{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+        # Ensure .json extension
+        if not filename.endswith(".json"):
+            filename += ".json"
+
+        filepath = os.path.join(storage_path, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(forecast_data, f, ensure_ascii=False, indent=2)
+
+        return True, f"Forecast opgeslagen: {filename}"
+    except Exception as e:
+        return False, f"Fout bij opslaan: {str(e)}"
+
+def load_forecast(filename):
+    """
+    Load a forecast from JSON file.
+
+    Args:
+        filename: Name of the file to load
+
+    Returns:
+        Tuple of (forecast_data: dict or None, error: str or None)
+    """
+    try:
+        storage_path = get_forecast_storage_path()
+        filepath = os.path.join(storage_path, filename)
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            forecast_data = json.load(f)
+
+        return forecast_data, None
+    except Exception as e:
+        return None, f"Fout bij laden: {str(e)}"
+
+def list_saved_forecasts():
+    """
+    List all saved forecasts with metadata.
+
+    Returns:
+        List of dicts with forecast info (filename, name, created_date, scenario_type)
+    """
+    try:
+        storage_path = get_forecast_storage_path()
+        forecasts = []
+
+        for filename in os.listdir(storage_path):
+            if filename.endswith(".json"):
+                filepath = os.path.join(storage_path, filename)
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    forecasts.append({
+                        "filename": filename,
+                        "name": data.get("name", filename),
+                        "created_date": data.get("created_date", "Onbekend"),
+                        "last_modified": data.get("last_modified", "Onbekend"),
+                        "scenario_type": data.get("scenario_type", "custom"),
+                        "company_id": data.get("company_id"),
+                        "time_period_months": data.get("time_period_months", 12)
+                    })
+                except:
+                    continue
+
+        # Sort by last modified date (newest first)
+        forecasts.sort(key=lambda x: x.get("last_modified", ""), reverse=True)
+        return forecasts
+    except Exception as e:
+        return []
+
+def delete_forecast(filename):
+    """Delete a saved forecast file"""
+    try:
+        storage_path = get_forecast_storage_path()
+        filepath = os.path.join(storage_path, filename)
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return True, "Forecast verwijderd"
+        return False, "Bestand niet gevonden"
+    except Exception as e:
+        return False, f"Fout bij verwijderen: {str(e)}"
+
+def create_empty_forecast(company_id=None, time_period_months=12):
+    """
+    Create an empty forecast data structure.
+
+    CASHFLOW_HOOK: This structure is designed to feed into cashflow forecasting.
+    Revenue and expense timing can be adjusted for cashflow purposes by adding
+    payment_timing fields (e.g., payment_delay_days for receivables/payables).
+    """
+    start_date = datetime.now().replace(day=1)
+
+    # Generate monthly periods
+    periods = []
+    for i in range(time_period_months):
+        month_date = start_date + timedelta(days=32 * i)
+        month_date = month_date.replace(day=1)
+        periods.append({
+            "month": month_date.month,
+            "year": month_date.year,
+            "label": f"{DUTCH_MONTHS[month_date.month]} {month_date.year}",
+            "date": month_date.strftime("%Y-%m-%d")
+        })
+
+    # Create expense structure for each category
+    expense_categories = {}
+    for code, name in EXPENSE_CATEGORIES.items():
+        expense_categories[code] = {
+            "name": name,
+            "values": [0.0] * time_period_months,
+            "growth_rate": 0.0,  # Per-category growth rate override
+            "notes": ""
+        }
+
+    forecast = {
+        "name": "",
+        "description": "",
+        "scenario_type": "custom",
+        "company_id": company_id,
+        "time_period_months": time_period_months,
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "created_date": datetime.now().isoformat(),
+        "last_modified": datetime.now().isoformat(),
+        "periods": periods,
+
+        # Revenue section
+        # CASHFLOW_HOOK: Add payment_terms field for AR aging simulation
+        "revenue": {
+            "values": [0.0] * time_period_months,
+            "growth_rate": 0.0,
+            "input_type": "absolute",  # 'absolute' or 'growth'
+            "notes": ""
+        },
+
+        # Cost of Goods Sold
+        # CASHFLOW_HOOK: Add payment_terms for AP aging simulation
+        "cogs": {
+            "values": [0.0] * time_period_months,
+            "percentage_of_revenue": 0.60,
+            "input_type": "percentage",  # 'absolute' or 'percentage'
+            "notes": ""
+        },
+
+        # Operating Expenses by category
+        "operating_expenses": expense_categories,
+
+        # Capital Expenditures
+        # CASHFLOW_HOOK: CapEx directly impacts cash and can be scheduled
+        "capex": {
+            "values": [0.0] * time_period_months,
+            "notes": ""
+        },
+
+        # Other Income/Expenses
+        "other_income": {
+            "values": [0.0] * time_period_months,
+            "notes": ""
+        },
+        "other_expenses": {
+            "values": [0.0] * time_period_months,
+            "notes": ""
+        },
+
+        # Assumptions
+        "assumptions": {
+            "customer_acquisition_rate": 0.10,
+            "average_transaction_value": 0.0,
+            "average_transaction_value_growth": 0.03,
+            "churn_rate": 0.05,
+            "seasonal_factors": [1.0] * 12,  # Monthly adjustment factors
+            "inflation_rate": 0.025,
+            "monthly_growth_modifiers": [0.0] * time_period_months,
+            "notes": ""
+        },
+
+        # One-time events
+        "one_time_events": [],  # List of {month_index, amount, description, type: 'income'/'expense'}
+
+        # Calculated fields (populated by calculate_forecast_metrics)
+        "calculated": {}
+    }
+
+    return forecast
+
+def apply_scenario_template(forecast, scenario_key, base_revenue=None, base_expenses=None):
+    """
+    Apply a scenario template to a forecast, optionally using base values.
+
+    Args:
+        forecast: Forecast dict to modify
+        scenario_key: 'conservative', 'moderate', or 'aggressive'
+        base_revenue: Base monthly revenue (if None, uses existing or 0)
+        base_expenses: Dict of base expenses by category (if None, estimates from revenue)
+
+    Returns:
+        Modified forecast dict
+    """
+    if scenario_key not in SCENARIO_TEMPLATES:
+        return forecast
+
+    template = SCENARIO_TEMPLATES[scenario_key]
+    forecast["scenario_type"] = scenario_key
+
+    # Get base revenue
+    if base_revenue is None:
+        base_revenue = forecast["revenue"]["values"][0] if forecast["revenue"]["values"][0] > 0 else 100000
+
+    # Apply revenue with growth
+    growth_rate = template["revenue_growth_rate"]
+    for i in range(len(forecast["revenue"]["values"])):
+        forecast["revenue"]["values"][i] = base_revenue * ((1 + growth_rate) ** i)
+    forecast["revenue"]["growth_rate"] = growth_rate * 100
+
+    # Apply COGS as percentage of revenue
+    forecast["cogs"]["percentage_of_revenue"] = template["cogs_percentage"]
+    forecast["cogs"]["input_type"] = "percentage"
+    for i in range(len(forecast["cogs"]["values"])):
+        forecast["cogs"]["values"][i] = forecast["revenue"]["values"][i] * template["cogs_percentage"]
+
+    # Apply expense multiplier to operating expenses
+    multiplier = template["expense_multiplier"]
+    base_expense_per_category = base_revenue * 0.05  # Rough estimate: 5% of revenue per category
+
+    if base_expenses:
+        for code, expense_data in forecast["operating_expenses"].items():
+            if code in base_expenses:
+                base = base_expenses[code]
+            else:
+                base = base_expense_per_category
+            for i in range(len(expense_data["values"])):
+                expense_data["values"][i] = base * multiplier * ((1 + template["assumptions"]["inflation_rate"]) ** (i / 12))
+    else:
+        for code, expense_data in forecast["operating_expenses"].items():
+            for i in range(len(expense_data["values"])):
+                expense_data["values"][i] = base_expense_per_category * multiplier * ((1 + template["assumptions"]["inflation_rate"]) ** (i / 12))
+
+    # Apply assumptions
+    for key, value in template["assumptions"].items():
+        if key in forecast["assumptions"]:
+            forecast["assumptions"][key] = value
+
+    return forecast
+
+def calculate_forecast_metrics(forecast):
+    """
+    Calculate derived metrics from forecast data.
+
+    CASHFLOW_HOOK: Add net_cash_flow calculations here based on:
+    - Revenue timing (payment terms)
+    - Expense payment schedules
+    - CapEx outlays
+    - Working capital changes
+
+    Returns:
+        Dict with calculated metrics
+    """
+    periods = forecast.get("periods", [])
+    num_periods = len(periods)
+
+    if num_periods == 0:
+        return {}
+
+    revenue = forecast["revenue"]["values"]
+    cogs = forecast["cogs"]["values"]
+
+    # If COGS is percentage-based, calculate values
+    if forecast["cogs"]["input_type"] == "percentage":
+        cogs_pct = forecast["cogs"]["percentage_of_revenue"]
+        cogs = [r * cogs_pct for r in revenue]
+
+    # Sum all operating expenses per period
+    opex_per_period = [0.0] * num_periods
+    for category_data in forecast["operating_expenses"].values():
+        for i, val in enumerate(category_data["values"]):
+            if i < num_periods:
+                opex_per_period[i] += val
+
+    # Calculate metrics per period
+    gross_profit = [revenue[i] - cogs[i] for i in range(num_periods)]
+    gross_margin = [(gp / rev * 100) if rev > 0 else 0 for gp, rev in zip(gross_profit, revenue)]
+
+    # Operating income (EBIT)
+    ebit = [gross_profit[i] - opex_per_period[i] for i in range(num_periods)]
+    ebit_margin = [(e / rev * 100) if rev > 0 else 0 for e, rev in zip(ebit, revenue)]
+
+    # Add other income/expenses
+    other_income = forecast.get("other_income", {}).get("values", [0.0] * num_periods)
+    other_expenses = forecast.get("other_expenses", {}).get("values", [0.0] * num_periods)
+    capex = forecast.get("capex", {}).get("values", [0.0] * num_periods)
+
+    # Net income before one-time events
+    net_income = [ebit[i] + other_income[i] - other_expenses[i] for i in range(num_periods)]
+
+    # Apply one-time events
+    one_time = forecast.get("one_time_events", [])
+    for event in one_time:
+        month_idx = event.get("month_index", 0)
+        if 0 <= month_idx < num_periods:
+            if event.get("type") == "income":
+                net_income[month_idx] += event.get("amount", 0)
+            else:
+                net_income[month_idx] -= event.get("amount", 0)
+
+    net_margin = [(ni / rev * 100) if rev > 0 else 0 for ni, rev in zip(net_income, revenue)]
+
+    # EBITDA (add back depreciation from category 48)
+    depreciation = forecast["operating_expenses"].get("48", {}).get("values", [0.0] * num_periods)
+    ebitda = [ebit[i] + depreciation[i] for i in range(num_periods)]
+    ebitda_margin = [(eb / rev * 100) if rev > 0 else 0 for eb, rev in zip(ebitda, revenue)]
+
+    # Cumulative totals
+    cumulative_revenue = []
+    cumulative_net_income = []
+    running_rev = 0
+    running_ni = 0
+    for i in range(num_periods):
+        running_rev += revenue[i]
+        running_ni += net_income[i]
+        cumulative_revenue.append(running_rev)
+        cumulative_net_income.append(running_ni)
+
+    # CASHFLOW_HOOK: Calculate operating cash flow
+    # operating_cash_flow = net_income + depreciation - working_capital_changes
+    # For now, simplified as: EBITDA - CapEx
+    operating_cash_flow = [ebitda[i] - capex[i] for i in range(num_periods)]
+
+    return {
+        "revenue": revenue,
+        "cogs": cogs,
+        "gross_profit": gross_profit,
+        "gross_margin": gross_margin,
+        "operating_expenses": opex_per_period,
+        "ebit": ebit,
+        "ebit_margin": ebit_margin,
+        "ebitda": ebitda,
+        "ebitda_margin": ebitda_margin,
+        "other_income": other_income,
+        "other_expenses": other_expenses,
+        "capex": capex,
+        "net_income": net_income,
+        "net_margin": net_margin,
+        "depreciation": depreciation,
+        "cumulative_revenue": cumulative_revenue,
+        "cumulative_net_income": cumulative_net_income,
+        "operating_cash_flow": operating_cash_flow,  # CASHFLOW_HOOK
+        "total_revenue": sum(revenue),
+        "total_gross_profit": sum(gross_profit),
+        "total_ebitda": sum(ebitda),
+        "total_net_income": sum(net_income),
+        "avg_gross_margin": sum(gross_margin) / num_periods if num_periods > 0 else 0,
+        "avg_net_margin": sum(net_margin) / num_periods if num_periods > 0 else 0
+    }
+
+def get_actual_data_for_comparison(company_id, start_date, num_months):
+    """
+    Fetch actual financial data from Odoo for comparison with forecast.
+
+    Args:
+        company_id: Company ID to filter by
+        start_date: Start date string (YYYY-MM-DD)
+        num_months: Number of months to fetch
+
+    Returns:
+        Dict with actual data matching forecast structure
+    """
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = start + timedelta(days=32 * num_months)
+        end = end.replace(day=1) - timedelta(days=1)
+
+        # Build domain filters
+        base_domain = [
+            ["date", ">=", start_date],
+            ["date", "<=", end.strftime("%Y-%m-%d")],
+            ["parent_state", "=", "posted"]
+        ]
+
+        if company_id:
+            base_domain.append(["company_id", "=", company_id])
+
+        # Fetch revenue (accounts starting with 8)
+        revenue_domain = base_domain + [["account_id.code", "=like", "8%"]]
+        revenue_data = odoo_read_group(
+            "account.move.line",
+            revenue_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
+
+        # Fetch COGS (accounts starting with 7)
+        cogs_domain = base_domain + [["account_id.code", "=like", "7%"]]
+        cogs_data = odoo_read_group(
+            "account.move.line",
+            cogs_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
+
+        # Fetch operating expenses (accounts 40-49)
+        expenses_by_category = {}
+        for cat_code in EXPENSE_CATEGORIES.keys():
+            exp_domain = base_domain + [["account_id.code", "=like", f"{cat_code}%"]]
+            exp_data = odoo_read_group(
+                "account.move.line",
+                exp_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            expenses_by_category[cat_code] = exp_data
+
+        # Convert to monthly arrays
+        months = []
+        current = start
+        for i in range(num_months):
+            months.append(current.strftime("%B %Y"))
+            current = (current + timedelta(days=32)).replace(day=1)
+
+        # Helper to find value for a month
+        def get_month_value(data_list, month_str):
+            for item in data_list:
+                if item.get("date:month") == month_str:
+                    return item.get("balance:sum", 0)
+            return 0
+
+        actual_revenue = []
+        actual_cogs = []
+        for month in months:
+            # Revenue is negative in Odoo, flip sign
+            actual_revenue.append(-get_month_value(revenue_data, month))
+            actual_cogs.append(get_month_value(cogs_data, month))
+
+        actual_expenses = {}
+        for cat_code, cat_data in expenses_by_category.items():
+            actual_expenses[cat_code] = [get_month_value(cat_data, m) for m in months]
+
+        return {
+            "revenue": actual_revenue,
+            "cogs": actual_cogs,
+            "operating_expenses": actual_expenses,
+            "months": months
+        }
+    except Exception as e:
+        st.error(f"Fout bij ophalen actuele data: {e}")
+        return None
+
+def export_forecast_to_csv(forecast, calculated):
+    """Export forecast data to CSV format"""
+    periods = forecast.get("periods", [])
+
+    rows = []
+    # Header
+    header = ["Categorie"] + [p["label"] for p in periods] + ["Totaal"]
+    rows.append(header)
+
+    # Revenue
+    revenue_row = ["Omzet"] + [f"{v:,.0f}" for v in calculated["revenue"]] + [f"{calculated['total_revenue']:,.0f}"]
+    rows.append(revenue_row)
+
+    # COGS
+    cogs_row = ["Kostprijs Verkopen"] + [f"{v:,.0f}" for v in calculated["cogs"]] + [f"{sum(calculated['cogs']):,.0f}"]
+    rows.append(cogs_row)
+
+    # Gross Profit
+    gp_row = ["Brutowinst"] + [f"{v:,.0f}" for v in calculated["gross_profit"]] + [f"{calculated['total_gross_profit']:,.0f}"]
+    rows.append(gp_row)
+
+    # Operating Expenses by category
+    for code, cat_data in forecast["operating_expenses"].items():
+        exp_row = [cat_data["name"]] + [f"{v:,.0f}" for v in cat_data["values"]] + [f"{sum(cat_data['values']):,.0f}"]
+        rows.append(exp_row)
+
+    # Totals
+    opex_row = ["Totaal Operationele Kosten"] + [f"{v:,.0f}" for v in calculated["operating_expenses"]] + [f"{sum(calculated['operating_expenses']):,.0f}"]
+    rows.append(opex_row)
+
+    ebit_row = ["EBIT"] + [f"{v:,.0f}" for v in calculated["ebit"]] + [f"{sum(calculated['ebit']):,.0f}"]
+    rows.append(ebit_row)
+
+    ebitda_row = ["EBITDA"] + [f"{v:,.0f}" for v in calculated["ebitda"]] + [f"{calculated['total_ebitda']:,.0f}"]
+    rows.append(ebitda_row)
+
+    ni_row = ["Netto Resultaat"] + [f"{v:,.0f}" for v in calculated["net_income"]] + [f"{calculated['total_net_income']:,.0f}"]
+    rows.append(ni_row)
+
+    # Convert to CSV string
+    csv_content = "\n".join([";".join(row) for row in rows])
+    return csv_content
+
+def export_forecast_to_excel(forecast, calculated):
+    """Export forecast data to Excel format (as bytes)"""
+    try:
+        import io
+
+        periods = forecast.get("periods", [])
+        period_labels = [p["label"] for p in periods]
+
+        # Build dataframe
+        data = {
+            "Categorie": [],
+        }
+        for label in period_labels:
+            data[label] = []
+        data["Totaal"] = []
+
+        # Add rows
+        def add_row(name, values, total):
+            data["Categorie"].append(name)
+            for i, label in enumerate(period_labels):
+                data[label].append(values[i] if i < len(values) else 0)
+            data["Totaal"].append(total)
+
+        add_row("Omzet", calculated["revenue"], calculated["total_revenue"])
+        add_row("Kostprijs Verkopen", calculated["cogs"], sum(calculated["cogs"]))
+        add_row("Brutowinst", calculated["gross_profit"], calculated["total_gross_profit"])
+
+        for code, cat_data in forecast["operating_expenses"].items():
+            add_row(cat_data["name"], cat_data["values"], sum(cat_data["values"]))
+
+        add_row("Totaal Operationele Kosten", calculated["operating_expenses"], sum(calculated["operating_expenses"]))
+        add_row("EBIT", calculated["ebit"], sum(calculated["ebit"]))
+        add_row("EBITDA", calculated["ebitda"], calculated["total_ebitda"])
+        add_row("Netto Resultaat", calculated["net_income"], calculated["total_net_income"])
+
+        df = pd.DataFrame(data)
+
+        # Export to Excel
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Forecast', index=False)
+
+        return output.getvalue()
+    except Exception as e:
+        st.error(f"Excel export fout: {e}")
+        return None
+
+def validate_forecast(forecast):
+    """
+    Validate forecast data for completeness and reasonableness.
+
+    Returns:
+        Tuple of (is_valid: bool, warnings: list, errors: list)
+    """
+    warnings = []
+    errors = []
+
+    # Check for name
+    if not forecast.get("name"):
+        errors.append("Forecast naam is verplicht")
+
+    # Check revenue
+    revenue = forecast.get("revenue", {}).get("values", [])
+    if all(v == 0 for v in revenue):
+        warnings.append("Alle omzetwaarden zijn 0 - is dit correct?")
+
+    # Check for unrealistic growth rates
+    assumptions = forecast.get("assumptions", {})
+    if assumptions.get("customer_acquisition_rate", 0) > 0.50:
+        warnings.append("Klantacquisitie rate >50% is onrealistisch hoog")
+
+    if assumptions.get("churn_rate", 0) > 0.30:
+        warnings.append("Churn rate >30% is onrealistisch hoog")
+
+    # Check COGS percentage
+    cogs = forecast.get("cogs", {})
+    if cogs.get("input_type") == "percentage":
+        pct = cogs.get("percentage_of_revenue", 0)
+        if pct > 0.95:
+            warnings.append("Kostprijs >95% van omzet laat zeer weinig brutomarge")
+        elif pct < 0.10:
+            warnings.append("Kostprijs <10% van omzet is ongebruikelijk laag")
+
+    # Check expense totals vs revenue
+    revenue_total = sum(revenue)
+    expense_total = 0
+    for cat_data in forecast.get("operating_expenses", {}).values():
+        expense_total += sum(cat_data.get("values", []))
+
+    if revenue_total > 0 and expense_total / revenue_total > 0.80:
+        warnings.append("Operationele kosten >80% van omzet - controleer winstgevendheid")
+
+    is_valid = len(errors) == 0
+    return is_valid, warnings, errors
+
+# =============================================================================
 # MAIN APP
 # =============================================================================
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v12 - Met Maandafsluiting (Financial Close)")
+    st.caption("Real-time data uit Odoo | v14 - Met Financial Forecast & Maandafsluiting")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -1796,7 +2514,7 @@ def main():
     # ==========================================================================
     # TABS
     # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting"])
+    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🔮 Forecast"])
     
     # =========================================================================
     # TAB 1: OVERZICHT
@@ -5569,6 +6287,935 @@ Gegenereerd door LAB Groep Financial Dashboard
 
             st.markdown("---")
             st.info("💡 Het wachtwoord is geconfigureerd door de beheerder. Neem contact op als je toegang nodig hebt.")
+
+    # =========================================================================
+    # TAB 11: FINANCIAL FORECAST
+    # =========================================================================
+    with tabs[10]:
+        st.header("🔮 Financial Forecast")
+        st.caption("Maak financiële prognoses en vergelijk met actuele resultaten")
+
+        # Initialize forecast session state
+        if "current_forecast" not in st.session_state:
+            st.session_state.current_forecast = None
+        if "forecast_mode" not in st.session_state:
+            st.session_state.forecast_mode = "new"  # 'new', 'edit', 'compare'
+
+        # Subtabs for forecast module
+        forecast_subtabs = st.tabs([
+            "📝 Invoer / Scenario",
+            "📊 Resultaten",
+            "📈 Forecast vs Actueel",
+            "💾 Opgeslagen Forecasts"
+        ])
+
+        # =====================================================================
+        # SUBTAB 1: INPUT / SCENARIO SELECTION
+        # =====================================================================
+        with forecast_subtabs[0]:
+            st.subheader("📝 Forecast Invoer")
+
+            # Sidebar-like controls at top
+            ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 2, 2])
+
+            with ctrl_col1:
+                time_period = st.selectbox(
+                    "Prognose Periode",
+                    options=[3, 6, 12, 18, 24],
+                    index=2,
+                    format_func=lambda x: f"{x} maanden",
+                    help="Selecteer de periode voor de prognose"
+                )
+
+            with ctrl_col2:
+                forecast_company = st.selectbox(
+                    "Bedrijf",
+                    options=[None, 1, 2, 3],
+                    format_func=lambda x: "Alle bedrijven" if x is None else COMPANIES.get(x, f"ID {x}"),
+                    help="Selecteer het bedrijf voor de prognose"
+                )
+
+            with ctrl_col3:
+                if st.button("🆕 Nieuwe Forecast", type="primary"):
+                    st.session_state.current_forecast = create_empty_forecast(
+                        company_id=forecast_company,
+                        time_period_months=time_period
+                    )
+                    st.session_state.forecast_mode = "new"
+                    st.rerun()
+
+            st.markdown("---")
+
+            # Scenario Templates Section
+            st.subheader("🎯 Scenario Templates")
+            st.caption("Klik op een scenario om automatisch waarden in te vullen")
+
+            scenario_cols = st.columns(3)
+
+            for idx, (key, template) in enumerate(SCENARIO_TEMPLATES.items()):
+                with scenario_cols[idx]:
+                    with st.container(border=True):
+                        st.markdown(f"### {template['icon']} {template['name']}")
+                        st.caption(template['description'])
+                        st.markdown(f"""
+                        - **Groei:** {template['revenue_growth_rate']*100:.0f}% per maand
+                        - **COGS:** {template['cogs_percentage']*100:.0f}% van omzet
+                        - **Kosten:** {'+' if template['expense_multiplier'] >= 1 else ''}{(template['expense_multiplier']-1)*100:.0f}%
+                        """)
+
+                        # Base revenue input for this scenario
+                        base_rev = st.number_input(
+                            "Basis omzet/maand (€)",
+                            min_value=0,
+                            value=100000,
+                            step=10000,
+                            key=f"base_rev_{key}",
+                            help="Startwaarde voor maandelijkse omzet"
+                        )
+
+                        if st.button(f"Toepassen {template['name']}", key=f"apply_{key}"):
+                            forecast = create_empty_forecast(
+                                company_id=forecast_company,
+                                time_period_months=time_period
+                            )
+                            forecast["name"] = f"{template['name']} Scenario"
+                            forecast = apply_scenario_template(forecast, key, base_revenue=base_rev)
+                            st.session_state.current_forecast = forecast
+                            st.success(f"✅ {template['name']} scenario toegepast!")
+                            st.rerun()
+
+            st.markdown("---")
+
+            # Manual Input Section
+            st.subheader("✏️ Handmatige Invoer")
+
+            if st.session_state.current_forecast is None:
+                st.info("👆 Selecteer een scenario hierboven of klik op 'Nieuwe Forecast' om te beginnen")
+            else:
+                forecast = st.session_state.current_forecast
+                periods = forecast.get("periods", [])
+
+                # Forecast metadata
+                with st.expander("📋 Forecast Informatie", expanded=True):
+                    meta_col1, meta_col2 = st.columns(2)
+                    with meta_col1:
+                        forecast["name"] = st.text_input(
+                            "Forecast Naam *",
+                            value=forecast.get("name", ""),
+                            help="Geef een duidelijke naam aan deze prognose"
+                        )
+                    with meta_col2:
+                        forecast["description"] = st.text_input(
+                            "Beschrijving",
+                            value=forecast.get("description", ""),
+                            help="Optionele beschrijving of notities"
+                        )
+
+                # Revenue Input
+                with st.expander("💰 Omzet Projecties", expanded=True):
+                    rev_input_type = st.radio(
+                        "Invoermethode",
+                        options=["Absolute waarden", "Groeipercentage"],
+                        horizontal=True,
+                        key="rev_input_type"
+                    )
+
+                    if rev_input_type == "Groeipercentage":
+                        growth_cols = st.columns(2)
+                        with growth_cols[0]:
+                            base_revenue = st.number_input(
+                                "Basis omzet maand 1 (€)",
+                                min_value=0.0,
+                                value=float(forecast["revenue"]["values"][0]) if forecast["revenue"]["values"][0] > 0 else 100000.0,
+                                step=1000.0
+                            )
+                        with growth_cols[1]:
+                            growth_rate = st.number_input(
+                                "Maandelijkse groei (%)",
+                                min_value=-50.0,
+                                max_value=100.0,
+                                value=forecast["revenue"]["growth_rate"],
+                                step=0.5
+                            )
+                        # Apply growth
+                        forecast["revenue"]["input_type"] = "growth"
+                        forecast["revenue"]["growth_rate"] = growth_rate
+                        for i in range(len(forecast["revenue"]["values"])):
+                            forecast["revenue"]["values"][i] = base_revenue * ((1 + growth_rate/100) ** i)
+                    else:
+                        forecast["revenue"]["input_type"] = "absolute"
+                        # Show input for each period (max 6 columns per row)
+                        num_cols = min(6, len(periods))
+                        for row_start in range(0, len(periods), num_cols):
+                            row_periods = periods[row_start:row_start + num_cols]
+                            cols = st.columns(len(row_periods))
+                            for col_idx, period in enumerate(row_periods):
+                                period_idx = row_start + col_idx
+                                with cols[col_idx]:
+                                    label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                    forecast["revenue"]["values"][period_idx] = st.number_input(
+                                        label,
+                                        min_value=0.0,
+                                        value=float(forecast["revenue"]["values"][period_idx]),
+                                        step=1000.0,
+                                        key=f"rev_{period_idx}"
+                                    )
+
+                # COGS Input
+                with st.expander("📦 Kostprijs Verkopen (COGS)", expanded=False):
+                    cogs_input_type = st.radio(
+                        "COGS Invoermethode",
+                        options=["Percentage van omzet", "Absolute waarden"],
+                        horizontal=True,
+                        key="cogs_input_type"
+                    )
+
+                    if cogs_input_type == "Percentage van omzet":
+                        forecast["cogs"]["input_type"] = "percentage"
+                        forecast["cogs"]["percentage_of_revenue"] = st.slider(
+                            "COGS als % van omzet",
+                            min_value=0,
+                            max_value=100,
+                            value=int(forecast["cogs"]["percentage_of_revenue"] * 100),
+                            help="Kostprijs verkopen als percentage van de omzet"
+                        ) / 100
+                        # Calculate COGS values
+                        for i in range(len(forecast["cogs"]["values"])):
+                            forecast["cogs"]["values"][i] = forecast["revenue"]["values"][i] * forecast["cogs"]["percentage_of_revenue"]
+                    else:
+                        forecast["cogs"]["input_type"] = "absolute"
+                        num_cols = min(6, len(periods))
+                        for row_start in range(0, len(periods), num_cols):
+                            row_periods = periods[row_start:row_start + num_cols]
+                            cols = st.columns(len(row_periods))
+                            for col_idx, period in enumerate(row_periods):
+                                period_idx = row_start + col_idx
+                                with cols[col_idx]:
+                                    label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                    forecast["cogs"]["values"][period_idx] = st.number_input(
+                                        label,
+                                        min_value=0.0,
+                                        value=float(forecast["cogs"]["values"][period_idx]),
+                                        step=500.0,
+                                        key=f"cogs_{period_idx}"
+                                    )
+
+                # Operating Expenses by Category
+                with st.expander("📉 Operationele Kosten per Categorie", expanded=False):
+                    st.caption("Voer maandelijkse kosten in per categorie")
+
+                    # Quick-fill option
+                    qf_col1, qf_col2, qf_col3 = st.columns([2, 1, 1])
+                    with qf_col1:
+                        selected_cat = st.selectbox(
+                            "Categorie voor quick-fill",
+                            options=list(EXPENSE_CATEGORIES.keys()),
+                            format_func=lambda x: EXPENSE_CATEGORIES.get(x, x)
+                        )
+                    with qf_col2:
+                        qf_amount = st.number_input("Maandelijks bedrag", min_value=0.0, value=5000.0, step=500.0)
+                    with qf_col3:
+                        if st.button("Vul alle maanden"):
+                            for i in range(len(forecast["operating_expenses"][selected_cat]["values"])):
+                                forecast["operating_expenses"][selected_cat]["values"][i] = qf_amount
+                            st.rerun()
+
+                    st.markdown("---")
+
+                    # Detailed expense input per category
+                    for code, cat_data in forecast["operating_expenses"].items():
+                        with st.expander(f"{EXPENSE_CATEGORIES.get(code, code)}", expanded=False):
+                            num_cols = min(6, len(periods))
+                            for row_start in range(0, len(periods), num_cols):
+                                row_periods = periods[row_start:row_start + num_cols]
+                                cols = st.columns(len(row_periods))
+                                for col_idx, period in enumerate(row_periods):
+                                    period_idx = row_start + col_idx
+                                    with cols[col_idx]:
+                                        label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                        cat_data["values"][period_idx] = st.number_input(
+                                            label,
+                                            min_value=0.0,
+                                            value=float(cat_data["values"][period_idx]),
+                                            step=100.0,
+                                            key=f"exp_{code}_{period_idx}"
+                                        )
+
+                # Capital Expenditures
+                with st.expander("🏗️ Kapitaaluitgaven (CapEx)", expanded=False):
+                    st.caption("Investeringen in vaste activa")
+                    num_cols = min(6, len(periods))
+                    for row_start in range(0, len(periods), num_cols):
+                        row_periods = periods[row_start:row_start + num_cols]
+                        cols = st.columns(len(row_periods))
+                        for col_idx, period in enumerate(row_periods):
+                            period_idx = row_start + col_idx
+                            with cols[col_idx]:
+                                label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                forecast["capex"]["values"][period_idx] = st.number_input(
+                                    label,
+                                    min_value=0.0,
+                                    value=float(forecast["capex"]["values"][period_idx]),
+                                    step=1000.0,
+                                    key=f"capex_{period_idx}"
+                                )
+
+                # Other Income/Expenses
+                with st.expander("➕ Overige Inkomsten / Uitgaven", expanded=False):
+                    oth_col1, oth_col2 = st.columns(2)
+                    with oth_col1:
+                        st.markdown("**Overige Inkomsten**")
+                        num_cols = min(4, len(periods))
+                        for row_start in range(0, len(periods), num_cols):
+                            row_periods = periods[row_start:row_start + num_cols]
+                            cols = st.columns(len(row_periods))
+                            for col_idx, period in enumerate(row_periods):
+                                period_idx = row_start + col_idx
+                                with cols[col_idx]:
+                                    label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                    forecast["other_income"]["values"][period_idx] = st.number_input(
+                                        label,
+                                        min_value=0.0,
+                                        value=float(forecast["other_income"]["values"][period_idx]),
+                                        step=500.0,
+                                        key=f"oth_inc_{period_idx}"
+                                    )
+                    with oth_col2:
+                        st.markdown("**Overige Uitgaven**")
+                        num_cols = min(4, len(periods))
+                        for row_start in range(0, len(periods), num_cols):
+                            row_periods = periods[row_start:row_start + num_cols]
+                            cols = st.columns(len(row_periods))
+                            for col_idx, period in enumerate(row_periods):
+                                period_idx = row_start + col_idx
+                                with cols[col_idx]:
+                                    label = period["label"][:3] + " " + str(period["year"])[-2:]
+                                    forecast["other_expenses"]["values"][period_idx] = st.number_input(
+                                        label,
+                                        min_value=0.0,
+                                        value=float(forecast["other_expenses"]["values"][period_idx]),
+                                        step=500.0,
+                                        key=f"oth_exp_{period_idx}"
+                                    )
+
+                # Assumptions
+                with st.expander("⚙️ Aannames & Variabelen", expanded=False):
+                    st.caption("Pas deze aannames aan om de forecast te beïnvloeden")
+
+                    assum_col1, assum_col2, assum_col3 = st.columns(3)
+
+                    with assum_col1:
+                        forecast["assumptions"]["customer_acquisition_rate"] = st.slider(
+                            "Klantacquisitie Rate (%)",
+                            min_value=0,
+                            max_value=50,
+                            value=int(forecast["assumptions"]["customer_acquisition_rate"] * 100),
+                            help="Percentage nieuwe klanten per periode"
+                        ) / 100
+
+                        forecast["assumptions"]["average_transaction_value"] = st.number_input(
+                            "Gem. Transactiewaarde (€)",
+                            min_value=0.0,
+                            value=float(forecast["assumptions"]["average_transaction_value"]),
+                            step=10.0,
+                            help="Gemiddelde waarde per transactie"
+                        )
+
+                    with assum_col2:
+                        forecast["assumptions"]["churn_rate"] = st.slider(
+                            "Churn Rate (%)",
+                            min_value=0,
+                            max_value=30,
+                            value=int(forecast["assumptions"]["churn_rate"] * 100),
+                            help="Percentage klantverloop per periode"
+                        ) / 100
+
+                        forecast["assumptions"]["average_transaction_value_growth"] = st.slider(
+                            "Transactiewaarde Groei (%)",
+                            min_value=-10,
+                            max_value=20,
+                            value=int(forecast["assumptions"]["average_transaction_value_growth"] * 100),
+                            help="Jaarlijkse groei van gemiddelde transactiewaarde"
+                        ) / 100
+
+                    with assum_col3:
+                        forecast["assumptions"]["inflation_rate"] = st.slider(
+                            "Inflatie Rate (%)",
+                            min_value=0,
+                            max_value=15,
+                            value=int(forecast["assumptions"]["inflation_rate"] * 100),
+                            help="Jaarlijks inflatiepercentage"
+                        ) / 100
+
+                    # Seasonal Factors
+                    st.markdown("**Seizoenscorrectie Factoren**")
+                    st.caption("Pas per maand aan (1.0 = normaal, 1.2 = 20% hoger, 0.8 = 20% lager)")
+                    season_cols = st.columns(6)
+                    for i in range(12):
+                        with season_cols[i % 6]:
+                            forecast["assumptions"]["seasonal_factors"][i] = st.number_input(
+                                DUTCH_MONTHS[i+1][:3],
+                                min_value=0.5,
+                                max_value=2.0,
+                                value=float(forecast["assumptions"]["seasonal_factors"][i]),
+                                step=0.05,
+                                key=f"season_{i}"
+                            )
+
+                # One-time Events
+                with st.expander("📅 Eenmalige Events", expanded=False):
+                    st.caption("Voeg eenmalige inkomsten of uitgaven toe")
+
+                    event_cols = st.columns([2, 1, 2, 1])
+                    with event_cols[0]:
+                        event_month = st.selectbox(
+                            "Maand",
+                            options=range(len(periods)),
+                            format_func=lambda x: periods[x]["label"] if x < len(periods) else str(x)
+                        )
+                    with event_cols[1]:
+                        event_type = st.selectbox("Type", options=["income", "expense"], format_func=lambda x: "Inkomst" if x == "income" else "Uitgave")
+                    with event_cols[2]:
+                        event_amount = st.number_input("Bedrag (€)", min_value=0.0, value=0.0, step=1000.0)
+                    with event_cols[3]:
+                        event_desc = st.text_input("Beschrijving", "")
+
+                    if st.button("➕ Event Toevoegen"):
+                        if event_amount > 0:
+                            forecast["one_time_events"].append({
+                                "month_index": event_month,
+                                "type": event_type,
+                                "amount": event_amount,
+                                "description": event_desc
+                            })
+                            st.success("Event toegevoegd!")
+                            st.rerun()
+
+                    # Display existing events
+                    if forecast["one_time_events"]:
+                        st.markdown("**Geplande Events:**")
+                        for idx, event in enumerate(forecast["one_time_events"]):
+                            event_col1, event_col2 = st.columns([4, 1])
+                            with event_col1:
+                                icon = "💰" if event["type"] == "income" else "💸"
+                                period_label = periods[event["month_index"]]["label"] if event["month_index"] < len(periods) else "?"
+                                st.write(f"{icon} {period_label}: €{event['amount']:,.0f} - {event['description']}")
+                            with event_col2:
+                                if st.button("🗑️", key=f"del_event_{idx}"):
+                                    forecast["one_time_events"].pop(idx)
+                                    st.rerun()
+
+                # Update session state
+                st.session_state.current_forecast = forecast
+
+                # Save/Validate buttons
+                st.markdown("---")
+                action_col1, action_col2, action_col3 = st.columns(3)
+
+                with action_col1:
+                    if st.button("✅ Valideer Forecast", type="secondary"):
+                        is_valid, warnings, errors = validate_forecast(forecast)
+                        if errors:
+                            for err in errors:
+                                st.error(f"❌ {err}")
+                        if warnings:
+                            for warn in warnings:
+                                st.warning(f"⚠️ {warn}")
+                        if is_valid and not warnings:
+                            st.success("✅ Forecast is compleet en valide!")
+
+                with action_col2:
+                    if st.button("💾 Opslaan", type="primary"):
+                        is_valid, warnings, errors = validate_forecast(forecast)
+                        if not is_valid:
+                            for err in errors:
+                                st.error(f"❌ {err}")
+                        else:
+                            success, msg = save_forecast(forecast)
+                            if success:
+                                st.success(f"✅ {msg}")
+                            else:
+                                st.error(f"❌ {msg}")
+
+                with action_col3:
+                    if st.button("🗑️ Wissen"):
+                        st.session_state.current_forecast = None
+                        st.rerun()
+
+        # =====================================================================
+        # SUBTAB 2: FORECAST RESULTS
+        # =====================================================================
+        with forecast_subtabs[1]:
+            st.subheader("📊 Forecast Resultaten")
+
+            if st.session_state.current_forecast is None:
+                st.info("👈 Maak eerst een forecast aan in het 'Invoer / Scenario' tabblad")
+            else:
+                forecast = st.session_state.current_forecast
+                calculated = calculate_forecast_metrics(forecast)
+                periods = forecast.get("periods", [])
+
+                if not calculated:
+                    st.warning("Geen berekeningen beschikbaar - controleer invoergegevens")
+                else:
+                    # Key Metrics Summary
+                    st.markdown("### 🎯 Kerncijfers")
+                    kpi_col1, kpi_col2, kpi_col3, kpi_col4 = st.columns(4)
+
+                    with kpi_col1:
+                        st.metric(
+                            "💰 Totale Omzet",
+                            f"€{calculated['total_revenue']:,.0f}",
+                            help="Som van alle maandelijkse omzet"
+                        )
+                    with kpi_col2:
+                        st.metric(
+                            "📈 Brutowinst",
+                            f"€{calculated['total_gross_profit']:,.0f}",
+                            delta=f"{calculated['avg_gross_margin']:.1f}% marge"
+                        )
+                    with kpi_col3:
+                        st.metric(
+                            "💵 EBITDA",
+                            f"€{calculated['total_ebitda']:,.0f}",
+                            help="Winst voor rente, belastingen, afschrijvingen"
+                        )
+                    with kpi_col4:
+                        result_color = "normal" if calculated['total_net_income'] >= 0 else "inverse"
+                        st.metric(
+                            "🎯 Netto Resultaat",
+                            f"€{calculated['total_net_income']:,.0f}",
+                            delta=f"{calculated['avg_net_margin']:.1f}% marge"
+                        )
+
+                    st.markdown("---")
+
+                    # Revenue & Profit Chart
+                    st.markdown("### 📈 Omzet & Winstgevendheid")
+
+                    period_labels = [p["label"] for p in periods]
+
+                    fig_revenue = go.Figure()
+
+                    # Revenue bars
+                    fig_revenue.add_trace(go.Bar(
+                        x=period_labels,
+                        y=calculated["revenue"],
+                        name="Omzet",
+                        marker_color="#1e3a5f"
+                    ))
+
+                    # Gross profit bars
+                    fig_revenue.add_trace(go.Bar(
+                        x=period_labels,
+                        y=calculated["gross_profit"],
+                        name="Brutowinst",
+                        marker_color="#2ecc71"
+                    ))
+
+                    # Net income line
+                    fig_revenue.add_trace(go.Scatter(
+                        x=period_labels,
+                        y=calculated["net_income"],
+                        name="Netto Resultaat",
+                        mode="lines+markers",
+                        line=dict(color="#e74c3c", width=3),
+                        marker=dict(size=8)
+                    ))
+
+                    fig_revenue.update_layout(
+                        barmode="group",
+                        height=400,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        yaxis=dict(title="Bedrag (€)", tickformat=",.0f"),
+                        xaxis=dict(title="Periode")
+                    )
+                    st.plotly_chart(fig_revenue, use_container_width=True)
+
+                    # Margins Chart
+                    margin_col1, margin_col2 = st.columns(2)
+
+                    with margin_col1:
+                        fig_margin = go.Figure()
+                        fig_margin.add_trace(go.Scatter(
+                            x=period_labels,
+                            y=calculated["gross_margin"],
+                            name="Brutomarge %",
+                            mode="lines+markers",
+                            line=dict(color="#3498db", width=2)
+                        ))
+                        fig_margin.add_trace(go.Scatter(
+                            x=period_labels,
+                            y=calculated["ebit_margin"],
+                            name="EBIT Marge %",
+                            mode="lines+markers",
+                            line=dict(color="#9b59b6", width=2)
+                        ))
+                        fig_margin.add_trace(go.Scatter(
+                            x=period_labels,
+                            y=calculated["net_margin"],
+                            name="Netto Marge %",
+                            mode="lines+markers",
+                            line=dict(color="#e74c3c", width=2)
+                        ))
+                        fig_margin.update_layout(
+                            title="Marges (%)",
+                            height=300,
+                            yaxis=dict(title="Percentage", ticksuffix="%"),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                        )
+                        st.plotly_chart(fig_margin, use_container_width=True)
+
+                    with margin_col2:
+                        # Operating Expenses Breakdown (last period)
+                        exp_names = []
+                        exp_values = []
+                        for code, cat_data in forecast["operating_expenses"].items():
+                            total = sum(cat_data["values"])
+                            if total > 0:
+                                exp_names.append(cat_data["name"])
+                                exp_values.append(total)
+
+                        if exp_values:
+                            fig_exp = px.pie(
+                                values=exp_values,
+                                names=exp_names,
+                                title="Verdeling Operationele Kosten",
+                                hole=0.4
+                            )
+                            fig_exp.update_layout(height=300)
+                            st.plotly_chart(fig_exp, use_container_width=True)
+
+                    # Cumulative Chart
+                    st.markdown("### 📊 Cumulatief Verloop")
+                    fig_cumulative = go.Figure()
+                    fig_cumulative.add_trace(go.Scatter(
+                        x=period_labels,
+                        y=calculated["cumulative_revenue"],
+                        name="Cumulatieve Omzet",
+                        fill="tozeroy",
+                        mode="lines",
+                        line=dict(color="#1e3a5f", width=2)
+                    ))
+                    fig_cumulative.add_trace(go.Scatter(
+                        x=period_labels,
+                        y=calculated["cumulative_net_income"],
+                        name="Cumulatief Resultaat",
+                        fill="tozeroy",
+                        mode="lines",
+                        line=dict(color="#2ecc71", width=2)
+                    ))
+                    fig_cumulative.update_layout(
+                        height=350,
+                        yaxis=dict(title="Bedrag (€)", tickformat=",.0f"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                    )
+                    st.plotly_chart(fig_cumulative, use_container_width=True)
+
+                    # CASHFLOW_HOOK: Display operating cash flow
+                    st.markdown("### 💵 Operationele Cashflow (Indicatief)")
+                    st.caption("EBITDA minus CapEx - voor gedetailleerde cashflow prognose, zie toekomstige integratie")
+                    fig_cashflow = go.Figure()
+                    fig_cashflow.add_trace(go.Bar(
+                        x=period_labels,
+                        y=calculated["operating_cash_flow"],
+                        name="Operating Cash Flow",
+                        marker_color=["#2ecc71" if v >= 0 else "#e74c3c" for v in calculated["operating_cash_flow"]]
+                    ))
+                    fig_cashflow.update_layout(
+                        height=300,
+                        yaxis=dict(title="Bedrag (€)", tickformat=",.0f")
+                    )
+                    st.plotly_chart(fig_cashflow, use_container_width=True)
+
+                    # Detailed Data Table
+                    st.markdown("### 📋 Detailoverzicht")
+
+                    # Build summary dataframe
+                    summary_data = {
+                        "Periode": period_labels,
+                        "Omzet": [f"€{v:,.0f}" for v in calculated["revenue"]],
+                        "COGS": [f"€{v:,.0f}" for v in calculated["cogs"]],
+                        "Brutowinst": [f"€{v:,.0f}" for v in calculated["gross_profit"]],
+                        "Op. Kosten": [f"€{v:,.0f}" for v in calculated["operating_expenses"]],
+                        "EBITDA": [f"€{v:,.0f}" for v in calculated["ebitda"]],
+                        "Netto": [f"€{v:,.0f}" for v in calculated["net_income"]],
+                        "Netto %": [f"{v:.1f}%" for v in calculated["net_margin"]]
+                    }
+                    df_summary = pd.DataFrame(summary_data)
+                    st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+                    # Export buttons
+                    st.markdown("---")
+                    st.markdown("### 📥 Exporteren")
+                    exp_col1, exp_col2 = st.columns(2)
+
+                    with exp_col1:
+                        csv_data = export_forecast_to_csv(forecast, calculated)
+                        st.download_button(
+                            label="📄 Download CSV",
+                            data=csv_data,
+                            file_name=f"forecast_{forecast.get('name', 'export')}_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv"
+                        )
+
+                    with exp_col2:
+                        try:
+                            excel_data = export_forecast_to_excel(forecast, calculated)
+                            if excel_data:
+                                st.download_button(
+                                    label="📊 Download Excel",
+                                    data=excel_data,
+                                    file_name=f"forecast_{forecast.get('name', 'export')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                        except Exception as e:
+                            st.caption("Excel export niet beschikbaar (openpyxl vereist)")
+
+        # =====================================================================
+        # SUBTAB 3: FORECAST VS ACTUAL COMPARISON
+        # =====================================================================
+        with forecast_subtabs[2]:
+            st.subheader("📈 Forecast vs Actueel")
+
+            if st.session_state.current_forecast is None:
+                st.info("👈 Maak eerst een forecast aan in het 'Invoer / Scenario' tabblad")
+            else:
+                forecast = st.session_state.current_forecast
+                calculated = calculate_forecast_metrics(forecast)
+                periods = forecast.get("periods", [])
+
+                st.caption("Vergelijk je forecast met actuele resultaten uit Odoo")
+
+                # Fetch actual data button
+                if st.button("🔄 Actuele Data Ophalen", type="primary"):
+                    with st.spinner("Actuele data ophalen uit Odoo..."):
+                        actual_data = get_actual_data_for_comparison(
+                            forecast.get("company_id"),
+                            forecast.get("start_date"),
+                            forecast.get("time_period_months", 12)
+                        )
+                        if actual_data:
+                            st.session_state.actual_data = actual_data
+                            st.success("✅ Actuele data opgehaald!")
+                        else:
+                            st.warning("⚠️ Geen actuele data gevonden voor de geselecteerde periode")
+
+                if "actual_data" in st.session_state and st.session_state.actual_data:
+                    actual = st.session_state.actual_data
+                    period_labels = [p["label"] for p in periods]
+
+                    # Comparison Summary Cards
+                    st.markdown("### 🎯 Vergelijking Kerncijfers")
+
+                    comp_col1, comp_col2, comp_col3 = st.columns(3)
+
+                    forecast_rev_total = calculated["total_revenue"]
+                    actual_rev_total = sum(actual.get("revenue", []))
+                    rev_variance = actual_rev_total - forecast_rev_total
+                    rev_variance_pct = (rev_variance / forecast_rev_total * 100) if forecast_rev_total > 0 else 0
+
+                    with comp_col1:
+                        st.metric(
+                            "📊 Omzet Forecast",
+                            f"€{forecast_rev_total:,.0f}"
+                        )
+                        st.metric(
+                            "📊 Omzet Actueel",
+                            f"€{actual_rev_total:,.0f}",
+                            delta=f"€{rev_variance:,.0f} ({rev_variance_pct:+.1f}%)",
+                            delta_color="normal" if rev_variance >= 0 else "inverse"
+                        )
+
+                    # Calculate actual gross profit
+                    actual_cogs_total = sum(actual.get("cogs", []))
+                    actual_gp_total = actual_rev_total - actual_cogs_total
+                    forecast_gp_total = calculated["total_gross_profit"]
+                    gp_variance = actual_gp_total - forecast_gp_total
+
+                    with comp_col2:
+                        st.metric(
+                            "📈 Brutowinst Forecast",
+                            f"€{forecast_gp_total:,.0f}"
+                        )
+                        st.metric(
+                            "📈 Brutowinst Actueel",
+                            f"€{actual_gp_total:,.0f}",
+                            delta=f"€{gp_variance:,.0f}",
+                            delta_color="normal" if gp_variance >= 0 else "inverse"
+                        )
+
+                    # Calculate actual operating expenses
+                    actual_opex_total = 0
+                    for cat_vals in actual.get("operating_expenses", {}).values():
+                        actual_opex_total += sum(cat_vals)
+                    forecast_opex_total = sum(calculated["operating_expenses"])
+                    opex_variance = actual_opex_total - forecast_opex_total
+
+                    with comp_col3:
+                        st.metric(
+                            "📉 Op. Kosten Forecast",
+                            f"€{forecast_opex_total:,.0f}"
+                        )
+                        st.metric(
+                            "📉 Op. Kosten Actueel",
+                            f"€{actual_opex_total:,.0f}",
+                            delta=f"€{opex_variance:,.0f}",
+                            delta_color="inverse" if opex_variance > 0 else "normal"  # Higher costs = bad
+                        )
+
+                    st.markdown("---")
+
+                    # Revenue Comparison Chart
+                    st.markdown("### 📊 Omzet: Forecast vs Actueel")
+
+                    # Pad actual data if shorter than forecast periods
+                    actual_revenue = actual.get("revenue", [])
+                    while len(actual_revenue) < len(period_labels):
+                        actual_revenue.append(0)
+
+                    fig_compare = go.Figure()
+                    fig_compare.add_trace(go.Bar(
+                        x=period_labels,
+                        y=calculated["revenue"],
+                        name="Forecast",
+                        marker_color="#1e3a5f",
+                        opacity=0.7
+                    ))
+                    fig_compare.add_trace(go.Bar(
+                        x=period_labels,
+                        y=actual_revenue[:len(period_labels)],
+                        name="Actueel",
+                        marker_color="#2ecc71"
+                    ))
+
+                    fig_compare.update_layout(
+                        barmode="group",
+                        height=400,
+                        yaxis=dict(title="Omzet (€)", tickformat=",.0f"),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+                    )
+                    st.plotly_chart(fig_compare, use_container_width=True)
+
+                    # Variance Analysis Chart
+                    st.markdown("### 📉 Variance Analyse")
+
+                    variances = []
+                    for i in range(min(len(calculated["revenue"]), len(actual_revenue))):
+                        var = actual_revenue[i] - calculated["revenue"][i]
+                        variances.append(var)
+
+                    fig_variance = go.Figure()
+                    fig_variance.add_trace(go.Bar(
+                        x=period_labels[:len(variances)],
+                        y=variances,
+                        name="Variance",
+                        marker_color=["#2ecc71" if v >= 0 else "#e74c3c" for v in variances],
+                        text=[f"€{v:,.0f}" for v in variances],
+                        textposition="outside"
+                    ))
+
+                    fig_variance.update_layout(
+                        height=350,
+                        yaxis=dict(title="Afwijking (€)", tickformat=",.0f"),
+                        title="Afwijking Actueel vs Forecast (positief = beter dan forecast)"
+                    )
+                    st.plotly_chart(fig_variance, use_container_width=True)
+
+                    # Detailed Variance Table
+                    st.markdown("### 📋 Gedetailleerde Afwijkingen")
+
+                    variance_data = []
+                    for i, period in enumerate(period_labels):
+                        if i < len(actual_revenue):
+                            f_rev = calculated["revenue"][i]
+                            a_rev = actual_revenue[i]
+                            var_abs = a_rev - f_rev
+                            var_pct = (var_abs / f_rev * 100) if f_rev > 0 else 0
+
+                            # Determine status indicator
+                            if var_pct >= 5:
+                                status = "🟢"  # Good - above forecast
+                            elif var_pct <= -10:
+                                status = "🔴"  # Bad - significantly below
+                            elif var_pct < 0:
+                                status = "🟡"  # Warning - slightly below
+                            else:
+                                status = "🟢"  # OK
+
+                            variance_data.append({
+                                "Periode": period,
+                                "Forecast": f"€{f_rev:,.0f}",
+                                "Actueel": f"€{a_rev:,.0f}",
+                                "Afwijking": f"€{var_abs:,.0f}",
+                                "Afwijking %": f"{var_pct:+.1f}%",
+                                "Status": status
+                            })
+
+                    if variance_data:
+                        df_variance = pd.DataFrame(variance_data)
+                        st.dataframe(df_variance, use_container_width=True, hide_index=True)
+
+                else:
+                    st.info("👆 Klik op 'Actuele Data Ophalen' om de vergelijking te starten")
+
+        # =====================================================================
+        # SUBTAB 4: SAVED FORECASTS
+        # =====================================================================
+        with forecast_subtabs[3]:
+            st.subheader("💾 Opgeslagen Forecasts")
+
+            saved_forecasts = list_saved_forecasts()
+
+            if not saved_forecasts:
+                st.info("📂 Nog geen forecasts opgeslagen. Maak een forecast aan en sla deze op.")
+            else:
+                st.caption(f"{len(saved_forecasts)} opgeslagen forecast(s) gevonden")
+
+                for fc in saved_forecasts:
+                    with st.container(border=True):
+                        fc_col1, fc_col2, fc_col3, fc_col4 = st.columns([3, 2, 2, 1])
+
+                        with fc_col1:
+                            scenario_icon = SCENARIO_TEMPLATES.get(fc.get("scenario_type"), {}).get("icon", "📄")
+                            st.markdown(f"### {scenario_icon} {fc['name']}")
+                            company_name = COMPANIES.get(fc.get("company_id"), "Alle bedrijven")
+                            st.caption(f"Bedrijf: {company_name} | Periode: {fc.get('time_period_months', 12)} maanden")
+
+                        with fc_col2:
+                            # Parse and format dates
+                            try:
+                                created = datetime.fromisoformat(fc.get("created_date", "")).strftime("%d-%m-%Y %H:%M")
+                            except:
+                                created = fc.get("created_date", "Onbekend")
+                            st.caption(f"Aangemaakt: {created}")
+
+                        with fc_col3:
+                            try:
+                                modified = datetime.fromisoformat(fc.get("last_modified", "")).strftime("%d-%m-%Y %H:%M")
+                            except:
+                                modified = fc.get("last_modified", "Onbekend")
+                            st.caption(f"Gewijzigd: {modified}")
+
+                        with fc_col4:
+                            btn_col1, btn_col2 = st.columns(2)
+                            with btn_col1:
+                                if st.button("📂", key=f"load_{fc['filename']}", help="Laden"):
+                                    loaded, error = load_forecast(fc['filename'])
+                                    if loaded:
+                                        st.session_state.current_forecast = loaded
+                                        st.success(f"✅ {fc['name']} geladen!")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"❌ {error}")
+                            with btn_col2:
+                                if st.button("🗑️", key=f"delete_{fc['filename']}", help="Verwijderen"):
+                                    success, msg = delete_forecast(fc['filename'])
+                                    if success:
+                                        st.success("Forecast verwijderd")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
 
 if __name__ == "__main__":
     main()
