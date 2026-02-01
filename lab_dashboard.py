@@ -1745,18 +1745,40 @@ from io import BytesIO
 # Forecast storage directory
 FORECAST_STORAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "forecasts")
 
-# Default expense categories matching existing cost structure
+# Default account mapping for forecast categories
+# Users can customize this mapping in the Forecast tab
+DEFAULT_ACCOUNT_MAPPING = {
+    "revenue": {
+        "name": "Omzet",
+        "account_patterns": ["70", "71", "72", "73", "74"],  # Belgian/Dutch: 70-74 = revenue
+        "sign_flip": True  # Revenue is typically negative in balance, flip to positive
+    },
+    "cogs": {
+        "name": "Kostprijs Verkopen (COGS)",
+        "account_patterns": ["60", "61"],  # 60-61 = purchases/COGS
+        "sign_flip": False
+    },
+    "operating_expenses": {
+        "name": "Operationele Kosten",
+        "categories": {
+            "61": "Diensten & Diverse Goederen",
+            "62": "Bezoldigingen & Sociale Lasten",
+            "63": "Afschrijvingen",
+            "64": "Andere Bedrijfskosten",
+            "65": "Financiële Kosten",
+            "66": "Uitzonderlijke Kosten"
+        }
+    }
+}
+
+# Legacy expense categories (kept for backwards compatibility)
 EXPENSE_CATEGORIES = {
-    "40": "Personeelskosten",
-    "41": "Huisvestingskosten",
-    "42": "Vervoerskosten",
-    "43": "Kantoorkosten",
-    "44": "Marketing & Reclame",
-    "45": "Algemene Kosten",
-    "46": "Overige Bedrijfskosten",
-    "47": "Financiële Lasten",
-    "48": "Afschrijvingen",
-    "49": "Overige Kosten"
+    "61": "Diensten & Diverse Goederen",
+    "62": "Bezoldigingen & Sociale Lasten",
+    "63": "Afschrijvingen",
+    "64": "Andere Bedrijfskosten",
+    "65": "Financiële Kosten",
+    "66": "Uitzonderlijke Kosten"
 }
 
 # Scenario templates with growth rates and expense multipliers
@@ -2307,13 +2329,68 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_base_year_data(company_id, base_year):
+def discover_account_groups(company_id, year):
+    """
+    Discover all account groups (2-digit prefixes) with their balances for a given year.
+    This helps users understand what accounts exist and map them correctly.
+    """
+    try:
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31"
+
+        domain = [
+            ["date", ">=", start_date],
+            ["date", "<=", end_date],
+            ["parent_state", "=", "posted"]
+        ]
+        if company_id:
+            domain.append(["company_id", "=", company_id])
+
+        # Fetch all account move lines with account info
+        data = odoo_read_group(
+            "account.move.line",
+            domain,
+            ["balance:sum"],
+            ["account_id"]
+        )
+
+        # Group by 2-digit prefix
+        account_groups = {}
+        for item in data:
+            account = item.get("account_id")
+            if account:
+                account_code = str(account[1]).split()[0] if isinstance(account, (list, tuple)) else str(account)
+                # Extract first 2 digits as group
+                prefix = account_code[:2] if len(account_code) >= 2 else account_code
+                balance = item.get("balance:sum", 0)
+
+                if prefix not in account_groups:
+                    account_groups[prefix] = {"balance": 0, "accounts": []}
+                account_groups[prefix]["balance"] += balance
+                account_groups[prefix]["accounts"].append(account)
+
+        return account_groups
+    except Exception as e:
+        print(f"Error discovering account groups: {e}")
+        return {}
+
+def get_account_mapping():
+    """Get the current account mapping from session_state or return defaults."""
+    if "forecast_account_mapping" in st.session_state:
+        return st.session_state.forecast_account_mapping
+    return DEFAULT_ACCOUNT_MAPPING
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_base_year_data(company_id, base_year, revenue_patterns=None, cogs_patterns=None, expense_categories=None):
     """
     Fetch annual financial data from Odoo for a specific year to use as forecast base.
 
     Args:
         company_id: Company ID to filter by (None for all companies)
         base_year: Year to fetch data from (e.g., 2024, 2025)
+        revenue_patterns: List of account prefixes for revenue (default: ["70", "71", "72", "73", "74"])
+        cogs_patterns: List of account prefixes for COGS (default: ["60"])
+        expense_categories: Dict of category code -> name for expenses (default: EXPENSE_CATEGORIES)
 
     Returns:
         Dict with aggregated annual data:
@@ -2324,6 +2401,14 @@ def get_base_year_data(company_id, base_year):
         - total_cogs: Total annual COGS
         - months_with_data: Number of months with actual data
     """
+    # Use defaults if not provided
+    if revenue_patterns is None:
+        revenue_patterns = DEFAULT_ACCOUNT_MAPPING["revenue"]["account_patterns"]
+    if cogs_patterns is None:
+        cogs_patterns = DEFAULT_ACCOUNT_MAPPING["cogs"]["account_patterns"]
+    if expense_categories is None:
+        expense_categories = EXPENSE_CATEGORIES
+
     try:
         start_date = f"{base_year}-01-01"
         end_date = f"{base_year}-12-31"
@@ -2338,27 +2423,33 @@ def get_base_year_data(company_id, base_year):
         if company_id:
             base_domain.append(["company_id", "=", company_id])
 
-        # Fetch revenue (accounts starting with 8)
-        revenue_domain = base_domain + [["account_id.code", "=like", "8%"]]
-        revenue_data = odoo_read_group(
-            "account.move.line",
-            revenue_domain,
-            ["balance:sum"],
-            ["date:month"]
-        )
+        # Fetch revenue from multiple account patterns
+        revenue_data = []
+        for pattern in revenue_patterns:
+            revenue_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
+            data = odoo_read_group(
+                "account.move.line",
+                revenue_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            revenue_data.extend(data)
 
-        # Fetch COGS (accounts starting with 7)
-        cogs_domain = base_domain + [["account_id.code", "=like", "7%"]]
-        cogs_data = odoo_read_group(
-            "account.move.line",
-            cogs_domain,
-            ["balance:sum"],
-            ["date:month"]
-        )
+        # Fetch COGS from multiple account patterns
+        cogs_data = []
+        for pattern in cogs_patterns:
+            cogs_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
+            data = odoo_read_group(
+                "account.move.line",
+                cogs_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            cogs_data.extend(data)
 
-        # Fetch operating expenses (accounts 40-49)
+        # Fetch operating expenses per category
         expenses_by_category = {}
-        for cat_code in EXPENSE_CATEGORIES.keys():
+        for cat_code in expense_categories.keys():
             exp_domain = base_domain + [["account_id.code", "=like", f"{cat_code}%"]]
             exp_data = odoo_read_group(
                 "account.move.line",
@@ -2369,7 +2460,8 @@ def get_base_year_data(company_id, base_year):
             expenses_by_category[cat_code] = exp_data
 
         # Calculate totals and averages
-        total_revenue = sum(-item.get("balance:sum", 0) for item in revenue_data)  # Flip sign
+        # Revenue: typically negative in Odoo (credit), so we flip the sign
+        total_revenue = sum(-item.get("balance:sum", 0) for item in revenue_data)
         total_cogs = sum(item.get("balance:sum", 0) for item in cogs_data)
 
         # Count months with revenue data to calculate proper averages
@@ -6484,6 +6576,85 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.subheader("🎯 Scenario Templates")
             st.caption("Klik op een scenario om automatisch waarden in te vullen")
 
+            # Account Mapping Configuration
+            with st.expander("⚙️ Rekening Mapping Configuratie", expanded=False):
+                st.caption("Configureer welke rekeningen gebruikt worden voor omzet, COGS en kosten")
+
+                # Initialize mapping in session_state if not exists
+                if "forecast_account_mapping" not in st.session_state:
+                    st.session_state.forecast_account_mapping = DEFAULT_ACCOUNT_MAPPING.copy()
+
+                mapping = st.session_state.forecast_account_mapping
+
+                map_col1, map_col2 = st.columns(2)
+
+                with map_col1:
+                    st.markdown("**Omzet Rekeningen**")
+                    revenue_input = st.text_input(
+                        "Rekening prefixes (komma-gescheiden)",
+                        value=", ".join(mapping["revenue"]["account_patterns"]),
+                        key="revenue_patterns_input",
+                        help="Bijv: 70, 71, 72, 73, 74 voor Belgisch rekeningschema"
+                    )
+
+                    st.markdown("**COGS Rekeningen**")
+                    cogs_input = st.text_input(
+                        "Rekening prefixes (komma-gescheiden)",
+                        value=", ".join(mapping["cogs"]["account_patterns"]),
+                        key="cogs_patterns_input",
+                        help="Bijv: 60 voor aankopen/kostprijs verkopen"
+                    )
+
+                with map_col2:
+                    st.markdown("**Operationele Kosten Categorieën**")
+                    expense_cats_display = "\n".join([f"{k}: {v}" for k, v in EXPENSE_CATEGORIES.items()])
+                    st.text_area(
+                        "Huidige categorieën",
+                        value=expense_cats_display,
+                        height=150,
+                        disabled=True,
+                        help="Rekening prefixes 61-66 worden automatisch gemapt"
+                    )
+
+                # Discover accounts button
+                disc_col1, disc_col2 = st.columns([1, 2])
+                with disc_col1:
+                    if st.button("🔍 Ontdek Rekeningen", key="discover_accounts"):
+                        with st.spinner("Rekeningen analyseren..."):
+                            current_year = datetime.now().year
+                            account_groups = discover_account_groups(forecast_company, current_year - 1)
+                            if account_groups:
+                                st.session_state.discovered_accounts = account_groups
+
+                # Show discovered accounts if available
+                if "discovered_accounts" in st.session_state and st.session_state.discovered_accounts:
+                    st.markdown("**Gevonden rekening groepen (vorig jaar):**")
+                    acc_df_data = []
+                    for prefix, info in sorted(st.session_state.discovered_accounts.items()):
+                        balance = info["balance"]
+                        acc_type = "Debet" if balance > 0 else "Credit"
+                        acc_df_data.append({
+                            "Prefix": prefix,
+                            "Saldo": f"€ {abs(balance):,.0f}",
+                            "Type": acc_type,
+                            "Suggestie": "Omzet" if prefix.startswith("7") else ("Kosten" if prefix.startswith("6") else "Anders")
+                        })
+                    if acc_df_data:
+                        st.dataframe(pd.DataFrame(acc_df_data), use_container_width=True, hide_index=True)
+
+                # Save mapping button
+                if st.button("💾 Mapping Opslaan", key="save_mapping"):
+                    # Parse inputs
+                    new_revenue = [p.strip() for p in revenue_input.split(",") if p.strip()]
+                    new_cogs = [p.strip() for p in cogs_input.split(",") if p.strip()]
+
+                    st.session_state.forecast_account_mapping["revenue"]["account_patterns"] = new_revenue
+                    st.session_state.forecast_account_mapping["cogs"]["account_patterns"] = new_cogs
+                    st.success("✅ Mapping opgeslagen!")
+                    # Clear cache to use new mapping
+                    get_base_year_data.clear()
+                    st.rerun()
+
             # Base year selection for scenarios
             with st.expander("📅 Basisjaar Instellingen", expanded=True):
                 base_year_col1, base_year_col2 = st.columns(2)
@@ -6513,8 +6684,18 @@ Gegenereerd door LAB Groep Financial Dashboard
 
                 # Show base year data preview if enabled
                 if use_base_year:
+                    # Get configured account mapping
+                    acct_mapping = st.session_state.get("forecast_account_mapping", DEFAULT_ACCOUNT_MAPPING)
+                    revenue_patterns = acct_mapping["revenue"]["account_patterns"]
+                    cogs_patterns = acct_mapping["cogs"]["account_patterns"]
+
                     with st.spinner(f"Ophalen data {base_year}..."):
-                        base_year_data = get_base_year_data(forecast_company, base_year)
+                        base_year_data = get_base_year_data(
+                            forecast_company, base_year,
+                            revenue_patterns=tuple(revenue_patterns),
+                            cogs_patterns=tuple(cogs_patterns),
+                            expense_categories=EXPENSE_CATEGORIES
+                        )
                     if base_year_data:
                         st.success(f"✅ Data van {base_year} opgehaald ({base_year_data['months_with_data']} maanden)")
                         preview_col1, preview_col2, preview_col3 = st.columns(3)
