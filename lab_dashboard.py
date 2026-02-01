@@ -2807,41 +2807,24 @@ def get_draggable_mapping():
 
 def render_draggable_mapping_tool(company_id, year):
     """
-    Render the mapping tool interface.
-    Allows users to assign accounts to report categories via multiselect.
+    Render the mapping tool interface with two-column layout:
+    - Left: Hierarchical report structure with categories
+    - Right: Unmapped accounts panel with search
     """
-    st.subheader("🔄 Rekening Mapping Tool")
-    st.caption("Wijs rekeningen toe aan rapportage categorieën door ze te selecteren uit de dropdown.")
-
     # Get current mapping
     mapping = get_draggable_mapping()
 
     # Fetch available accounts
-    col_refresh, col_year = st.columns([1, 2])
-    with col_refresh:
-        if st.button("🔄 Ververs Rekeningen", key="refresh_accounts"):
-            # Clear the cache of discover_account_groups which is used internally
-            discover_account_groups.clear()
-            st.rerun()
-    with col_year:
-        st.caption(f"Data van jaar: {year}")
-
     with st.spinner("Rekeningen ophalen..."):
         available_accounts = get_all_accounts_with_details(company_id, year)
 
     if not available_accounts:
         st.warning(f"Geen rekeningen gevonden voor jaar {year}.")
-        st.info("""
-        **Mogelijke oorzaken:**
-        - Geen geboekte transacties in het geselecteerde jaar
-        - API verbinding niet actief (controleer API key in sidebar)
-        - Bedrijf heeft geen boekhouddata
-
-        **Probeer:**
-        - Selecteer een ander jaar met data
-        - Klik op 'Ververs Rekeningen'
-        - Controleer de API key in de sidebar
-        """)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Ververs", key="refresh_empty"):
+                discover_account_groups.clear()
+                st.rerun()
         return
 
     # Get list of already assigned account codes
@@ -2859,172 +2842,204 @@ def render_draggable_mapping_tool(company_id, year):
     # Create account display mapping for lookup
     account_lookup = {acc["code"]: acc for acc in available_accounts}
 
-    # Layout: Left = available accounts, Right = category assignments
-    st.markdown("---")
+    # =========================================================================
+    # TWO-COLUMN LAYOUT: Report Structure (left) | Unmapped Accounts (right)
+    # =========================================================================
+    col_report, col_unmapped = st.columns([2, 1])
 
-    # Section headers
-    section_headers = {
-        "revenue": "💰 Omzet & Kostprijs",
-        "operating_expenses": "⚙️ Operationele Kosten",
-        "other_income_expenses": "📊 Overige Lasten & Opbrengsten",
-        "taxes": "🏛️ Belastingen"
-    }
+    # -------------------------------------------------------------------------
+    # LEFT COLUMN: Hierarchical Report Structure
+    # -------------------------------------------------------------------------
+    with col_report:
+        st.markdown("### 📊 Rapportage Structuur")
 
-    # Group categories by section
-    sections = {}
-    for cat_key, cat_info in REPORT_CATEGORIES.items():
-        if cat_info.get("is_subtotal", False):
-            continue  # Skip subtotals
-        section = cat_info.get("section", "other")
-        if section not in sections:
-            sections[section] = []
-        sections[section].append((cat_key, cat_info))
+        # Search box for report categories
+        search_cat = st.text_input("🔍 Zoek categorie...", key="search_category", placeholder="Zoek op naam...")
 
-    # Sort categories within each section by order
-    for section in sections:
-        sections[section].sort(key=lambda x: x[1].get("order", 99))
+        # Define the hierarchical report structure
+        report_structure = [
+            {"key": "netto_omzet", "name": "Revenue (Netto Omzet)", "level": 0, "expandable": True},
+            {"key": "kostprijs_omzet", "name": "Cost of Goods Sold", "level": 0, "expandable": True},
+            {"key": None, "name": "Other Operating Income", "level": 1, "is_header": True},
+            {"key": "overige_inkoopkosten", "name": "Overige Inkoopkosten", "level": 1, "expandable": True},
+            {"key": "prijsverschillen", "name": "Prijsverschillen", "level": 1, "expandable": True},
+            {"key": "voorraadaanpassingen", "name": "Voorraadaanpassingen", "level": 1, "expandable": True},
+            {"key": None, "name": "Personnel", "level": 1, "is_header": True},
+            {"key": "lonen_salarissen", "name": "Lonen & Salarissen", "level": 1, "expandable": True},
+            {"key": "overige_personele_kosten", "name": "Overige Personele Kosten", "level": 1, "expandable": True},
+            {"key": "management_fee", "name": "Management Fee", "level": 1, "expandable": True},
+            {"key": None, "name": "Housing", "level": 1, "is_header": True},
+            {"key": "huisvestingskosten", "name": "Huisvestingskosten", "level": 1, "expandable": True},
+            {"key": None, "name": "Office", "level": 1, "is_header": True},
+            {"key": "kantoorkosten", "name": "Kantoorkosten", "level": 1, "expandable": True},
+            {"key": None, "name": "Car / Transport", "level": 1, "is_header": True},
+            {"key": "vervoerskosten", "name": "Vervoerskosten", "level": 1, "expandable": True},
+            {"key": None, "name": "Development / Marketing", "level": 1, "is_header": True},
+            {"key": "verkoopkosten", "name": "Verkoopkosten", "level": 1, "expandable": True},
+            {"key": None, "name": "Automation", "level": 1, "is_header": True},
+            {"key": "automatiseringskosten", "name": "Automatiseringskosten", "level": 1, "expandable": True},
+            {"key": None, "name": "General", "level": 1, "is_header": True},
+            {"key": "algemene_kosten", "name": "Algemene Kosten", "level": 1, "expandable": True},
+            {"key": "admin_accountantskosten", "name": "Administratie & Accountantskosten", "level": 1, "expandable": True},
+            {"key": None, "name": "General Expenses", "level": 1, "is_subtotal": True},
+            {"key": None, "name": "EBITDA", "level": 1, "is_subtotal": True},
+            {"key": "financieel_resultaat", "name": "Financial Result", "level": 0, "expandable": True},
+            {"key": "afschrijvingen", "name": "Depreciations", "level": 0, "expandable": True},
+            {"key": "belastingen", "name": "Taxes", "level": 0, "expandable": True},
+            {"key": None, "name": "Net Result", "level": 1, "is_subtotal": True},
+        ]
 
-    # Create tabs for each section
-    section_tabs = st.tabs([
-        section_headers.get(s, s.replace("_", " ").title())
-        for s in ["revenue", "operating_expenses", "other_income_expenses", "taxes"]
-    ])
-
-    # Track changes for saving
-    updated_mapping = {"categories": {}}
-
-    # Available accounts panel (sidebar style in expander)
-    with st.expander("📋 Beschikbare Rekeningen (niet toegewezen)", expanded=True):
-        st.caption(f"{len(unassigned_accounts)} rekeningen beschikbaar")
-
-        # Group unassigned by first digit for easier navigation
-        account_groups = {}
-        for acc in unassigned_accounts:
-            first_digit = acc["code"][0] if acc["code"] else "?"
-            if first_digit not in account_groups:
-                account_groups[first_digit] = []
-            account_groups[first_digit].append(acc)
-
-        # Show grouped accounts
-        group_cols = st.columns(min(len(account_groups), 4) if account_groups else 1)
-        for idx, (digit, accs) in enumerate(sorted(account_groups.items())):
-            with group_cols[idx % len(group_cols)]:
-                with st.expander(f"🔢 {digit}xxx ({len(accs)})", expanded=False):
-                    for acc in accs:
-                        balance_str = f"€{abs(acc['balance']):,.0f}"
-                        sign = "+" if acc["balance"] < 0 else "-" if acc["balance"] > 0 else ""
-                        st.caption(f"`{acc['code']}` {acc['name'][:30]} ({sign}{balance_str})")
-
-    st.markdown("---")
-
-    # Render each section
-    for section_idx, section_key in enumerate(["revenue", "operating_expenses", "other_income_expenses", "taxes"]):
-        with section_tabs[section_idx]:
-            if section_key not in sections:
-                st.info("Geen categorieën in deze sectie")
+        # Render each row in the report structure
+        for item in report_structure:
+            # Apply search filter
+            if search_cat and search_cat.lower() not in item["name"].lower():
                 continue
 
-            for cat_key, cat_info in sections[section_key]:
-                st.markdown(f"### {cat_info['name']}")
+            indent = "　" * item.get("level", 0)  # Use wide space for indent
+            cat_key = item.get("key")
 
-                # Get currently assigned accounts for this category
+            # Subtotal rows (not editable)
+            if item.get("is_subtotal"):
+                st.markdown(f"**{indent}{item['name']}**")
+                continue
+
+            # Header rows (not editable)
+            if item.get("is_header"):
+                st.markdown(f"{indent}**{item['name']}**")
+                continue
+
+            # Expandable category row
+            if cat_key and item.get("expandable"):
                 current_accounts = mapping.get("categories", {}).get(cat_key, [])
+                num_accounts = len(current_accounts)
 
-                # Show current assignments
-                if current_accounts:
-                    st.caption("Huidige toewijzingen:")
-                    assigned_display = []
-                    for code in current_accounts:
-                        acc = account_lookup.get(code)
-                        if acc:
-                            assigned_display.append(f"{code} - {acc['name'][:40]}")
-                        else:
-                            assigned_display.append(f"{code} (onbekend)")
+                # Create row with expand arrow, name, and + button
+                row_col1, row_col2, row_col3 = st.columns([0.5, 4, 0.5])
 
-                    for i, item in enumerate(assigned_display):
-                        col1, col2 = st.columns([4, 1])
-                        with col1:
-                            st.text(f"• {item}")
-                        with col2:
-                            if st.button("❌", key=f"remove_{cat_key}_{i}"):
-                                current_accounts.remove(current_accounts[i])
+                with row_col1:
+                    # Expand/collapse toggle
+                    expand_key = f"expand_{cat_key}"
+                    if expand_key not in st.session_state:
+                        st.session_state[expand_key] = False
+                    if st.button("▶" if not st.session_state[expand_key] else "▼", key=f"toggle_{cat_key}"):
+                        st.session_state[expand_key] = not st.session_state[expand_key]
+                        st.rerun()
+
+                with row_col2:
+                    badge = f" ({num_accounts})" if num_accounts > 0 else ""
+                    st.markdown(f"{indent}{item['name']}{badge}")
+
+                with row_col3:
+                    # + button to add accounts
+                    if st.button("➕", key=f"add_btn_{cat_key}", help=f"Voeg rekening toe aan {item['name']}"):
+                        st.session_state[f"adding_to_{cat_key}"] = True
+                        st.rerun()
+
+                # Show assigned accounts when expanded
+                if st.session_state.get(expand_key, False) and current_accounts:
+                    for i, acc_code in enumerate(current_accounts):
+                        acc = account_lookup.get(acc_code)
+                        acc_name = acc["name"][:35] if acc else "Onbekend"
+                        acc_col1, acc_col2 = st.columns([4.5, 0.5])
+                        with acc_col1:
+                            st.caption(f"{indent}　　`{acc_code}` - {acc_name}")
+                        with acc_col2:
+                            if st.button("✕", key=f"rm_{cat_key}_{i}", help="Verwijder"):
+                                current_accounts.remove(acc_code)
                                 mapping["categories"][cat_key] = current_accounts
                                 st.session_state.draggable_mapping = mapping
                                 st.rerun()
-                else:
-                    st.caption("Geen rekeningen toegewezen")
 
-                # Add new accounts via multiselect
-                available_options = [
-                    f"{acc['code']} - {acc['name'][:40]}"
-                    for acc in unassigned_accounts
-                ]
+                # Show add dialog if active
+                if st.session_state.get(f"adding_to_{cat_key}", False):
+                    st.markdown(f"**Rekening toevoegen aan {item['name']}:**")
+                    options = [f"{acc['code']} - {acc['name'][:40]}" for acc in unassigned_accounts]
+                    selected = st.selectbox("Selecteer rekening:", options=[""] + options, key=f"select_{cat_key}")
+                    btn_col1, btn_col2 = st.columns(2)
+                    with btn_col1:
+                        if st.button("Toevoegen", key=f"confirm_{cat_key}") and selected:
+                            code = selected.split(" - ")[0]
+                            current_accounts.append(code)
+                            mapping["categories"][cat_key] = current_accounts
+                            st.session_state.draggable_mapping = mapping
+                            st.session_state[f"adding_to_{cat_key}"] = False
+                            st.rerun()
+                    with btn_col2:
+                        if st.button("Annuleren", key=f"cancel_{cat_key}"):
+                            st.session_state[f"adding_to_{cat_key}"] = False
+                            st.rerun()
 
-                new_selection = st.multiselect(
-                    "Rekeningen toevoegen:",
-                    options=available_options,
-                    default=[],
-                    key=f"add_{cat_key}",
-                    placeholder="Selecteer rekeningen om toe te voegen..."
-                )
+    # -------------------------------------------------------------------------
+    # RIGHT COLUMN: Unmapped Accounts
+    # -------------------------------------------------------------------------
+    with col_unmapped:
+        st.markdown("### 📋 Niet-toegewezen Rekeningen")
+        st.caption(f"{len(unassigned_accounts)} rekeningen beschikbaar")
 
-                if new_selection:
-                    if st.button(f"➕ Voeg toe aan {cat_info['name']}", key=f"confirm_add_{cat_key}"):
-                        new_codes = [sel.split(" - ")[0] for sel in new_selection]
-                        current_accounts.extend(new_codes)
-                        mapping["categories"][cat_key] = current_accounts
-                        st.session_state.draggable_mapping = mapping
-                        st.rerun()
+        # Search box
+        search_acc = st.text_input("🔍 Zoek rekening...", key="search_account", placeholder="Code of naam...")
 
-                updated_mapping["categories"][cat_key] = current_accounts
-                st.markdown("---")
+        # Refresh button
+        if st.button("🔄 Ververs", key="refresh_accounts"):
+            discover_account_groups.clear()
+            st.rerun()
 
-    # Save button
-    st.markdown("### 💾 Mapping Opslaan")
-    col_save, col_reset = st.columns(2)
+        # Sort options
+        sort_by = st.selectbox("Sorteren op:", ["Account Number", "Naam", "Saldo"], key="sort_unmapped")
 
-    with col_save:
-        if st.button("💾 Opslaan naar bestand", key="save_draggable_mapping", type="primary"):
+        # Filter and sort accounts
+        filtered_accounts = unassigned_accounts
+        if search_acc:
+            search_lower = search_acc.lower()
+            filtered_accounts = [
+                acc for acc in unassigned_accounts
+                if search_lower in acc["code"].lower() or search_lower in acc["name"].lower()
+            ]
+
+        if sort_by == "Naam":
+            filtered_accounts = sorted(filtered_accounts, key=lambda x: x["name"])
+        elif sort_by == "Saldo":
+            filtered_accounts = sorted(filtered_accounts, key=lambda x: abs(x["balance"]), reverse=True)
+        else:
+            filtered_accounts = sorted(filtered_accounts, key=lambda x: x["code"])
+
+        # Display accounts
+        st.markdown("---")
+        for acc in filtered_accounts[:50]:  # Limit to 50 for performance
+            acc_col1, acc_col2 = st.columns([4, 1])
+            with acc_col1:
+                st.text(f"{acc['code']} - {acc['name'][:30]}")
+            with acc_col2:
+                st.caption("👁")  # Eye icon to indicate viewable
+
+        if len(filtered_accounts) > 50:
+            st.caption(f"... en {len(filtered_accounts) - 50} meer rekeningen")
+
+    # =========================================================================
+    # SAVE / RESET BUTTONS
+    # =========================================================================
+    st.markdown("---")
+    save_col1, save_col2, save_col3 = st.columns([1, 1, 2])
+
+    with save_col1:
+        if st.button("💾 Opslaan", key="save_mapping", type="primary"):
             success, message = save_draggable_mapping(st.session_state.draggable_mapping)
             if success:
                 st.success(f"✅ {message}")
-                # Clear caches to use new mapping
                 get_base_year_data.clear()
             else:
                 st.error(f"❌ {message}")
 
-    with col_reset:
-        if st.button("🔄 Reset naar standaard", key="reset_mapping"):
+    with save_col2:
+        if st.button("🔄 Reset", key="reset_mapping"):
             st.session_state.draggable_mapping = {
                 "categories": {key: [] for key in REPORT_CATEGORIES.keys() if not REPORT_CATEGORIES[key].get("is_subtotal", False)},
                 "unassigned": []
             }
-            # Also delete the file
             if os.path.exists(MAPPING_STORAGE_FILE):
                 os.remove(MAPPING_STORAGE_FILE)
             st.success("Mapping gereset!")
             st.rerun()
-
-    # Preview of current mapping
-    with st.expander("📊 Preview Huidige Mapping", expanded=False):
-        preview_data = []
-        for cat_key, cat_info in sorted(REPORT_CATEGORIES.items(), key=lambda x: x[1].get("order", 99)):
-            if cat_info.get("is_subtotal", False):
-                preview_data.append({
-                    "Categorie": f"**{cat_info['name']}**",
-                    "Rekeningen": "(berekend)",
-                    "Type": "Subtotaal"
-                })
-            else:
-                assigned = mapping.get("categories", {}).get(cat_key, [])
-                preview_data.append({
-                    "Categorie": cat_info["name"],
-                    "Rekeningen": ", ".join(assigned) if assigned else "-",
-                    "Type": "Invoer"
-                })
-
-        if preview_data:
-            st.dataframe(pd.DataFrame(preview_data), use_container_width=True, hide_index=True)
 
 
 def calculate_report_with_mapping(company_id, year, mapping=None):
