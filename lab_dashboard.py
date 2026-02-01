@@ -2674,21 +2674,48 @@ def main():
         # =====================================================================
         st.subheader("⚙️ Prognose Parameters")
 
+        # Rolling forecast optie
+        use_rolling_forecast = st.checkbox(
+            "🔄 Rolling Forecast (gebruik historische gemiddelden)",
+            value=False,
+            key="cf_rolling_forecast",
+            help="Indien aangevinkt, worden de wekelijkse omzet en kosten automatisch berekend op basis van historische bankdata"
+        )
+
+        # Bereken historische gemiddelden voor rolling forecast
+        if historical_data and use_rolling_forecast:
+            hist_inflows = [w["inflow"] for w in historical_data.values()]
+            hist_outflows = [w["outflow"] for w in historical_data.values()]
+            avg_weekly_inflow = sum(hist_inflows) / len(hist_inflows) if hist_inflows else 50000
+            avg_weekly_outflow = sum(hist_outflows) / len(hist_outflows) if hist_outflows else 45000
+            st.info(f"📊 Historisch gemiddelde (laatste {len(historical_data)} weken): Ontvangsten €{avg_weekly_inflow:,.0f}/week | Uitgaven €{avg_weekly_outflow:,.0f}/week")
+        else:
+            avg_weekly_inflow = 50000
+            avg_weekly_outflow = 45000
+
         param_cols = st.columns(4)
         with param_cols[0]:
-            weekly_revenue = st.number_input(
-                "Verwachte wekelijkse omzet",
-                value=50000,
-                step=5000,
-                key="cf_weekly_rev"
-            )
+            if use_rolling_forecast:
+                weekly_revenue = avg_weekly_inflow
+                st.metric("Wekelijkse omzet (auto)", f"€{weekly_revenue:,.0f}")
+            else:
+                weekly_revenue = st.number_input(
+                    "Verwachte wekelijkse omzet",
+                    value=50000,
+                    step=5000,
+                    key="cf_weekly_rev"
+                )
         with param_cols[1]:
-            weekly_costs = st.number_input(
-                "Verwachte wekelijkse kosten",
-                value=45000,
-                step=5000,
-                key="cf_weekly_cost"
-            )
+            if use_rolling_forecast:
+                weekly_costs = avg_weekly_outflow
+                st.metric("Wekelijkse kosten (auto)", f"€{weekly_costs:,.0f}")
+            else:
+                weekly_costs = st.number_input(
+                    "Verwachte wekelijkse kosten",
+                    value=45000,
+                    step=5000,
+                    key="cf_weekly_cost"
+                )
         with param_cols[2]:
             collection_rate = st.slider(
                 "Incasso % debiteuren/week",
@@ -2704,14 +2731,72 @@ def main():
 
         forecast_weeks = st.slider("Aantal weken vooruit", 4, 24, 12, key="cf_forecast_weeks")
 
-        # =====================================================================
-        # GECOMBINEERDE DATASET BOUWEN
-        # =====================================================================
+        # Import en bereken huidige week (nodig voor BTW berekening)
         from datetime import timedelta
-
         today = datetime.now().date()
         current_week_start = today - timedelta(days=today.weekday())
 
+        # =====================================================================
+        # VASTE LASTEN (LONEN & BTW)
+        # =====================================================================
+        st.markdown("---")
+        st.subheader("💼 Vaste Lasten")
+        st.caption("Voeg terugkerende kosten toe die niet in de crediteuren staan")
+
+        fixed_costs_cols = st.columns(3)
+        with fixed_costs_cols[0]:
+            monthly_salaries = st.number_input(
+                "Maandelijkse loonkosten (€)",
+                value=0,
+                step=1000,
+                min_value=0,
+                key="cf_monthly_salaries",
+                help="Totale maandelijkse loonkosten inclusief werkgeverslasten"
+            )
+        with fixed_costs_cols[1]:
+            vat_payment = st.number_input(
+                "BTW afdracht per kwartaal (€)",
+                value=0,
+                step=1000,
+                min_value=0,
+                key="cf_vat_payment",
+                help="Geschatte BTW afdracht per kwartaal (betaling rond 1e maand na kwartaal)"
+            )
+        with fixed_costs_cols[2]:
+            other_fixed_costs = st.number_input(
+                "Overige vaste maandkosten (€)",
+                value=0,
+                step=500,
+                min_value=0,
+                key="cf_other_fixed",
+                help="Huur, verzekeringen, abonnementen, etc."
+            )
+
+        # Bereken wanneer BTW betaald moet worden (maanden na kwartaaleinde: jan, apr, jul, okt)
+        def get_vat_payment_weeks(start_date, num_weeks):
+            """Bepaal in welke weken BTW betaald moet worden"""
+            vat_weeks = []
+            vat_months = [1, 4, 7, 10]  # Januari, April, Juli, Oktober
+
+            for week in range(1, num_weeks + 1):
+                week_date = start_date + timedelta(weeks=week)
+                # BTW wordt betaald in de eerste week van de BTW-maand
+                if week_date.month in vat_months and week_date.day <= 7:
+                    # Check of dit de eerste week van de maand is
+                    first_of_month = week_date.replace(day=1)
+                    if (week_date - first_of_month).days < 7:
+                        vat_weeks.append(week)
+            return vat_weeks
+
+        vat_payment_weeks = get_vat_payment_weeks(current_week_start, forecast_weeks) if vat_payment > 0 else []
+
+        if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
+            st.info(f"💡 Vaste lasten per week: lonen €{monthly_salaries/4.33:,.0f} + overig €{other_fixed_costs/4.33:,.0f} = €{(monthly_salaries + other_fixed_costs)/4.33:,.0f}/week" +
+                   (f" | BTW afdracht €{vat_payment:,.0f} in weken: {vat_payment_weeks}" if vat_payment_weeks else ""))
+
+        # =====================================================================
+        # GECOMBINEERDE DATASET BOUWEN
+        # =====================================================================
         all_data = []
 
         # 1. Historische weken toevoegen (WERKELIJKE DATA)
@@ -2767,6 +2852,10 @@ def main():
         remaining_rec = filtered_receivables
         remaining_pay = filtered_payables
 
+        # Bereken wekelijkse vaste lasten
+        weekly_salaries = monthly_salaries / 4.33  # Gemiddeld 4.33 weken per maand
+        weekly_other_fixed = other_fixed_costs / 4.33
+
         for week in range(1, forecast_weeks + 1):
             week_start = current_week_start + timedelta(weeks=week)
 
@@ -2778,20 +2867,35 @@ def main():
             # Betalingen aan crediteuren
             payments = remaining_pay * (payment_rate / 100)
             remaining_pay -= payments
-            outflow = weekly_costs + payments
+
+            # Vaste lasten toevoegen
+            fixed_costs_this_week = weekly_salaries + weekly_other_fixed
+
+            # BTW afdracht in specifieke weken
+            vat_this_week = vat_payment if week in vat_payment_weeks else 0
+
+            outflow = weekly_costs + payments + fixed_costs_this_week + vat_this_week
 
             # Nieuw saldo
             balance = balance + inflow - outflow
 
+            # Bepaal label met extra info bij BTW week
+            week_label = f"Week +{week}"
+            if vat_this_week > 0:
+                week_label += " (BTW)"
+
             all_data.append({
                 "week_key": week_start.strftime("%Y-%m-%d"),
-                "week_label": f"Week +{week}",
+                "week_label": week_label,
                 "week_start": week_start,
                 "is_forecast": True,
                 "inflow": inflow,
                 "outflow": outflow,
                 "net": inflow - outflow,
-                "balance": balance
+                "balance": balance,
+                "salaries": weekly_salaries,
+                "vat": vat_this_week,
+                "other_fixed": weekly_other_fixed
             })
 
         df_combined = pd.DataFrame(all_data)
@@ -2918,26 +3022,56 @@ def main():
                 st.info("Geen historische data beschikbaar voor de geselecteerde periode.")
 
         with tab_forecast:
-            st.caption("Geprojecteerde cashflow op basis van openstaande posten en parameters")
+            st.caption("Geprojecteerde cashflow op basis van openstaande posten, vaste lasten en parameters")
             df_fc_display = df_combined[df_combined["is_forecast"]].copy()
             if not df_fc_display.empty:
                 df_fc_display["week_start"] = pd.to_datetime(df_fc_display["week_start"]).dt.strftime("%d-%m-%Y")
-                st.dataframe(
-                    df_fc_display[["week_label", "week_start", "inflow", "outflow", "net", "balance"]].rename(
-                        columns={
-                            "week_label": "Week",
-                            "week_start": "Week Start",
-                            "inflow": "Ontvangsten",
-                            "outflow": "Uitgaven",
-                            "net": "Netto",
-                            "balance": "Saldo"
-                        }
-                    ).style.format({
+
+                # Toon uitgebreide tabel met vaste lasten indien van toepassing
+                if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
+                    # Voeg vaste lasten kolommen toe als ze bestaan
+                    display_cols = ["week_label", "week_start", "inflow", "outflow", "salaries", "vat", "other_fixed", "net", "balance"]
+                    rename_cols = {
+                        "week_label": "Week",
+                        "week_start": "Week Start",
+                        "inflow": "Ontvangsten",
+                        "outflow": "Totaal Uitgaven",
+                        "salaries": "Lonen",
+                        "vat": "BTW",
+                        "other_fixed": "Overig Vast",
+                        "net": "Netto",
+                        "balance": "Saldo"
+                    }
+                    format_dict = {
+                        "Ontvangsten": "€{:,.0f}",
+                        "Totaal Uitgaven": "€{:,.0f}",
+                        "Lonen": "€{:,.0f}",
+                        "BTW": "€{:,.0f}",
+                        "Overig Vast": "€{:,.0f}",
+                        "Netto": "€{:,.0f}",
+                        "Saldo": "€{:,.0f}"
+                    }
+                else:
+                    display_cols = ["week_label", "week_start", "inflow", "outflow", "net", "balance"]
+                    rename_cols = {
+                        "week_label": "Week",
+                        "week_start": "Week Start",
+                        "inflow": "Ontvangsten",
+                        "outflow": "Uitgaven",
+                        "net": "Netto",
+                        "balance": "Saldo"
+                    }
+                    format_dict = {
                         "Ontvangsten": "€{:,.0f}",
                         "Uitgaven": "€{:,.0f}",
                         "Netto": "€{:,.0f}",
                         "Saldo": "€{:,.0f}"
-                    }),
+                    }
+
+                # Filter alleen bestaande kolommen
+                existing_cols = [c for c in display_cols if c in df_fc_display.columns]
+                st.dataframe(
+                    df_fc_display[existing_cols].rename(columns=rename_cols).style.format(format_dict),
                     use_container_width=True,
                     hide_index=True
                 )
