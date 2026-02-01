@@ -3606,6 +3606,62 @@ def main():
                     help="Vink aan als de BTW maandelijks wordt aangegeven i.p.v. per kwartaal"
                 )
 
+            # =================================================================
+            # COMPARISON PERIOD SELECTION
+            # =================================================================
+            st.markdown("#### 🔄 Vergelijkingsperiode")
+
+            comparison_type = st.radio(
+                "Vergelijk met:",
+                options=[
+                    "Vorige maand",
+                    "Zelfde maand vorig jaar",
+                    "Aangepaste periode",
+                    "Gemiddelde afgelopen 3 maanden",
+                    "Gemiddelde afgelopen 6 maanden",
+                    "Gemiddelde afgelopen 12 maanden"
+                ],
+                horizontal=True,
+                key="fc_comparison_type",
+                help="Kies waarmee je de geselecteerde periode wilt vergelijken"
+            )
+
+            # Default values for custom period (will be overwritten if "Aangepaste periode" is selected)
+            custom_compare_year = close_year - 1
+            custom_compare_month = close_month
+            custom_period_length = 1
+
+            # Show custom period selectors if "Aangepaste periode" is selected
+            if comparison_type == "Aangepaste periode":
+                custom_col1, custom_col2, custom_col3, custom_col4 = st.columns([1, 1, 1, 1])
+                with custom_col1:
+                    custom_compare_year = st.selectbox(
+                        "Vergelijk met jaar",
+                        options=list(range(datetime.now().year, 2021, -1)),
+                        key="fc_custom_compare_year"
+                    )
+                with custom_col2:
+                    custom_compare_month = st.selectbox(
+                        "Vergelijk met maand",
+                        options=list(range(1, 13)),
+                        format_func=lambda x: [
+                            "Januari", "Februari", "Maart", "April", "Mei", "Juni",
+                            "Juli", "Augustus", "September", "Oktober", "November", "December"
+                        ][x - 1],
+                        key="fc_custom_compare_month"
+                    )
+                with custom_col3:
+                    # Option for multi-month comparison
+                    custom_period_length = st.selectbox(
+                        "Periode lengte",
+                        options=[1, 2, 3, 6, 12],
+                        format_func=lambda x: f"{x} maand{'en' if x > 1 else ''}",
+                        key="fc_custom_period_length",
+                        help="Vergelijk met een periode van meerdere maanden"
+                    )
+                with custom_col4:
+                    st.write("")  # Placeholder for alignment
+
             fc_company_id = None
             if close_company != "Alle bedrijven":
                 fc_company_id = [k for k, v in COMPANIES.items() if v == close_company][0]
@@ -3616,21 +3672,92 @@ def main():
             period_end_day = monthrange(close_year, close_month)[1]
             period_end = f"{close_year}-{close_month:02d}-{period_end_day:02d}"
 
-            # Previous period for comparison
-            if close_month == 1:
-                prev_year, prev_month = close_year - 1, 12
-            else:
-                prev_year, prev_month = close_year, close_month - 1
-            prev_start = f"{prev_year}-{prev_month:02d}-01"
-            prev_end_day = monthrange(prev_year, prev_month)[1]
-            prev_end = f"{prev_year}-{prev_month:02d}-{prev_end_day:02d}"
-
             month_names = [
                 "Januari", "Februari", "Maart", "April", "Mei", "Juni",
                 "Juli", "Augustus", "September", "Oktober", "November", "December"
             ]
             period_label = f"{month_names[close_month - 1]} {close_year}"
-            prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
+
+            # Helper function to calculate period dates going back N months
+            def get_period_n_months_back(year, month, months_back):
+                """Calculate start and end dates for a period N months back."""
+                # Go back N months
+                total_months = year * 12 + month - 1 - months_back
+                target_year = total_months // 12
+                target_month = (total_months % 12) + 1
+                start = f"{target_year}-{target_month:02d}-01"
+                end_day = monthrange(target_year, target_month)[1]
+                end = f"{target_year}-{target_month:02d}-{end_day:02d}"
+                return start, end, target_year, target_month
+
+            # Helper function to calculate multi-month period
+            def get_multi_month_period(end_year, end_month, num_months):
+                """Calculate start and end dates for a multi-month period ending at the specified month."""
+                # End date is the last day of end_month
+                end_day = monthrange(end_year, end_month)[1]
+                end = f"{end_year}-{end_month:02d}-{end_day:02d}"
+                # Start date is num_months before
+                total_months = end_year * 12 + end_month - 1 - (num_months - 1)
+                start_year = total_months // 12
+                start_month = (total_months % 12) + 1
+                start = f"{start_year}-{start_month:02d}-01"
+                return start, end, start_year, start_month, end_year, end_month
+
+            # Calculate comparison period based on selection
+            is_average_comparison = comparison_type.startswith("Gemiddelde")
+            avg_num_months = 1  # Default value, will be overwritten for average comparisons
+
+            if comparison_type == "Vorige maand":
+                # Default: previous month
+                prev_start, prev_end, prev_year, prev_month = get_period_n_months_back(close_year, close_month, 1)
+                prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
+
+            elif comparison_type == "Zelfde maand vorig jaar":
+                # Same month, previous year
+                prev_year = close_year - 1
+                prev_month = close_month
+                prev_start = f"{prev_year}-{prev_month:02d}-01"
+                prev_end_day = monthrange(prev_year, prev_month)[1]
+                prev_end = f"{prev_year}-{prev_month:02d}-{prev_end_day:02d}"
+                prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
+
+            elif comparison_type == "Aangepaste periode":
+                # Custom period selected by user
+                prev_year = custom_compare_year
+                prev_month = custom_compare_month
+                num_months = custom_period_length
+
+                if num_months == 1:
+                    prev_start = f"{prev_year}-{prev_month:02d}-01"
+                    prev_end_day = monthrange(prev_year, prev_month)[1]
+                    prev_end = f"{prev_year}-{prev_month:02d}-{prev_end_day:02d}"
+                    prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
+                else:
+                    # Multi-month period
+                    prev_start, prev_end, start_year, start_month, end_year, end_month = get_multi_month_period(
+                        prev_year, prev_month, num_months
+                    )
+                    prev_period_label = f"{month_names[start_month - 1]} {start_year} - {month_names[end_month - 1]} {end_year}"
+
+            elif comparison_type in ["Gemiddelde afgelopen 3 maanden", "Gemiddelde afgelopen 6 maanden", "Gemiddelde afgelopen 12 maanden"]:
+                # Average of past N months (excluding current month)
+                if comparison_type == "Gemiddelde afgelopen 3 maanden":
+                    num_months = 3
+                elif comparison_type == "Gemiddelde afgelopen 6 maanden":
+                    num_months = 6
+                else:
+                    num_months = 12
+
+                # Calculate the period for the average (N months before current month)
+                prev_start, _, start_year, start_month = get_period_n_months_back(close_year, close_month, num_months)
+                _, prev_end, end_year, end_month = get_period_n_months_back(close_year, close_month, 1)
+                prev_period_label = f"Gem. {month_names[start_month - 1]} {start_year} - {month_names[end_month - 1]} {end_year}"
+                # Store num_months for later use in average calculations
+                avg_num_months = num_months
+            else:
+                # Fallback to previous month
+                prev_start, prev_end, prev_year, prev_month = get_period_n_months_back(close_year, close_month, 1)
+                prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
 
             # BTW period calculation (monthly or quarterly)
             if btw_monthly:
@@ -4173,8 +4300,16 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                 current_profit = current_revenue - current_costs
 
                 # Previous period data
-                prev_revenue = get_period_revenue(prev_start, prev_end, fc_company_id)
-                prev_costs = get_period_costs(prev_start, prev_end, fc_company_id)
+                prev_revenue_raw = get_period_revenue(prev_start, prev_end, fc_company_id)
+                prev_costs_raw = get_period_costs(prev_start, prev_end, fc_company_id)
+
+                # For average comparisons, divide by number of months
+                if is_average_comparison:
+                    prev_revenue = prev_revenue_raw / avg_num_months
+                    prev_costs = prev_costs_raw / avg_num_months
+                else:
+                    prev_revenue = prev_revenue_raw
+                    prev_costs = prev_costs_raw
                 prev_profit = prev_revenue - prev_costs
 
                 # Validation data
@@ -4211,25 +4346,37 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             profit_pct = (profit_delta / abs(prev_profit) * 100) if prev_profit else 0
             margin = (current_profit / current_revenue * 100) if current_revenue else 0
 
+            # Create short comparison label for metrics
+            if comparison_type == "Vorige maand":
+                comparison_short_label = "vs vorige maand"
+            elif comparison_type == "Zelfde maand vorig jaar":
+                comparison_short_label = f"vs {prev_period_label}"
+            elif comparison_type == "Aangepaste periode":
+                comparison_short_label = f"vs {prev_period_label}"
+            elif is_average_comparison:
+                comparison_short_label = f"vs {prev_period_label}"
+            else:
+                comparison_short_label = "vs vorige maand"
+
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric(
                     "📈 Omzet",
                     f"€{current_revenue:,.0f}",
-                    delta=f"{revenue_pct:+.1f}% vs vorige maand"
+                    delta=f"{revenue_pct:+.1f}% {comparison_short_label}"
                 )
             with col2:
                 st.metric(
                     "📉 Kosten",
                     f"€{current_costs:,.0f}",
-                    delta=f"{costs_pct:+.1f}% vs vorige maand",
+                    delta=f"{costs_pct:+.1f}% {comparison_short_label}",
                     delta_color="inverse"
                 )
             with col3:
                 st.metric(
                     "💵 Resultaat",
                     f"€{current_profit:,.0f}",
-                    delta=f"{profit_pct:+.1f}% vs vorige maand"
+                    delta=f"{profit_pct:+.1f}% {comparison_short_label}"
                 )
             with col4:
                 st.metric(
@@ -5073,13 +5220,14 @@ MAANDAFSLUITING RAPPORT
 ========================
 Rapport datum: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Periode: {period_label}
+Vergelijking met: {prev_period_label}
 Entiteit: {close_company}
 
 FINANCIËLE KERNCIJFERS
 ----------------------
-Omzet:      €{current_revenue:,.0f} ({revenue_pct:+.1f}% vs vorige maand)
-Kosten:     €{current_costs:,.0f} ({costs_pct:+.1f}% vs vorige maand)
-Resultaat:  €{current_profit:,.0f} ({profit_pct:+.1f}% vs vorige maand)
+Omzet:      €{current_revenue:,.0f} ({revenue_pct:+.1f}% {comparison_short_label})
+Kosten:     €{current_costs:,.0f} ({costs_pct:+.1f}% {comparison_short_label})
+Resultaat:  €{current_profit:,.0f} ({profit_pct:+.1f}% {comparison_short_label})
 Marge:      {margin:.1f}%
 
 VALIDATIE STATUS
