@@ -7420,7 +7420,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                         st.dataframe(pd.DataFrame(acc_df_data), use_container_width=True, hide_index=True)
 
                 # Save mapping button
-                if st.button("💾 Mapping Opslaan", key="save_mapping"):
+                if st.button("💾 Mapping Opslaan", key="save_legacy_mapping"):
                     # Parse inputs
                     new_revenue = [p.strip() for p in revenue_input.split(",") if p.strip()]
                     new_cogs = [p.strip() for p in cogs_input.split(",") if p.strip()]
