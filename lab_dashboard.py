@@ -2521,8 +2521,8 @@ def main():
                 return month_str
         
         # Bouw monthly data van geaggregeerde resultaten
+        monthly = {}
         if revenue_agg:
-            monthly = {}
             
             # Omzet per maand
             for r in revenue_agg:
@@ -2556,21 +2556,21 @@ def main():
                     month = parse_month_key(month_raw)
                     if month in monthly:
                         monthly[month]["kosten"] -= c.get("balance", 0)
-            
-            df_monthly = pd.DataFrame([
-                {"Maand": k, "Omzet": v["omzet"], "Kosten": v["kosten"]}
-                for k, v in sorted(monthly.items())
-            ])
-            
-            if not df_monthly.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Bar(name="Omzet", x=df_monthly["Maand"], y=df_monthly["Omzet"],
-                                    marker_color="#1e3a5f"))
-                fig.add_trace(go.Bar(name="Kosten", x=df_monthly["Maand"], y=df_monthly["Kosten"],
-                                    marker_color="#87CEEB"))
-                fig.update_layout(barmode="group", height=400)
-                st.plotly_chart(fig, use_container_width=True)
-        
+
+        df_monthly = pd.DataFrame([
+            {"Maand": k, "Omzet": v["omzet"], "Kosten": v["kosten"]}
+            for k, v in sorted(monthly.items())
+        ])
+
+        if not df_monthly.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name="Omzet", x=df_monthly["Maand"], y=df_monthly["Omzet"],
+                                marker_color="#1e3a5f"))
+            fig.add_trace(go.Bar(name="Kosten", x=df_monthly["Maand"], y=df_monthly["Kosten"],
+                                marker_color="#87CEEB"))
+            fig.update_layout(barmode="group", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
         # =====================================================================
         # OMZET GRAFIEK MET INTERACTIEVE SLIDER (WEEK/DAG TOGGLE)
         # =====================================================================
