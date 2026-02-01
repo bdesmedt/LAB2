@@ -2290,6 +2290,99 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         st.error(f"Fout bij ophalen actuele data: {e}")
         return None
 
+def get_base_year_data(company_id, base_year):
+    """
+    Fetch annual financial data from Odoo for a specific year to use as forecast base.
+
+    Args:
+        company_id: Company ID to filter by (None for all companies)
+        base_year: Year to fetch data from (e.g., 2024, 2025)
+
+    Returns:
+        Dict with aggregated annual data:
+        - average_monthly_revenue: Average monthly revenue
+        - average_monthly_cogs: Average monthly COGS
+        - average_monthly_expenses: Dict of average monthly expenses per category
+        - total_revenue: Total annual revenue
+        - total_cogs: Total annual COGS
+        - months_with_data: Number of months with actual data
+    """
+    try:
+        start_date = f"{base_year}-01-01"
+        end_date = f"{base_year}-12-31"
+
+        # Build domain filters
+        base_domain = [
+            ["date", ">=", start_date],
+            ["date", "<=", end_date],
+            ["parent_state", "=", "posted"]
+        ]
+
+        if company_id:
+            base_domain.append(["company_id", "=", company_id])
+
+        # Fetch revenue (accounts starting with 8)
+        revenue_domain = base_domain + [["account_id.code", "=like", "8%"]]
+        revenue_data = odoo_read_group(
+            "account.move.line",
+            revenue_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
+
+        # Fetch COGS (accounts starting with 7)
+        cogs_domain = base_domain + [["account_id.code", "=like", "7%"]]
+        cogs_data = odoo_read_group(
+            "account.move.line",
+            cogs_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
+
+        # Fetch operating expenses (accounts 40-49)
+        expenses_by_category = {}
+        for cat_code in EXPENSE_CATEGORIES.keys():
+            exp_domain = base_domain + [["account_id.code", "=like", f"{cat_code}%"]]
+            exp_data = odoo_read_group(
+                "account.move.line",
+                exp_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            expenses_by_category[cat_code] = exp_data
+
+        # Calculate totals and averages
+        total_revenue = sum(-item.get("balance:sum", 0) for item in revenue_data)  # Flip sign
+        total_cogs = sum(item.get("balance:sum", 0) for item in cogs_data)
+
+        # Count months with revenue data to calculate proper averages
+        months_with_data = len([r for r in revenue_data if r.get("balance:sum", 0) != 0])
+        if months_with_data == 0:
+            months_with_data = 1  # Avoid division by zero
+
+        average_monthly_revenue = total_revenue / months_with_data
+        average_monthly_cogs = total_cogs / months_with_data
+
+        # Calculate average expenses per category
+        average_monthly_expenses = {}
+        for cat_code, cat_data in expenses_by_category.items():
+            total_cat = sum(item.get("balance:sum", 0) for item in cat_data)
+            average_monthly_expenses[cat_code] = total_cat / months_with_data
+
+        return {
+            "base_year": base_year,
+            "average_monthly_revenue": average_monthly_revenue,
+            "average_monthly_cogs": average_monthly_cogs,
+            "average_monthly_expenses": average_monthly_expenses,
+            "total_revenue": total_revenue,
+            "total_cogs": total_cogs,
+            "months_with_data": months_with_data,
+            "cogs_percentage": (total_cogs / total_revenue) if total_revenue > 0 else 0.6
+        }
+    except Exception as e:
+        st.error(f"Fout bij ophalen basisjaar data: {e}")
+        return None
+
 def export_forecast_to_csv(forecast, calculated):
     """Export forecast data to CSV format"""
     periods = forecast.get("periods", [])
@@ -6350,6 +6443,46 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.subheader("🎯 Scenario Templates")
             st.caption("Klik op een scenario om automatisch waarden in te vullen")
 
+            # Base year selection for scenarios
+            with st.expander("📅 Basisjaar Instellingen", expanded=True):
+                base_year_col1, base_year_col2 = st.columns(2)
+                with base_year_col1:
+                    use_base_year = st.checkbox(
+                        "Gebruik historische data als basis",
+                        value=False,
+                        key="use_base_year",
+                        help="Haal de gemiddelde maandomzet en kosten op uit een historisch jaar"
+                    )
+                with base_year_col2:
+                    current_year = datetime.now().year
+                    base_year = st.selectbox(
+                        "Basisjaar",
+                        options=list(range(current_year - 5, current_year + 1)),
+                        index=4,  # Default to previous year
+                        key="base_year_select",
+                        disabled=not use_base_year,
+                        help="Selecteer het jaar waarvan de historische data gebruikt moet worden"
+                    )
+
+                # Show base year data preview if enabled
+                if use_base_year:
+                    with st.spinner(f"Ophalen data {base_year}..."):
+                        base_year_data = get_base_year_data(forecast_company, base_year)
+                    if base_year_data:
+                        st.success(f"✅ Data van {base_year} opgehaald ({base_year_data['months_with_data']} maanden)")
+                        preview_col1, preview_col2, preview_col3 = st.columns(3)
+                        with preview_col1:
+                            st.metric("Gem. maandomzet", f"€ {base_year_data['average_monthly_revenue']:,.0f}")
+                        with preview_col2:
+                            st.metric("Gem. maand COGS", f"€ {base_year_data['average_monthly_cogs']:,.0f}")
+                        with preview_col3:
+                            st.metric("COGS %", f"{base_year_data['cogs_percentage']*100:.1f}%")
+                    else:
+                        st.warning(f"Geen data gevonden voor {base_year}")
+                        base_year_data = None
+                else:
+                    base_year_data = None
+
             scenario_cols = st.columns(3)
 
             for idx, (key, template) in enumerate(SCENARIO_TEMPLATES.items()):
@@ -6363,15 +6496,22 @@ Gegenereerd door LAB Groep Financial Dashboard
                         - **Kosten:** {'+' if template['expense_multiplier'] >= 1 else ''}{(template['expense_multiplier']-1)*100:.0f}%
                         """)
 
-                        # Base revenue input for this scenario
-                        base_rev = st.number_input(
-                            "Basis omzet/maand (€)",
-                            min_value=0,
-                            value=100000,
-                            step=10000,
-                            key=f"base_rev_{key}",
-                            help="Startwaarde voor maandelijkse omzet"
-                        )
+                        # Base revenue input for this scenario (only if not using base year)
+                        if not use_base_year:
+                            base_rev = st.number_input(
+                                "Basis omzet/maand (€)",
+                                min_value=0,
+                                value=100000,
+                                step=10000,
+                                key=f"base_rev_{key}",
+                                help="Startwaarde voor maandelijkse omzet"
+                            )
+                        else:
+                            if base_year_data:
+                                base_rev = base_year_data["average_monthly_revenue"]
+                                st.info(f"Basis: € {base_rev:,.0f}/maand ({base_year})")
+                            else:
+                                base_rev = 100000
 
                         if st.button(f"Toepassen {template['name']}", key=f"apply_{key}"):
                             forecast = create_empty_forecast(
@@ -6379,7 +6519,17 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 time_period_months=time_period
                             )
                             forecast["name"] = f"{template['name']} Scenario"
-                            forecast = apply_scenario_template(forecast, key, base_revenue=base_rev)
+                            # Store base year info in forecast if used
+                            if use_base_year and base_year_data:
+                                forecast["base_year"] = base_year
+                                forecast["base_year_data"] = base_year_data
+                                forecast = apply_scenario_template(
+                                    forecast, key,
+                                    base_revenue=base_year_data["average_monthly_revenue"],
+                                    base_expenses=base_year_data["average_monthly_expenses"]
+                                )
+                            else:
+                                forecast = apply_scenario_template(forecast, key, base_revenue=base_rev)
                             st.session_state.current_forecast = forecast
                             st.success(f"✅ {template['name']} scenario toegepast!")
                             st.rerun()
