@@ -1210,6 +1210,69 @@ def get_historical_bank_movements(company_id=None, weeks_back=8):
     return weekly_data
 
 @st.cache_data(ttl=300)
+def get_historical_bank_data_by_year(year, company_id=None):
+    """Haal historische bankmutaties op per week voor een specifiek jaar"""
+    from datetime import datetime, timedelta
+
+    # Start en einddatum voor het jaar
+    start_date = datetime(year, 1, 1).date()
+    end_date = datetime(year, 12, 31).date()
+
+    # Haal eerst de bank account IDs op
+    bank_journals = get_bank_balances()
+    bank_account_ids = []
+    for j in bank_journals:
+        acc_id = j.get("default_account_id")
+        if acc_id:
+            bank_account_ids.append(acc_id[0] if isinstance(acc_id, list) else acc_id)
+
+    if not bank_account_ids:
+        return {}
+
+    # Haal alle bankmutaties op in de periode
+    domain = [
+        ["account_id", "in", bank_account_ids],
+        ["parent_state", "=", "posted"],
+        ["date", ">=", start_date.strftime("%Y-%m-%d")],
+        ["date", "<=", end_date.strftime("%Y-%m-%d")]
+    ]
+    if company_id:
+        domain.append(["company_id", "=", company_id])
+
+    movements = odoo_call(
+        "account.move.line", "search_read",
+        domain,
+        ["date", "debit", "credit", "balance", "company_id", "partner_id", "name"],
+        limit=20000
+    )
+
+    # Groepeer per week
+    weekly_data = {}
+    for m in movements:
+        date_str = m.get("date")
+        if date_str:
+            date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            week_start = date - timedelta(days=date.weekday())
+            week_key = week_start.strftime("%Y-%m-%d")
+
+            if week_key not in weekly_data:
+                weekly_data[week_key] = {
+                    "week_start": week_start,
+                    "inflow": 0,
+                    "outflow": 0,
+                    "net": 0
+                }
+
+            debit = m.get("debit", 0) or 0
+            credit = m.get("credit", 0) or 0
+
+            weekly_data[week_key]["inflow"] += debit
+            weekly_data[week_key]["outflow"] += credit
+            weekly_data[week_key]["net"] += (debit - credit)
+
+    return weekly_data
+
+@st.cache_data(ttl=300)
 def get_invoices(year, company_id=None, invoice_type=None, state=None, search_term=None):
     """Haal facturen op met filters"""
     domain = [
@@ -2611,519 +2674,740 @@ def main():
         st.header("📈 Interactieve Cashflow Prognose")
 
         entity_label = "alle entiteiten" if selected_entity == "Alle bedrijven" else COMPANIES.get(company_id, "")
-        st.info(f"💡 Cashflow analyse voor **{entity_label}**: historische data uit bankdagboeken + prognose op basis van openstaande posten.")
 
         # =====================================================================
-        # HUIDIGE POSITIES
+        # MODUS SELECTIE: PROGNOSE OF HISTORISCH
         # =====================================================================
-        bank_data = get_bank_balances()
+        mode_col1, mode_col2 = st.columns([1, 3])
+        with mode_col1:
+            cashflow_mode = st.radio(
+                "Modus",
+                options=["Prognose", "Historisch"],
+                key="cf_mode",
+                horizontal=True,
+                help="Prognose: huidige situatie + toekomst voorspelling. Historisch: bekijk cashflow van een vorig jaar."
+            )
+        with mode_col2:
+            if cashflow_mode == "Historisch":
+                cf_historical_year = st.selectbox(
+                    "Jaar",
+                    options=list(range(datetime.now().year, 2019, -1)),
+                    key="cf_historical_year"
+                )
 
-        # Haal debiteuren en crediteuren per partner op
-        receivables_by_partner = get_receivables_by_partner(company_id)
-        payables_by_partner = get_payables_by_partner(company_id)
+        # =====================================================================
+        # HISTORISCHE MODUS
+        # =====================================================================
+        if cashflow_mode == "Historisch":
+            st.info(f"📜 Historische cashflow analyse voor **{entity_label}** - Jaar **{cf_historical_year}**")
 
-        # Filter banksaldo op geselecteerde entiteit
-        if selected_entity == "Alle bedrijven":
-            current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data)
+            # Haal historische data op voor het geselecteerde jaar
+            cf_hist_company_id = company_id if selected_entity != "Alle bedrijven" else None
+            historical_year_data = get_historical_bank_data_by_year(cf_historical_year, cf_hist_company_id)
+
+            if historical_year_data:
+                # Sorteer per week
+                sorted_weeks = sorted(historical_year_data.keys())
+
+                # Bereken cumulatief saldo
+                cumulative_balance = 0
+                all_hist_data = []
+                for week_key in sorted_weeks:
+                    week_data = historical_year_data[week_key]
+                    cumulative_balance += week_data["net"]
+                    week_num = datetime.strptime(week_key, "%Y-%m-%d").isocalendar()[1]
+                    all_hist_data.append({
+                        "week_key": week_key,
+                        "week_label": f"Week {week_num}",
+                        "week_start": week_data["week_start"],
+                        "inflow": week_data["inflow"],
+                        "outflow": week_data["outflow"],
+                        "net": week_data["net"],
+                        "balance": cumulative_balance
+                    })
+
+                df_hist_year = pd.DataFrame(all_hist_data)
+
+                # Metrics voor het jaar
+                total_inflow = df_hist_year["inflow"].sum()
+                total_outflow = df_hist_year["outflow"].sum()
+                total_net = total_inflow - total_outflow
+                avg_weekly_inflow = total_inflow / len(df_hist_year)
+                avg_weekly_outflow = total_outflow / len(df_hist_year)
+
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("📥 Totaal Ontvangen", f"€{total_inflow:,.0f}")
+                with col2:
+                    st.metric("📤 Totaal Uitgegeven", f"€{total_outflow:,.0f}")
+                with col3:
+                    st.metric("💰 Netto Cashflow", f"€{total_net:,.0f}")
+                with col4:
+                    st.metric("📊 Gem. Wekelijks", f"€{avg_weekly_inflow - avg_weekly_outflow:,.0f}")
+
+                st.markdown("---")
+
+                # Grafiek met range slider
+                fig_hist = go.Figure()
+
+                fig_hist.add_trace(go.Scatter(
+                    x=df_hist_year["week_label"],
+                    y=df_hist_year["balance"],
+                    mode="lines+markers",
+                    name="Cumulatief Saldo",
+                    line=dict(color="#2E7D32", width=3),
+                    marker=dict(size=6),
+                    hovertemplate="<b>%{x}</b><br>Saldo: €%{y:,.0f}<extra></extra>"
+                ))
+
+                fig_hist.add_trace(go.Bar(
+                    x=df_hist_year["week_label"],
+                    y=df_hist_year["inflow"],
+                    name="Ontvangsten",
+                    marker_color="rgba(76, 175, 80, 0.5)",
+                    hovertemplate="<b>%{x}</b><br>Ontvangsten: €%{y:,.0f}<extra></extra>"
+                ))
+
+                fig_hist.add_trace(go.Bar(
+                    x=df_hist_year["week_label"],
+                    y=[-x for x in df_hist_year["outflow"]],
+                    name="Uitgaven",
+                    marker_color="rgba(244, 67, 54, 0.5)",
+                    hovertemplate="<b>%{x}</b><br>Uitgaven: €%{y:,.0f}<extra></extra>"
+                ))
+
+                fig_hist.add_hline(y=0, line_dash="dash", line_color="red", line_width=1)
+
+                fig_hist.update_layout(
+                    height=500,
+                    title=f"📈 Historische Cashflow {cf_historical_year}",
+                    xaxis_title="Week",
+                    yaxis_title="Bedrag (€)",
+                    barmode="relative",
+                    hovermode="x unified",
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    ),
+                    xaxis=dict(
+                        rangeslider=dict(visible=True),
+                        type="category"
+                    )
+                )
+
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+                # Detail tabel
+                with st.expander("📊 Details per week", expanded=False):
+                    df_display = df_hist_year.copy()
+                    df_display["week_start"] = pd.to_datetime(df_display["week_start"]).dt.strftime("%d-%m-%Y")
+                    st.dataframe(
+                        df_display[["week_label", "week_start", "inflow", "outflow", "net", "balance"]].rename(
+                            columns={
+                                "week_label": "Week",
+                                "week_start": "Week Start",
+                                "inflow": "Ontvangsten",
+                                "outflow": "Uitgaven",
+                                "net": "Netto",
+                                "balance": "Cumulatief"
+                            }
+                        ).style.format({
+                            "Ontvangsten": "€{:,.0f}",
+                            "Uitgaven": "€{:,.0f}",
+                            "Netto": "€{:,.0f}",
+                            "Cumulatief": "€{:,.0f}"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                # Download optie
+                csv_data = df_hist_year.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv_data,
+                    file_name=f"cashflow_{cf_historical_year}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning(f"Geen cashflow data beschikbaar voor {cf_historical_year}")
+
+        # =====================================================================
+        # PROGNOSE MODUS (bestaande functionaliteit)
+        # =====================================================================
         else:
-            current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data
-                             if b.get("company_id", [None])[0] == company_id)
+            st.info(f"💡 Cashflow analyse voor **{entity_label}**: historische data uit bankdagboeken + prognose op basis van openstaande posten.")
 
-        # Totalen voor metrics
-        total_receivables = sum(p["total"] for p in receivables_by_partner.values())
-        total_payables = sum(p["total"] for p in payables_by_partner.values())
+            # =====================================================================
+            # HUIDIGE POSITIES
+            # =====================================================================
+            bank_data = get_bank_balances()
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("🏦 Huidig Banksaldo", f"€{current_bank:,.0f}")
-        with col2:
-            st.metric("📥 Te Ontvangen (Debiteuren)", f"€{total_receivables:,.0f}")
-        with col3:
-            st.metric("📤 Te Betalen (Crediteuren)", f"€{total_payables:,.0f}")
-        with col4:
-            net_position = current_bank + total_receivables - total_payables
-            st.metric("💰 Netto Positie", f"€{net_position:,.0f}")
+            # Haal debiteuren en crediteuren per partner op
+            receivables_by_partner = get_receivables_by_partner(company_id)
+            payables_by_partner = get_payables_by_partner(company_id)
 
-        st.markdown("---")
-
-        # =====================================================================
-        # PARTNER FILTERING (UITSLUITINGEN)
-        # =====================================================================
-        st.subheader("🎯 Partner Selectie voor Prognose")
-
-        with st.expander("📥 Debiteuren uitsluiten van prognose", expanded=False):
-            st.caption("Selecteer debiteuren die je wilt uitsluiten van de cashflow prognose (bijv. dubieuze debiteuren)")
-
-            # Sorteer debiteuren op bedrag (hoogste eerst)
-            sorted_receivables = sorted(
-                [(pid, p) for pid, p in receivables_by_partner.items()],
-                key=lambda x: x[1]["total"],
-                reverse=True
-            )
-
-            excluded_debtors = []
-            if sorted_receivables:
-                debtor_cols = st.columns(2)
-                for idx, (partner_id, partner_data) in enumerate(sorted_receivables[:20]):  # Top 20
-                    col = debtor_cols[idx % 2]
-                    with col:
-                        if st.checkbox(
-                            f"{partner_data['name']}: €{partner_data['total']:,.0f}",
-                            key=f"exclude_debtor_{partner_id}"
-                        ):
-                            excluded_debtors.append(partner_id)
+            # Filter banksaldo op geselecteerde entiteit
+            if selected_entity == "Alle bedrijven":
+                current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data)
             else:
-                st.info("Geen openstaande debiteuren gevonden.")
+                current_bank = sum(b.get("current_statement_balance", 0) for b in bank_data
+                                 if b.get("company_id", [None])[0] == company_id)
 
-        with st.expander("📤 Crediteuren uitsluiten van prognose", expanded=False):
-            st.caption("Selecteer crediteuren die je wilt uitsluiten van de cashflow prognose (bijv. betwiste facturen)")
+            # Totalen voor metrics
+            total_receivables = sum(p["total"] for p in receivables_by_partner.values())
+            total_payables = sum(p["total"] for p in payables_by_partner.values())
 
-            # Sorteer crediteuren op bedrag (hoogste eerst)
-            sorted_payables = sorted(
-                [(pid, p) for pid, p in payables_by_partner.items()],
-                key=lambda x: x[1]["total"],
-                reverse=True
-            )
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🏦 Huidig Banksaldo", f"€{current_bank:,.0f}")
+            with col2:
+                st.metric("📥 Te Ontvangen (Debiteuren)", f"€{total_receivables:,.0f}")
+            with col3:
+                st.metric("📤 Te Betalen (Crediteuren)", f"€{total_payables:,.0f}")
+            with col4:
+                net_position = current_bank + total_receivables - total_payables
+                st.metric("💰 Netto Positie", f"€{net_position:,.0f}")
 
-            excluded_creditors = []
-            if sorted_payables:
-                creditor_cols = st.columns(2)
-                for idx, (partner_id, partner_data) in enumerate(sorted_payables[:20]):  # Top 20
-                    col = creditor_cols[idx % 2]
-                    with col:
-                        if st.checkbox(
-                            f"{partner_data['name']}: €{partner_data['total']:,.0f}",
-                            key=f"exclude_creditor_{partner_id}"
-                        ):
-                            excluded_creditors.append(partner_id)
-            else:
-                st.info("Geen openstaande crediteuren gevonden.")
+            st.markdown("---")
 
-        # Bereken gefilterde totalen
-        filtered_receivables = sum(
-            p["total"] for pid, p in receivables_by_partner.items()
-            if pid not in excluded_debtors
-        )
-        filtered_payables = sum(
-            p["total"] for pid, p in payables_by_partner.items()
-            if pid not in excluded_creditors
-        )
+            # =====================================================================
+            # PARTNER FILTERING (UITSLUITINGEN)
+            # =====================================================================
+            st.subheader("🎯 Partner Selectie voor Prognose")
 
-        # Toon impact van uitsluiting
-        if excluded_debtors or excluded_creditors:
-            st.markdown("**Impact van uitsluitingen:**")
-            excl_cols = st.columns(2)
-            with excl_cols[0]:
-                excluded_rec_amount = total_receivables - filtered_receivables
-                st.metric(
-                    "Uitgesloten Debiteuren",
-                    f"€{excluded_rec_amount:,.0f}",
-                    delta=f"-€{excluded_rec_amount:,.0f}" if excluded_rec_amount > 0 else None,
-                    delta_color="off"
-                )
-            with excl_cols[1]:
-                excluded_pay_amount = total_payables - filtered_payables
-                st.metric(
-                    "Uitgesloten Crediteuren",
-                    f"€{excluded_pay_amount:,.0f}",
-                    delta=f"-€{excluded_pay_amount:,.0f}" if excluded_pay_amount > 0 else None,
-                    delta_color="off"
+            with st.expander("📥 Debiteuren uitsluiten van prognose", expanded=False):
+                st.caption("Selecteer debiteuren die je wilt uitsluiten van de cashflow prognose (bijv. dubieuze debiteuren)")
+
+                # Sorteer debiteuren op bedrag (hoogste eerst)
+                sorted_receivables = sorted(
+                    [(pid, p) for pid, p in receivables_by_partner.items()],
+                    key=lambda x: x[1]["total"],
+                    reverse=True
                 )
 
-        st.markdown("---")
+                excluded_debtors = []
+                if sorted_receivables:
+                    debtor_cols = st.columns(2)
+                    for idx, (partner_id, partner_data) in enumerate(sorted_receivables[:20]):  # Top 20
+                        col = debtor_cols[idx % 2]
+                        with col:
+                            if st.checkbox(
+                                f"{partner_data['name']}: €{partner_data['total']:,.0f}",
+                                key=f"exclude_debtor_{partner_id}"
+                            ):
+                                excluded_debtors.append(partner_id)
+                else:
+                    st.info("Geen openstaande debiteuren gevonden.")
 
-        # =====================================================================
-        # HISTORISCHE DATA
-        # =====================================================================
-        st.subheader("📊 Historische Cashflow (afgelopen weken)")
+            with st.expander("📤 Crediteuren uitsluiten van prognose", expanded=False):
+                st.caption("Selecteer crediteuren die je wilt uitsluiten van de cashflow prognose (bijv. betwiste facturen)")
 
-        weeks_back = st.slider("Aantal weken terug", 4, 16, 8, key="cf_weeks_back")
-        historical_data = get_historical_bank_movements(company_id, weeks_back)
-
-        # =====================================================================
-        # PROGNOSE PARAMETERS
-        # =====================================================================
-        st.subheader("⚙️ Prognose Parameters")
-
-        # Rolling forecast optie
-        use_rolling_forecast = st.checkbox(
-            "🔄 Rolling Forecast (gebruik historische gemiddelden)",
-            value=False,
-            key="cf_rolling_forecast",
-            help="Indien aangevinkt, worden de wekelijkse omzet en kosten automatisch berekend op basis van historische bankdata"
-        )
-
-        # Bereken historische gemiddelden voor rolling forecast
-        if historical_data and use_rolling_forecast:
-            hist_inflows = [w["inflow"] for w in historical_data.values()]
-            hist_outflows = [w["outflow"] for w in historical_data.values()]
-            avg_weekly_inflow = sum(hist_inflows) / len(hist_inflows) if hist_inflows else 50000
-            avg_weekly_outflow = sum(hist_outflows) / len(hist_outflows) if hist_outflows else 45000
-            st.info(f"📊 Historisch gemiddelde (laatste {len(historical_data)} weken): Ontvangsten €{avg_weekly_inflow:,.0f}/week | Uitgaven €{avg_weekly_outflow:,.0f}/week")
-        else:
-            avg_weekly_inflow = 50000
-            avg_weekly_outflow = 45000
-
-        param_cols = st.columns(4)
-        with param_cols[0]:
-            if use_rolling_forecast:
-                weekly_revenue = avg_weekly_inflow
-                st.metric("Wekelijkse omzet (auto)", f"€{weekly_revenue:,.0f}")
-            else:
-                weekly_revenue = st.number_input(
-                    "Verwachte wekelijkse omzet",
-                    value=50000,
-                    step=5000,
-                    key="cf_weekly_rev"
+                # Sorteer crediteuren op bedrag (hoogste eerst)
+                sorted_payables = sorted(
+                    [(pid, p) for pid, p in payables_by_partner.items()],
+                    key=lambda x: x[1]["total"],
+                    reverse=True
                 )
-        with param_cols[1]:
-            if use_rolling_forecast:
-                weekly_costs = avg_weekly_outflow
-                st.metric("Wekelijkse kosten (auto)", f"€{weekly_costs:,.0f}")
+
+                excluded_creditors = []
+                if sorted_payables:
+                    creditor_cols = st.columns(2)
+                    for idx, (partner_id, partner_data) in enumerate(sorted_payables[:20]):  # Top 20
+                        col = creditor_cols[idx % 2]
+                        with col:
+                            if st.checkbox(
+                                f"{partner_data['name']}: €{partner_data['total']:,.0f}",
+                                key=f"exclude_creditor_{partner_id}"
+                            ):
+                                excluded_creditors.append(partner_id)
+                else:
+                    st.info("Geen openstaande crediteuren gevonden.")
+
+            # Bereken gefilterde totalen
+            filtered_receivables = sum(
+                p["total"] for pid, p in receivables_by_partner.items()
+                if pid not in excluded_debtors
+            )
+            filtered_payables = sum(
+                p["total"] for pid, p in payables_by_partner.items()
+                if pid not in excluded_creditors
+            )
+
+            # Toon impact van uitsluiting
+            if excluded_debtors or excluded_creditors:
+                st.markdown("**Impact van uitsluitingen:**")
+                excl_cols = st.columns(2)
+                with excl_cols[0]:
+                    excluded_rec_amount = total_receivables - filtered_receivables
+                    st.metric(
+                        "Uitgesloten Debiteuren",
+                        f"€{excluded_rec_amount:,.0f}",
+                        delta=f"-€{excluded_rec_amount:,.0f}" if excluded_rec_amount > 0 else None,
+                        delta_color="off"
+                    )
+                with excl_cols[1]:
+                    excluded_pay_amount = total_payables - filtered_payables
+                    st.metric(
+                        "Uitgesloten Crediteuren",
+                        f"€{excluded_pay_amount:,.0f}",
+                        delta=f"-€{excluded_pay_amount:,.0f}" if excluded_pay_amount > 0 else None,
+                        delta_color="off"
+                    )
+
+            st.markdown("---")
+
+            # =====================================================================
+            # HISTORISCHE DATA
+            # =====================================================================
+            st.subheader("📊 Historische Cashflow (afgelopen weken)")
+
+            weeks_back = st.slider("Aantal weken terug", 4, 16, 8, key="cf_weeks_back")
+            historical_data = get_historical_bank_movements(company_id, weeks_back)
+
+            # =====================================================================
+            # PROGNOSE PARAMETERS
+            # =====================================================================
+            st.subheader("⚙️ Prognose Parameters")
+
+            # Rolling forecast optie
+            use_rolling_forecast = st.checkbox(
+                "🔄 Rolling Forecast (gebruik historische gemiddelden)",
+                value=False,
+                key="cf_rolling_forecast",
+                help="Indien aangevinkt, worden de wekelijkse omzet en kosten automatisch berekend op basis van historische bankdata"
+            )
+
+            # Bereken historische gemiddelden voor rolling forecast
+            if historical_data and use_rolling_forecast:
+                hist_inflows = [w["inflow"] for w in historical_data.values()]
+                hist_outflows = [w["outflow"] for w in historical_data.values()]
+                avg_weekly_inflow = sum(hist_inflows) / len(hist_inflows) if hist_inflows else 50000
+                avg_weekly_outflow = sum(hist_outflows) / len(hist_outflows) if hist_outflows else 45000
+                st.info(f"📊 Historisch gemiddelde (laatste {len(historical_data)} weken): Ontvangsten €{avg_weekly_inflow:,.0f}/week | Uitgaven €{avg_weekly_outflow:,.0f}/week")
             else:
-                weekly_costs = st.number_input(
-                    "Verwachte wekelijkse kosten",
-                    value=45000,
-                    step=5000,
-                    key="cf_weekly_cost"
+                avg_weekly_inflow = 50000
+                avg_weekly_outflow = 45000
+
+            param_cols = st.columns(4)
+            with param_cols[0]:
+                if use_rolling_forecast:
+                    weekly_revenue = avg_weekly_inflow
+                    st.metric("Wekelijkse omzet (auto)", f"€{weekly_revenue:,.0f}")
+                else:
+                    weekly_revenue = st.number_input(
+                        "Verwachte wekelijkse omzet",
+                        value=50000,
+                        step=5000,
+                        key="cf_weekly_rev"
+                    )
+            with param_cols[1]:
+                if use_rolling_forecast:
+                    weekly_costs = avg_weekly_outflow
+                    st.metric("Wekelijkse kosten (auto)", f"€{weekly_costs:,.0f}")
+                else:
+                    weekly_costs = st.number_input(
+                        "Verwachte wekelijkse kosten",
+                        value=45000,
+                        step=5000,
+                        key="cf_weekly_cost"
+                    )
+            with param_cols[2]:
+                collection_rate = st.slider(
+                    "Incasso % debiteuren/week",
+                    0, 100, 25,
+                    key="cf_collection_rate"
                 )
-        with param_cols[2]:
-            collection_rate = st.slider(
-                "Incasso % debiteuren/week",
-                0, 100, 25,
-                key="cf_collection_rate"
-            )
-        with param_cols[3]:
-            payment_rate = st.slider(
-                "Betaling % crediteuren/week",
-                0, 100, 20,
-                key="cf_payment_rate"
-            )
+            with param_cols[3]:
+                payment_rate = st.slider(
+                    "Betaling % crediteuren/week",
+                    0, 100, 20,
+                    key="cf_payment_rate"
+                )
 
-        forecast_weeks = st.slider("Aantal weken vooruit", 4, 24, 12, key="cf_forecast_weeks")
+            forecast_weeks = st.slider("Aantal weken vooruit", 4, 24, 12, key="cf_forecast_weeks")
 
-        # Import en bereken huidige week (nodig voor BTW berekening)
-        from datetime import timedelta
-        today = datetime.now().date()
-        current_week_start = today - timedelta(days=today.weekday())
+            # Import en bereken huidige week (nodig voor BTW berekening)
+            from datetime import timedelta
+            today = datetime.now().date()
+            current_week_start = today - timedelta(days=today.weekday())
 
-        # =====================================================================
-        # VASTE LASTEN (LONEN & BTW)
-        # =====================================================================
-        st.markdown("---")
-        st.subheader("💼 Vaste Lasten")
-        st.caption("Voeg terugkerende kosten toe die niet in de crediteuren staan")
+            # =====================================================================
+            # VASTE LASTEN (LONEN & BTW)
+            # =====================================================================
+            st.markdown("---")
+            st.subheader("💼 Vaste Lasten")
+            st.caption("Voeg terugkerende kosten toe die niet in de crediteuren staan")
 
-        # Haal BTW-data op uit de 15* rekeningen
-        vat_monthly_data = get_vat_monthly_data(company_id if selected_entity != "Alle bedrijven" else None, months_back=6)
+            # Haal BTW-data op uit de 15* rekeningen
+            vat_monthly_data = get_vat_monthly_data(company_id if selected_entity != "Alle bedrijven" else None, months_back=6)
 
-        # Bereken gemiddelde maandelijkse BTW (voor kwartaalprognose)
-        if vat_monthly_data:
-            avg_monthly_vat = sum(m["net_vat"] for m in vat_monthly_data) / len(vat_monthly_data)
-            avg_quarterly_vat = avg_monthly_vat * 3  # Kwartaal = 3 maanden
-            suggested_vat = int(max(0, avg_quarterly_vat))  # Alleen positief (af te dragen)
-        else:
-            avg_monthly_vat = 0
-            avg_quarterly_vat = 0
-            suggested_vat = 0
+            # Bereken gemiddelde maandelijkse BTW (voor kwartaalprognose)
+            if vat_monthly_data:
+                avg_monthly_vat = sum(m["net_vat"] for m in vat_monthly_data) / len(vat_monthly_data)
+                avg_quarterly_vat = avg_monthly_vat * 3  # Kwartaal = 3 maanden
+                suggested_vat = int(max(0, avg_quarterly_vat))  # Alleen positief (af te dragen)
+            else:
+                avg_monthly_vat = 0
+                avg_quarterly_vat = 0
+                suggested_vat = 0
 
-        fixed_costs_cols = st.columns(3)
-        with fixed_costs_cols[0]:
-            monthly_salaries = st.number_input(
-                "Maandelijkse loonkosten (€)",
-                value=0,
-                step=1000,
-                min_value=0,
-                key="cf_monthly_salaries",
-                help="Totale maandelijkse loonkosten inclusief werkgeverslasten (betaling in 3de week van de maand)"
-            )
-        with fixed_costs_cols[1]:
-            vat_payment = st.number_input(
-                "BTW afdracht per kwartaal (€)",
-                value=suggested_vat,
-                step=1000,
-                min_value=0,
-                key="cf_vat_payment",
-                help="Berekend op basis van 15* rekeningen (BTW). Pas aan indien nodig."
-            )
-        with fixed_costs_cols[2]:
-            other_fixed_costs = st.number_input(
-                "Overige vaste maandkosten (€)",
-                value=0,
-                step=500,
-                min_value=0,
-                key="cf_other_fixed",
-                help="Huur, verzekeringen, abonnementen, etc."
-            )
+            fixed_costs_cols = st.columns(3)
+            with fixed_costs_cols[0]:
+                monthly_salaries = st.number_input(
+                    "Maandelijkse loonkosten (€)",
+                    value=0,
+                    step=1000,
+                    min_value=0,
+                    key="cf_monthly_salaries",
+                    help="Totale maandelijkse loonkosten inclusief werkgeverslasten (betaling in 3de week van de maand)"
+                )
+            with fixed_costs_cols[1]:
+                vat_payment = st.number_input(
+                    "BTW afdracht per kwartaal (€)",
+                    value=suggested_vat,
+                    step=1000,
+                    min_value=0,
+                    key="cf_vat_payment",
+                    help="Berekend op basis van 15* rekeningen (BTW). Pas aan indien nodig."
+                )
+            with fixed_costs_cols[2]:
+                other_fixed_costs = st.number_input(
+                    "Overige vaste maandkosten (€)",
+                    value=0,
+                    step=500,
+                    min_value=0,
+                    key="cf_other_fixed",
+                    help="Huur, verzekeringen, abonnementen, etc."
+                )
 
-        # Toon BTW details uit 15* rekeningen
-        if vat_monthly_data:
-            with st.expander("📊 BTW Historie (15* rekeningen)", expanded=False):
-                st.caption("Maandelijkse BTW op basis van de 15* rekeningen in Odoo")
-                vat_df = pd.DataFrame(vat_monthly_data)
-                vat_df.columns = ["Maand", "Voorbelasting (debet)", "Af te dragen (credit)", "Netto BTW"]
-                vat_df["Voorbelasting (debet)"] = vat_df["Voorbelasting (debet)"].apply(lambda x: f"€{x:,.0f}")
-                vat_df["Af te dragen (credit)"] = vat_df["Af te dragen (credit)"].apply(lambda x: f"€{x:,.0f}")
-                vat_df["Netto BTW"] = vat_df["Netto BTW"].apply(lambda x: f"€{x:,.0f}")
-                st.dataframe(vat_df, use_container_width=True, hide_index=True)
-                st.info(f"💡 Gemiddelde maandelijkse netto BTW: **€{avg_monthly_vat:,.0f}** → Kwartaalprognose: **€{avg_quarterly_vat:,.0f}**")
+            # Toon BTW details uit 15* rekeningen
+            if vat_monthly_data:
+                with st.expander("📊 BTW Historie (15* rekeningen)", expanded=False):
+                    st.caption("Maandelijkse BTW op basis van de 15* rekeningen in Odoo")
+                    vat_df = pd.DataFrame(vat_monthly_data)
+                    vat_df.columns = ["Maand", "Voorbelasting (debet)", "Af te dragen (credit)", "Netto BTW"]
+                    vat_df["Voorbelasting (debet)"] = vat_df["Voorbelasting (debet)"].apply(lambda x: f"€{x:,.0f}")
+                    vat_df["Af te dragen (credit)"] = vat_df["Af te dragen (credit)"].apply(lambda x: f"€{x:,.0f}")
+                    vat_df["Netto BTW"] = vat_df["Netto BTW"].apply(lambda x: f"€{x:,.0f}")
+                    st.dataframe(vat_df, use_container_width=True, hide_index=True)
+                    st.info(f"💡 Gemiddelde maandelijkse netto BTW: **€{avg_monthly_vat:,.0f}** → Kwartaalprognose: **€{avg_quarterly_vat:,.0f}**")
 
-        # Bereken wanneer BTW betaald moet worden (maanden na kwartaaleinde: jan, apr, jul, okt)
-        def get_vat_payment_weeks(start_date, num_weeks):
-            """Bepaal in welke weken BTW betaald moet worden"""
-            vat_weeks = []
-            vat_months = [1, 4, 7, 10]  # Januari, April, Juli, Oktober
+            # Bereken wanneer BTW betaald moet worden (maanden na kwartaaleinde: jan, apr, jul, okt)
+            def get_vat_payment_weeks(start_date, num_weeks):
+                """Bepaal in welke weken BTW betaald moet worden"""
+                vat_weeks = []
+                vat_months = [1, 4, 7, 10]  # Januari, April, Juli, Oktober
 
-            for week in range(1, num_weeks + 1):
-                week_date = start_date + timedelta(weeks=week)
-                # BTW wordt betaald in de eerste week van de BTW-maand
-                if week_date.month in vat_months and week_date.day <= 7:
-                    # Check of dit de eerste week van de maand is
-                    first_of_month = week_date.replace(day=1)
-                    if (week_date - first_of_month).days < 7:
-                        vat_weeks.append(week)
-            return vat_weeks
+                for week in range(1, num_weeks + 1):
+                    week_date = start_date + timedelta(weeks=week)
+                    # BTW wordt betaald in de eerste week van de BTW-maand
+                    if week_date.month in vat_months and week_date.day <= 7:
+                        # Check of dit de eerste week van de maand is
+                        first_of_month = week_date.replace(day=1)
+                        if (week_date - first_of_month).days < 7:
+                            vat_weeks.append(week)
+                return vat_weeks
 
-        # Bereken wanneer lonen betaald worden (3de week van elke maand)
-        def get_salary_payment_weeks(start_date, num_weeks):
-            """Bepaal in welke weken lonen betaald worden (3de week van de maand)"""
-            salary_weeks = []
+            # Bereken wanneer lonen betaald worden (3de week van elke maand)
+            def get_salary_payment_weeks(start_date, num_weeks):
+                """Bepaal in welke weken lonen betaald worden (3de week van de maand)"""
+                salary_weeks = []
 
-            for week in range(1, num_weeks + 1):
-                week_date = start_date + timedelta(weeks=week)
-                # 3de week van de maand = dag 15-21
-                if 15 <= week_date.day <= 21:
-                    salary_weeks.append(week)
-            return salary_weeks
+                for week in range(1, num_weeks + 1):
+                    week_date = start_date + timedelta(weeks=week)
+                    # 3de week van de maand = dag 15-21
+                    if 15 <= week_date.day <= 21:
+                        salary_weeks.append(week)
+                return salary_weeks
 
-        vat_payment_weeks = get_vat_payment_weeks(current_week_start, forecast_weeks) if vat_payment > 0 else []
-        salary_payment_weeks = get_salary_payment_weeks(current_week_start, forecast_weeks) if monthly_salaries > 0 else []
+            vat_payment_weeks = get_vat_payment_weeks(current_week_start, forecast_weeks) if vat_payment > 0 else []
+            salary_payment_weeks = get_salary_payment_weeks(current_week_start, forecast_weeks) if monthly_salaries > 0 else []
 
-        if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
-            info_parts = []
-            if monthly_salaries > 0:
-                info_parts.append(f"Lonen €{monthly_salaries:,.0f}/maand (betaling 3de week)")
-            if other_fixed_costs > 0:
-                info_parts.append(f"Overige vaste kosten €{other_fixed_costs/4.33:,.0f}/week")
-            if vat_payment > 0 and vat_payment_weeks:
-                info_parts.append(f"BTW afdracht €{vat_payment:,.0f} in weken: {vat_payment_weeks}")
-            st.info(f"💡 Vaste lasten: {' | '.join(info_parts)}")
+            if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
+                info_parts = []
+                if monthly_salaries > 0:
+                    info_parts.append(f"Lonen €{monthly_salaries:,.0f}/maand (betaling 3de week)")
+                if other_fixed_costs > 0:
+                    info_parts.append(f"Overige vaste kosten €{other_fixed_costs/4.33:,.0f}/week")
+                if vat_payment > 0 and vat_payment_weeks:
+                    info_parts.append(f"BTW afdracht €{vat_payment:,.0f} in weken: {vat_payment_weeks}")
+                st.info(f"💡 Vaste lasten: {' | '.join(info_parts)}")
 
-        # =====================================================================
-        # GECOMBINEERDE DATASET BOUWEN
-        # =====================================================================
-        all_data = []
+            # =====================================================================
+            # GECOMBINEERDE DATASET BOUWEN
+            # =====================================================================
+            all_data = []
 
-        # 1. Historische weken toevoegen (WERKELIJKE DATA)
-        if historical_data:
-            sorted_weeks = sorted(historical_data.keys())
+            # 1. Historische weken toevoegen (WERKELIJKE DATA)
+            if historical_data:
+                sorted_weeks = sorted(historical_data.keys())
 
-            # Bereken startsaldo door terug te rekenen
-            running_balance = current_bank
-            weekly_changes = []
-            for week_key in reversed(sorted_weeks):
-                week_data = historical_data[week_key]
-                weekly_changes.append((week_key, week_data["net"]))
+                # Bereken startsaldo door terug te rekenen
+                running_balance = current_bank
+                weekly_changes = []
+                for week_key in reversed(sorted_weeks):
+                    week_data = historical_data[week_key]
+                    weekly_changes.append((week_key, week_data["net"]))
 
-            # Bereken saldo aan het begin van de historische periode
-            historical_start_balance = current_bank
-            for week_key, net_change in weekly_changes:
-                historical_start_balance -= net_change
+                # Bereken saldo aan het begin van de historische periode
+                historical_start_balance = current_bank
+                for week_key, net_change in weekly_changes:
+                    historical_start_balance -= net_change
 
-            # Voeg historische weken toe met berekend saldo
-            running_balance = historical_start_balance
-            for week_key in sorted_weeks:
-                week_data = historical_data[week_key]
-                week_start = week_data["week_start"]
-                week_num = (current_week_start - week_start).days // 7
+                # Voeg historische weken toe met berekend saldo
+                running_balance = historical_start_balance
+                for week_key in sorted_weeks:
+                    week_data = historical_data[week_key]
+                    week_start = week_data["week_start"]
+                    week_num = (current_week_start - week_start).days // 7
 
-                running_balance += week_data["net"]
+                    running_balance += week_data["net"]
 
-                all_data.append({
-                    "week_key": week_key,
-                    "week_label": f"Week -{week_num}" if week_num > 0 else "Huidige week",
-                    "week_start": week_start,
-                    "is_forecast": False,
-                    "inflow": week_data["inflow"],
-                    "outflow": week_data["outflow"],
-                    "net": week_data["net"],
-                    "balance": running_balance
-                })
+                    all_data.append({
+                        "week_key": week_key,
+                        "week_label": f"Week -{week_num}" if week_num > 0 else "Huidige week",
+                        "week_start": week_start,
+                        "is_forecast": False,
+                        "inflow": week_data["inflow"],
+                        "outflow": week_data["outflow"],
+                        "net": week_data["net"],
+                        "balance": running_balance
+                    })
 
-        # 2. Huidige week (Week 0) - transitiepunt
-        all_data.append({
-            "week_key": current_week_start.strftime("%Y-%m-%d"),
-            "week_label": "Nu",
-            "week_start": current_week_start,
-            "is_forecast": False,
-            "inflow": 0,
-            "outflow": 0,
-            "net": 0,
-            "balance": current_bank
-        })
-
-        # 3. Prognose weken toevoegen
-        balance = current_bank
-        remaining_rec = filtered_receivables
-        remaining_pay = filtered_payables
-
-        # Bereken wekelijkse vaste lasten
-        weekly_other_fixed = other_fixed_costs / 4.33
-
-        for week in range(1, forecast_weeks + 1):
-            week_start = current_week_start + timedelta(weeks=week)
-
-            # Ontvangsten uit debiteuren
-            collections = remaining_rec * (collection_rate / 100)
-            remaining_rec -= collections
-            inflow = weekly_revenue + collections
-
-            # Betalingen aan crediteuren
-            payments = remaining_pay * (payment_rate / 100)
-            remaining_pay -= payments
-
-            # Lonen alleen in de 3de week van de maand (volledige maandbedrag)
-            salaries_this_week = monthly_salaries if week in salary_payment_weeks else 0
-
-            # Vaste lasten toevoegen
-            fixed_costs_this_week = salaries_this_week + weekly_other_fixed
-
-            # BTW afdracht in specifieke weken
-            vat_this_week = vat_payment if week in vat_payment_weeks else 0
-
-            outflow = weekly_costs + payments + fixed_costs_this_week + vat_this_week
-
-            # Nieuw saldo
-            balance = balance + inflow - outflow
-
-            # Bepaal label met extra info bij loon/BTW week
-            week_label = f"Week +{week}"
-            label_extras = []
-            if salaries_this_week > 0:
-                label_extras.append("Lonen")
-            if vat_this_week > 0:
-                label_extras.append("BTW")
-            if label_extras:
-                week_label += f" ({', '.join(label_extras)})"
-
+            # 2. Huidige week (Week 0) - transitiepunt
             all_data.append({
-                "week_key": week_start.strftime("%Y-%m-%d"),
-                "week_label": week_label,
-                "week_start": week_start,
-                "is_forecast": True,
-                "inflow": inflow,
-                "outflow": outflow,
-                "net": inflow - outflow,
-                "balance": balance,
-                "salaries": salaries_this_week,
-                "vat": vat_this_week,
-                "other_fixed": weekly_other_fixed
+                "week_key": current_week_start.strftime("%Y-%m-%d"),
+                "week_label": "Nu",
+                "week_start": current_week_start,
+                "is_forecast": False,
+                "inflow": 0,
+                "outflow": 0,
+                "net": 0,
+                "balance": current_bank
             })
 
-        df_combined = pd.DataFrame(all_data)
+            # 3. Prognose weken toevoegen
+            balance = current_bank
+            remaining_rec = filtered_receivables
+            remaining_pay = filtered_payables
 
-        # =====================================================================
-        # INTERACTIEVE GRAFIEK
-        # =====================================================================
-        st.subheader("📈 Cashflow Overzicht")
+            # Bereken wekelijkse vaste lasten
+            weekly_other_fixed = other_fixed_costs / 4.33
 
-        fig = go.Figure()
+            for week in range(1, forecast_weeks + 1):
+                week_start = current_week_start + timedelta(weeks=week)
 
-        # Historische data (solide lijn)
-        df_historical = df_combined[~df_combined["is_forecast"]]
-        if not df_historical.empty:
-            fig.add_trace(go.Scatter(
-                x=df_historical["week_label"],
-                y=df_historical["balance"],
-                mode="lines+markers",
-                name="Werkelijk Saldo",
-                line=dict(color="#2E7D32", width=3),
-                marker=dict(size=8, symbol="circle"),
-                hovertemplate="<b>%{x}</b><br>Saldo: €%{y:,.0f}<extra></extra>"
+                # Ontvangsten uit debiteuren
+                collections = remaining_rec * (collection_rate / 100)
+                remaining_rec -= collections
+                inflow = weekly_revenue + collections
+
+                # Betalingen aan crediteuren
+                payments = remaining_pay * (payment_rate / 100)
+                remaining_pay -= payments
+
+                # Lonen alleen in de 3de week van de maand (volledige maandbedrag)
+                salaries_this_week = monthly_salaries if week in salary_payment_weeks else 0
+
+                # Vaste lasten toevoegen
+                fixed_costs_this_week = salaries_this_week + weekly_other_fixed
+
+                # BTW afdracht in specifieke weken
+                vat_this_week = vat_payment if week in vat_payment_weeks else 0
+
+                outflow = weekly_costs + payments + fixed_costs_this_week + vat_this_week
+
+                # Nieuw saldo
+                balance = balance + inflow - outflow
+
+                # Bepaal label met extra info bij loon/BTW week
+                week_label = f"Week +{week}"
+                label_extras = []
+                if salaries_this_week > 0:
+                    label_extras.append("Lonen")
+                if vat_this_week > 0:
+                    label_extras.append("BTW")
+                if label_extras:
+                    week_label += f" ({', '.join(label_extras)})"
+
+                all_data.append({
+                    "week_key": week_start.strftime("%Y-%m-%d"),
+                    "week_label": week_label,
+                    "week_start": week_start,
+                    "is_forecast": True,
+                    "inflow": inflow,
+                    "outflow": outflow,
+                    "net": inflow - outflow,
+                    "balance": balance,
+                    "salaries": salaries_this_week,
+                    "vat": vat_this_week,
+                    "other_fixed": weekly_other_fixed
+                })
+
+            df_combined = pd.DataFrame(all_data)
+
+            # =====================================================================
+            # INTERACTIEVE GRAFIEK
+            # =====================================================================
+            st.subheader("📈 Cashflow Overzicht")
+
+            fig = go.Figure()
+
+            # Historische data (solide lijn)
+            df_historical = df_combined[~df_combined["is_forecast"]]
+            if not df_historical.empty:
+                fig.add_trace(go.Scatter(
+                    x=df_historical["week_label"],
+                    y=df_historical["balance"],
+                    mode="lines+markers",
+                    name="Werkelijk Saldo",
+                    line=dict(color="#2E7D32", width=3),
+                    marker=dict(size=8, symbol="circle"),
+                    hovertemplate="<b>%{x}</b><br>Saldo: €%{y:,.0f}<extra></extra>"
+                ))
+
+            # Prognose data (stippellijn)
+            df_forecast = df_combined[df_combined["is_forecast"]]
+            if not df_forecast.empty:
+                # Voeg "Nu" punt toe aan prognose voor continue lijn
+                now_row = df_combined[df_combined["week_label"] == "Nu"]
+                df_forecast_with_now = pd.concat([now_row, df_forecast])
+
+                fig.add_trace(go.Scatter(
+                    x=df_forecast_with_now["week_label"],
+                    y=df_forecast_with_now["balance"],
+                    mode="lines+markers",
+                    name="Prognose Saldo",
+                    line=dict(color="#1565C0", width=3, dash="dash"),
+                    marker=dict(size=8, symbol="diamond"),
+                    hovertemplate="<b>%{x}</b><br>Prognose: €%{y:,.0f}<extra></extra>"
+                ))
+
+            # Inflow/Outflow bars
+            fig.add_trace(go.Bar(
+                x=df_combined["week_label"],
+                y=df_combined["inflow"],
+                name="Ontvangsten",
+                marker_color="rgba(76, 175, 80, 0.5)",
+                hovertemplate="<b>%{x}</b><br>Ontvangsten: €%{y:,.0f}<extra></extra>"
             ))
 
-        # Prognose data (stippellijn)
-        df_forecast = df_combined[df_combined["is_forecast"]]
-        if not df_forecast.empty:
-            # Voeg "Nu" punt toe aan prognose voor continue lijn
-            now_row = df_combined[df_combined["week_label"] == "Nu"]
-            df_forecast_with_now = pd.concat([now_row, df_forecast])
-
-            fig.add_trace(go.Scatter(
-                x=df_forecast_with_now["week_label"],
-                y=df_forecast_with_now["balance"],
-                mode="lines+markers",
-                name="Prognose Saldo",
-                line=dict(color="#1565C0", width=3, dash="dash"),
-                marker=dict(size=8, symbol="diamond"),
-                hovertemplate="<b>%{x}</b><br>Prognose: €%{y:,.0f}<extra></extra>"
+            fig.add_trace(go.Bar(
+                x=df_combined["week_label"],
+                y=[-x for x in df_combined["outflow"]],
+                name="Uitgaven",
+                marker_color="rgba(244, 67, 54, 0.5)",
+                hovertemplate="<b>%{x}</b><br>Uitgaven: €%{y:,.0f}<extra></extra>"
             ))
 
-        # Inflow/Outflow bars
-        fig.add_trace(go.Bar(
-            x=df_combined["week_label"],
-            y=df_combined["inflow"],
-            name="Ontvangsten",
-            marker_color="rgba(76, 175, 80, 0.5)",
-            hovertemplate="<b>%{x}</b><br>Ontvangsten: €%{y:,.0f}<extra></extra>"
-        ))
+            # Nul-lijn
+            fig.add_hline(y=0, line_dash="dash", line_color="red", line_width=1)
 
-        fig.add_trace(go.Bar(
-            x=df_combined["week_label"],
-            y=[-x for x in df_combined["outflow"]],
-            name="Uitgaven",
-            marker_color="rgba(244, 67, 54, 0.5)",
-            hovertemplate="<b>%{x}</b><br>Uitgaven: €%{y:,.0f}<extra></extra>"
-        ))
-
-        # Nul-lijn
-        fig.add_hline(y=0, line_dash="dash", line_color="red", line_width=1)
-
-        # Verticale lijn bij "Nu"
-        now_index = list(df_combined["week_label"]).index("Nu")
-        fig.add_vline(
-            x=now_index,
-            line_dash="dot",
-            line_color="gray",
-            annotation_text="Vandaag",
-            annotation_position="top"
-        )
-
-        fig.update_layout(
-            height=500,
-            title="📈 Cashflow: Historisch & Prognose",
-            xaxis_title="Week",
-            yaxis_title="Bedrag (€)",
-            barmode="relative",
-            hovermode="x unified",
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
+            # Verticale lijn bij "Nu"
+            now_index = list(df_combined["week_label"]).index("Nu")
+            fig.add_vline(
+                x=now_index,
+                line_dash="dot",
+                line_color="gray",
+                annotation_text="Vandaag",
+                annotation_position="top"
             )
-        )
 
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                height=500,
+                title="📈 Cashflow: Historisch & Prognose",
+                xaxis_title="Week",
+                yaxis_title="Bedrag (€)",
+                barmode="relative",
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                xaxis=dict(
+                    rangeslider=dict(visible=True),
+                    type="category"
+                )
+            )
 
-        # =====================================================================
-        # DETAIL TABELLEN
-        # =====================================================================
-        tab_hist, tab_forecast, tab_partners = st.tabs([
-            "📜 Historische Data",
-            "🔮 Prognose Details",
-            "👥 Openstaande Posten per Partner"
-        ])
+            st.plotly_chart(fig, use_container_width=True)
 
-        with tab_hist:
-            st.caption("Werkelijke bankmutaties per week (uit bankdagboeken)")
-            df_hist_display = df_combined[~df_combined["is_forecast"]].copy()
-            if not df_hist_display.empty:
-                df_hist_display["week_start"] = pd.to_datetime(df_hist_display["week_start"]).dt.strftime("%d-%m-%Y")
-                st.dataframe(
-                    df_hist_display[["week_label", "week_start", "inflow", "outflow", "net", "balance"]].rename(
-                        columns={
+            # =====================================================================
+            # DETAIL TABELLEN
+            # =====================================================================
+            tab_hist, tab_forecast, tab_partners = st.tabs([
+                "📜 Historische Data",
+                "🔮 Prognose Details",
+                "👥 Openstaande Posten per Partner"
+            ])
+
+            with tab_hist:
+                st.caption("Werkelijke bankmutaties per week (uit bankdagboeken)")
+                df_hist_display = df_combined[~df_combined["is_forecast"]].copy()
+                if not df_hist_display.empty:
+                    df_hist_display["week_start"] = pd.to_datetime(df_hist_display["week_start"]).dt.strftime("%d-%m-%Y")
+                    st.dataframe(
+                        df_hist_display[["week_label", "week_start", "inflow", "outflow", "net", "balance"]].rename(
+                            columns={
+                                "week_label": "Week",
+                                "week_start": "Week Start",
+                                "inflow": "Ontvangsten",
+                                "outflow": "Uitgaven",
+                                "net": "Netto",
+                                "balance": "Saldo"
+                            }
+                        ).style.format({
+                            "Ontvangsten": "€{:,.0f}",
+                            "Uitgaven": "€{:,.0f}",
+                            "Netto": "€{:,.0f}",
+                            "Saldo": "€{:,.0f}"
+                        }),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Geen historische data beschikbaar voor de geselecteerde periode.")
+
+            with tab_forecast:
+                st.caption("Geprojecteerde cashflow op basis van openstaande posten, vaste lasten en parameters")
+                df_fc_display = df_combined[df_combined["is_forecast"]].copy()
+                if not df_fc_display.empty:
+                    df_fc_display["week_start"] = pd.to_datetime(df_fc_display["week_start"]).dt.strftime("%d-%m-%Y")
+
+                    # Toon uitgebreide tabel met vaste lasten indien van toepassing
+                    if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
+                        # Voeg vaste lasten kolommen toe als ze bestaan
+                        display_cols = ["week_label", "week_start", "inflow", "outflow", "salaries", "vat", "other_fixed", "net", "balance"]
+                        rename_cols = {
+                            "week_label": "Week",
+                            "week_start": "Week Start",
+                            "inflow": "Ontvangsten",
+                            "outflow": "Totaal Uitgaven",
+                            "salaries": "Lonen",
+                            "vat": "BTW",
+                            "other_fixed": "Overig Vast",
+                            "net": "Netto",
+                            "balance": "Saldo"
+                        }
+                        format_dict = {
+                            "Ontvangsten": "€{:,.0f}",
+                            "Totaal Uitgaven": "€{:,.0f}",
+                            "Lonen": "€{:,.0f}",
+                            "BTW": "€{:,.0f}",
+                            "Overig Vast": "€{:,.0f}",
+                            "Netto": "€{:,.0f}",
+                            "Saldo": "€{:,.0f}"
+                        }
+                    else:
+                        display_cols = ["week_label", "week_start", "inflow", "outflow", "net", "balance"]
+                        rename_cols = {
                             "week_label": "Week",
                             "week_start": "Week Start",
                             "inflow": "Ontvangsten",
@@ -3131,133 +3415,81 @@ def main():
                             "net": "Netto",
                             "balance": "Saldo"
                         }
-                    ).style.format({
-                        "Ontvangsten": "€{:,.0f}",
-                        "Uitgaven": "€{:,.0f}",
-                        "Netto": "€{:,.0f}",
-                        "Saldo": "€{:,.0f}"
-                    }),
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.info("Geen historische data beschikbaar voor de geselecteerde periode.")
-
-        with tab_forecast:
-            st.caption("Geprojecteerde cashflow op basis van openstaande posten, vaste lasten en parameters")
-            df_fc_display = df_combined[df_combined["is_forecast"]].copy()
-            if not df_fc_display.empty:
-                df_fc_display["week_start"] = pd.to_datetime(df_fc_display["week_start"]).dt.strftime("%d-%m-%Y")
-
-                # Toon uitgebreide tabel met vaste lasten indien van toepassing
-                if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
-                    # Voeg vaste lasten kolommen toe als ze bestaan
-                    display_cols = ["week_label", "week_start", "inflow", "outflow", "salaries", "vat", "other_fixed", "net", "balance"]
-                    rename_cols = {
-                        "week_label": "Week",
-                        "week_start": "Week Start",
-                        "inflow": "Ontvangsten",
-                        "outflow": "Totaal Uitgaven",
-                        "salaries": "Lonen",
-                        "vat": "BTW",
-                        "other_fixed": "Overig Vast",
-                        "net": "Netto",
-                        "balance": "Saldo"
-                    }
-                    format_dict = {
-                        "Ontvangsten": "€{:,.0f}",
-                        "Totaal Uitgaven": "€{:,.0f}",
-                        "Lonen": "€{:,.0f}",
-                        "BTW": "€{:,.0f}",
-                        "Overig Vast": "€{:,.0f}",
-                        "Netto": "€{:,.0f}",
-                        "Saldo": "€{:,.0f}"
-                    }
-                else:
-                    display_cols = ["week_label", "week_start", "inflow", "outflow", "net", "balance"]
-                    rename_cols = {
-                        "week_label": "Week",
-                        "week_start": "Week Start",
-                        "inflow": "Ontvangsten",
-                        "outflow": "Uitgaven",
-                        "net": "Netto",
-                        "balance": "Saldo"
-                    }
-                    format_dict = {
-                        "Ontvangsten": "€{:,.0f}",
-                        "Uitgaven": "€{:,.0f}",
-                        "Netto": "€{:,.0f}",
-                        "Saldo": "€{:,.0f}"
-                    }
-
-                # Filter alleen bestaande kolommen
-                existing_cols = [c for c in display_cols if c in df_fc_display.columns]
-                st.dataframe(
-                    df_fc_display[existing_cols].rename(columns=rename_cols).style.format(format_dict),
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-        with tab_partners:
-            partner_col1, partner_col2 = st.columns(2)
-
-            with partner_col1:
-                st.markdown("**📥 Top Debiteuren (Te Ontvangen)**")
-                if receivables_by_partner:
-                    debtor_list = [
-                        {
-                            "Partner": p["name"],
-                            "Bedrag": p["total"],
-                            "Status": "❌ Uitgesloten" if pid in excluded_debtors else "✅ In prognose"
+                        format_dict = {
+                            "Ontvangsten": "€{:,.0f}",
+                            "Uitgaven": "€{:,.0f}",
+                            "Netto": "€{:,.0f}",
+                            "Saldo": "€{:,.0f}"
                         }
-                        for pid, p in sorted(
-                            receivables_by_partner.items(),
-                            key=lambda x: x[1]["total"],
-                            reverse=True
-                        )[:15]
-                    ]
+
+                    # Filter alleen bestaande kolommen
+                    existing_cols = [c for c in display_cols if c in df_fc_display.columns]
                     st.dataframe(
-                        pd.DataFrame(debtor_list).style.format({"Bedrag": "€{:,.0f}"}),
+                        df_fc_display[existing_cols].rename(columns=rename_cols).style.format(format_dict),
                         use_container_width=True,
                         hide_index=True
                     )
-                else:
-                    st.info("Geen openstaande debiteuren.")
 
-            with partner_col2:
-                st.markdown("**📤 Top Crediteuren (Te Betalen)**")
-                if payables_by_partner:
-                    creditor_list = [
-                        {
-                            "Partner": p["name"],
-                            "Bedrag": p["total"],
-                            "Status": "❌ Uitgesloten" if pid in excluded_creditors else "✅ In prognose"
-                        }
-                        for pid, p in sorted(
-                            payables_by_partner.items(),
-                            key=lambda x: x[1]["total"],
-                            reverse=True
-                        )[:15]
-                    ]
-                    st.dataframe(
-                        pd.DataFrame(creditor_list).style.format({"Bedrag": "€{:,.0f}"}),
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                else:
-                    st.info("Geen openstaande crediteuren.")
+            with tab_partners:
+                partner_col1, partner_col2 = st.columns(2)
 
-        # =====================================================================
-        # EXPORT FUNCTIE
-        # =====================================================================
-        st.markdown("---")
-        st.download_button(
-            "📥 Download Cashflow Data (CSV)",
-            df_combined.to_csv(index=False),
-            file_name=f"cashflow_prognose_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
-    
+                with partner_col1:
+                    st.markdown("**📥 Top Debiteuren (Te Ontvangen)**")
+                    if receivables_by_partner:
+                        debtor_list = [
+                            {
+                                "Partner": p["name"],
+                                "Bedrag": p["total"],
+                                "Status": "❌ Uitgesloten" if pid in excluded_debtors else "✅ In prognose"
+                            }
+                            for pid, p in sorted(
+                                receivables_by_partner.items(),
+                                key=lambda x: x[1]["total"],
+                                reverse=True
+                            )[:15]
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(debtor_list).style.format({"Bedrag": "€{:,.0f}"}),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("Geen openstaande debiteuren.")
+
+                with partner_col2:
+                    st.markdown("**📤 Top Crediteuren (Te Betalen)**")
+                    if payables_by_partner:
+                        creditor_list = [
+                            {
+                                "Partner": p["name"],
+                                "Bedrag": p["total"],
+                                "Status": "❌ Uitgesloten" if pid in excluded_creditors else "✅ In prognose"
+                            }
+                            for pid, p in sorted(
+                                payables_by_partner.items(),
+                                key=lambda x: x[1]["total"],
+                                reverse=True
+                            )[:15]
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(creditor_list).style.format({"Bedrag": "€{:,.0f}"}),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    else:
+                        st.info("Geen openstaande crediteuren.")
+
+            # =====================================================================
+            # EXPORT FUNCTIE
+            # =====================================================================
+            st.markdown("---")
+            st.download_button(
+                "📥 Download Cashflow Data (CSV)",
+                df_combined.to_csv(index=False),
+                file_name=f"cashflow_prognose_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+
     # =========================================================================
     # TAB 8: BALANS (KWADRANT)
     # =========================================================================
@@ -4508,6 +4740,11 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                         prefix = account_code[:2]
                         prev_costs_grouped[prefix] = prev_costs_grouped.get(prefix, 0) + item.get("balance", 0)
 
+            # For average comparisons, divide previous period costs by number of months
+            if is_average_comparison:
+                for prefix in prev_costs_grouped:
+                    prev_costs_grouped[prefix] = prev_costs_grouped[prefix] / avg_num_months
+
             # Check for large variances (>30%) on 40-47 accounts
             cost_variances = []
             for prefix in ["40", "41", "42", "43", "44", "45", "46", "47"]:
@@ -4603,6 +4840,12 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
 
             current_category_data = aggregate_by_category(current_revenue_by_product, current_cogs_by_product)
             prev_category_data = aggregate_by_category(prev_revenue_by_product, prev_cogs_by_product)
+
+            # For average comparisons, divide previous period category data by number of months
+            if is_average_comparison:
+                for categ in prev_category_data:
+                    prev_category_data[categ]["revenue"] = prev_category_data[categ]["revenue"] / avg_num_months
+                    prev_category_data[categ]["cogs"] = prev_category_data[categ]["cogs"] / avg_num_months
 
             # Calculate margins and check for variances
             margin_variances = []
