@@ -2970,7 +2970,7 @@ def render_draggable_mapping_tool(company_id, year):
                             st.rerun()
 
     # -------------------------------------------------------------------------
-    # RIGHT COLUMN: Unmapped Accounts
+    # RIGHT COLUMN: Unmapped Accounts with Bulk Selection
     # -------------------------------------------------------------------------
     with col_unmapped:
         st.markdown("### 📋 Niet-toegewezen Rekeningen")
@@ -3003,17 +3003,80 @@ def render_draggable_mapping_tool(company_id, year):
         else:
             filtered_accounts = sorted(filtered_accounts, key=lambda x: x["code"])
 
-        # Display accounts
         st.markdown("---")
-        for acc in filtered_accounts[:50]:  # Limit to 50 for performance
-            acc_col1, acc_col2 = st.columns([4, 1])
-            with acc_col1:
-                st.text(f"{acc['code']} - {acc['name'][:30]}")
-            with acc_col2:
-                st.caption("👁")  # Eye icon to indicate viewable
 
-        if len(filtered_accounts) > 50:
-            st.caption(f"... en {len(filtered_accounts) - 50} meer rekeningen")
+        # =================================================================
+        # BULK SELECTION: Select multiple accounts and assign to category
+        # =================================================================
+        st.markdown("**Bulk toewijzen:**")
+
+        # Multiselect for accounts
+        account_options = [f"{acc['code']} - {acc['name'][:35]}" for acc in filtered_accounts]
+        selected_accounts = st.multiselect(
+            "Selecteer rekeningen:",
+            options=account_options,
+            default=[],
+            key="bulk_select_accounts",
+            placeholder="Klik om rekeningen te selecteren..."
+        )
+
+        # Quick select buttons
+        sel_col1, sel_col2 = st.columns(2)
+        with sel_col1:
+            if st.button("Selecteer alle", key="select_all_accounts"):
+                st.session_state.bulk_select_accounts = account_options[:100]  # Max 100
+                st.rerun()
+        with sel_col2:
+            if st.button("Wis selectie", key="clear_selection"):
+                st.session_state.bulk_select_accounts = []
+                st.rerun()
+
+        # Category selector for bulk assignment
+        if selected_accounts:
+            st.markdown(f"**{len(selected_accounts)} rekening(en) geselecteerd**")
+
+            # Build category options (only non-subtotal categories)
+            category_options = []
+            for cat_key, cat_info in REPORT_CATEGORIES.items():
+                if not cat_info.get("is_subtotal", False):
+                    category_options.append((cat_key, cat_info["name"]))
+
+            category_options.sort(key=lambda x: REPORT_CATEGORIES[x[0]].get("order", 99))
+
+            target_category = st.selectbox(
+                "Toevoegen aan categorie:",
+                options=[c[0] for c in category_options],
+                format_func=lambda x: next((c[1] for c in category_options if c[0] == x), x),
+                key="bulk_target_category"
+            )
+
+            if st.button("➕ Voeg geselecteerde toe", key="bulk_add", type="primary"):
+                # Extract account codes from selection
+                codes_to_add = [sel.split(" - ")[0] for sel in selected_accounts]
+
+                # Add to target category
+                if target_category not in mapping["categories"]:
+                    mapping["categories"][target_category] = []
+
+                for code in codes_to_add:
+                    if code not in mapping["categories"][target_category]:
+                        mapping["categories"][target_category].append(code)
+
+                st.session_state.draggable_mapping = mapping
+                st.session_state.bulk_select_accounts = []  # Clear selection
+                st.success(f"✅ {len(codes_to_add)} rekening(en) toegevoegd!")
+                st.rerun()
+
+        st.markdown("---")
+
+        # Show remaining unassigned accounts (preview)
+        st.markdown("**Niet-geselecteerde rekeningen:**")
+        remaining = [acc for acc in filtered_accounts if f"{acc['code']} - {acc['name'][:35]}" not in selected_accounts]
+        for acc in remaining[:20]:
+            st.caption(f"`{acc['code']}` {acc['name'][:30]}")
+
+        if len(remaining) > 20:
+            st.caption(f"... en {len(remaining) - 20} meer")
 
     # =========================================================================
     # SAVE / RESET BUTTONS
