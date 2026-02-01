@@ -2990,6 +2990,63 @@ def main():
                     limit=500
                 )
 
+            @st.cache_data(ttl=1800)
+            def get_costs_by_account_code(start_date, end_date, comp_id=None):
+                """Get costs grouped by 2-digit account code prefix for 4* accounts."""
+                domain = [
+                    ("account_id.code", ">=", "400000"),
+                    ("account_id.code", "<", "500000"),
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted")
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+                return odoo_read_group("account.move.line", domain, ["balance:sum"], ["account_id"])
+
+            @st.cache_data(ttl=1800)
+            def get_product_category_margins(start_date, end_date, comp_id=None):
+                """Get sales revenue and cost of goods sold by product category for margin analysis."""
+                # Get revenue by product (8* accounts)
+                revenue_domain = [
+                    ("account_id.code", ">=", "800000"),
+                    ("account_id.code", "<", "900000"),
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted"),
+                    ("product_id", "!=", False)
+                ]
+                if comp_id:
+                    revenue_domain.append(("company_id", "=", comp_id))
+
+                revenue_data = odoo_call(
+                    "account.move.line", "search_read",
+                    revenue_domain,
+                    ["product_id", "balance"],
+                    limit=10000
+                )
+
+                # Get COGS by product (7* accounts)
+                cogs_domain = [
+                    ("account_id.code", ">=", "700000"),
+                    ("account_id.code", "<", "800000"),
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted"),
+                    ("product_id", "!=", False)
+                ]
+                if comp_id:
+                    cogs_domain.append(("company_id", "=", comp_id))
+
+                cogs_data = odoo_call(
+                    "account.move.line", "search_read",
+                    cogs_domain,
+                    ["product_id", "balance"],
+                    limit=10000
+                )
+
+                return revenue_data, cogs_data
+
             # =================================================================
             # LOAD DATA
             # =================================================================
@@ -3009,6 +3066,14 @@ def main():
                 unreconciled_rec, unreconciled_pay = get_unreconciled_items(fc_company_id)
                 total_debit, total_credit = get_balance_check(period_end, fc_company_id)
                 unpaid_invoices = get_invoices_without_payment(period_start, period_end, fc_company_id)
+
+                # Cost component analysis data
+                current_costs_by_account = get_costs_by_account_code(period_start, period_end, fc_company_id)
+                prev_costs_by_account = get_costs_by_account_code(prev_start, prev_end, fc_company_id)
+
+                # Product category margin data
+                current_revenue_by_product, current_cogs_by_product = get_product_category_margins(period_start, period_end, fc_company_id)
+                prev_revenue_by_product, prev_cogs_by_product = get_product_category_margins(prev_start, prev_end, fc_company_id)
 
             st.markdown("---")
 
@@ -3127,6 +3192,191 @@ def main():
                     f"€{old_pay_total:,.0f}"
                 ))
 
+            # Check 5: Major cost components booked check
+            # Group costs by 2-digit prefix
+            current_costs_grouped = {}
+            for item in current_costs_by_account:
+                account_info = item.get("account_id")
+                if account_info and len(account_info) >= 2:
+                    account_code = str(account_info[1]).split()[0] if isinstance(account_info[1], str) else str(account_info[0])
+                    # Extract first 2 digits from account code
+                    if len(account_code) >= 2:
+                        prefix = account_code[:2]
+                        current_costs_grouped[prefix] = current_costs_grouped.get(prefix, 0) + item.get("balance", 0)
+
+            # Check for major cost components
+            major_cost_components = {
+                "40": "Personeelskosten (salarissen)",
+                "48": "Afschrijvingen",
+                "46": "Overige bedrijfskosten (incl. management fee)"
+            }
+            missing_components = []
+            booked_components = []
+
+            for prefix, name in major_cost_components.items():
+                amount = current_costs_grouped.get(prefix, 0)
+                if abs(amount) < 100:  # Less than €100 considered as not booked
+                    missing_components.append((prefix, name))
+                else:
+                    booked_components.append((prefix, name, amount))
+
+            if missing_components:
+                missing_names = ", ".join([name for _, name in missing_components])
+                validation_warnings.append((
+                    "Kostencomponenten",
+                    f"Mogelijk niet geboekt: {missing_names}",
+                    f"{len(missing_components)} component(en)"
+                ))
+            else:
+                validation_ok.append(("Kostencomponenten", "Alle grote kostencomponenten geboekt ✓", f"{len(booked_components)} geverifieerd"))
+
+            # Check 6: GL account variances in 4* range (excluding 48, 49)
+            # Group previous period costs
+            prev_costs_grouped = {}
+            for item in prev_costs_by_account:
+                account_info = item.get("account_id")
+                if account_info and len(account_info) >= 2:
+                    account_code = str(account_info[1]).split()[0] if isinstance(account_info[1], str) else str(account_info[0])
+                    if len(account_code) >= 2:
+                        prefix = account_code[:2]
+                        prev_costs_grouped[prefix] = prev_costs_grouped.get(prefix, 0) + item.get("balance", 0)
+
+            # Check for large variances (>30%) on 40-47 accounts
+            cost_variances = []
+            for prefix in ["40", "41", "42", "43", "44", "45", "46", "47"]:
+                current_amount = current_costs_grouped.get(prefix, 0)
+                prev_amount = prev_costs_grouped.get(prefix, 0)
+
+                if prev_amount != 0:
+                    variance_pct = ((current_amount - prev_amount) / abs(prev_amount)) * 100
+                    variance_abs = current_amount - prev_amount
+                    # Flag if variance > 30% and absolute variance > €500
+                    if abs(variance_pct) > 30 and abs(variance_abs) > 500:
+                        category_name = CATEGORY_TRANSLATIONS.get(prefix, f"Categorie {prefix}")
+                        cost_variances.append({
+                            "prefix": prefix,
+                            "name": category_name,
+                            "current": current_amount,
+                            "previous": prev_amount,
+                            "variance_pct": variance_pct,
+                            "variance_abs": variance_abs
+                        })
+                elif current_amount > 500:  # New significant cost this period
+                    category_name = CATEGORY_TRANSLATIONS.get(prefix, f"Categorie {prefix}")
+                    cost_variances.append({
+                        "prefix": prefix,
+                        "name": category_name,
+                        "current": current_amount,
+                        "previous": 0,
+                        "variance_pct": 100,
+                        "variance_abs": current_amount
+                    })
+
+            if cost_variances:
+                # Sort by absolute variance
+                cost_variances.sort(key=lambda x: abs(x["variance_abs"]), reverse=True)
+                top_variances = cost_variances[:3]  # Top 3 variances
+                variance_summary = ", ".join([f"{v['name']} ({v['variance_pct']:+.0f}%)" for v in top_variances])
+                validation_warnings.append((
+                    "Kostenvarianties (4*)",
+                    f"Grote afwijkingen: {variance_summary}",
+                    f"{len(cost_variances)} categorie(ën)"
+                ))
+            else:
+                validation_ok.append(("Kostenvarianties (4*)", "Geen grote afwijkingen op 40-47 rekeningen ✓", "Binnen norm"))
+
+            # Check 7: Product category margin variances
+            # Aggregate by product category
+            def aggregate_by_category(revenue_data, cogs_data):
+                """Aggregate revenue and COGS by product category."""
+                # Get unique product IDs
+                product_ids = set()
+                for item in revenue_data:
+                    if item.get("product_id"):
+                        product_ids.add(item["product_id"][0] if isinstance(item["product_id"], list) else item["product_id"])
+                for item in cogs_data:
+                    if item.get("product_id"):
+                        product_ids.add(item["product_id"][0] if isinstance(item["product_id"], list) else item["product_id"])
+
+                # Get product categories
+                product_categories = {}
+                if product_ids:
+                    products = odoo_call(
+                        "product.product", "search_read",
+                        [["id", "in", list(product_ids)]],
+                        ["id", "categ_id"],
+                        limit=len(product_ids) + 100,
+                        include_archived=True
+                    )
+                    for p in products:
+                        categ = p.get("categ_id")
+                        if categ:
+                            categ_name = categ[1] if isinstance(categ, list) and len(categ) > 1 else "Onbekend"
+                            product_categories[p["id"]] = categ_name
+
+                # Aggregate by category
+                category_data = {}
+                for item in revenue_data:
+                    if item.get("product_id"):
+                        pid = item["product_id"][0] if isinstance(item["product_id"], list) else item["product_id"]
+                        categ = product_categories.get(pid, "Overig")
+                        if categ not in category_data:
+                            category_data[categ] = {"revenue": 0, "cogs": 0}
+                        category_data[categ]["revenue"] += -item.get("balance", 0)  # Revenue is negative in balance
+
+                for item in cogs_data:
+                    if item.get("product_id"):
+                        pid = item["product_id"][0] if isinstance(item["product_id"], list) else item["product_id"]
+                        categ = product_categories.get(pid, "Overig")
+                        if categ not in category_data:
+                            category_data[categ] = {"revenue": 0, "cogs": 0}
+                        category_data[categ]["cogs"] += item.get("balance", 0)  # COGS is positive in balance
+
+                return category_data
+
+            current_category_data = aggregate_by_category(current_revenue_by_product, current_cogs_by_product)
+            prev_category_data = aggregate_by_category(prev_revenue_by_product, prev_cogs_by_product)
+
+            # Calculate margins and check for variances
+            margin_variances = []
+            for categ, data in current_category_data.items():
+                current_revenue_cat = data["revenue"]
+                current_cogs_cat = data["cogs"]
+                current_margin = ((current_revenue_cat - current_cogs_cat) / current_revenue_cat * 100) if current_revenue_cat > 0 else 0
+
+                prev_data = prev_category_data.get(categ, {"revenue": 0, "cogs": 0})
+                prev_revenue_cat = prev_data["revenue"]
+                prev_cogs_cat = prev_data["cogs"]
+                prev_margin = ((prev_revenue_cat - prev_cogs_cat) / prev_revenue_cat * 100) if prev_revenue_cat > 0 else 0
+
+                margin_change = current_margin - prev_margin
+
+                # Flag if margin changed by more than 10 percentage points and revenue > €1000
+                if abs(margin_change) > 10 and current_revenue_cat > 1000:
+                    margin_variances.append({
+                        "category": categ,
+                        "current_margin": current_margin,
+                        "prev_margin": prev_margin,
+                        "margin_change": margin_change,
+                        "current_revenue": current_revenue_cat
+                    })
+
+            if margin_variances:
+                # Sort by absolute margin change
+                margin_variances.sort(key=lambda x: abs(x["margin_change"]), reverse=True)
+                top_margin_changes = margin_variances[:3]
+                margin_summary = ", ".join([
+                    f"{v['category'][:20]} ({v['margin_change']:+.1f}pp)"
+                    for v in top_margin_changes
+                ])
+                validation_warnings.append((
+                    "Productcategorie marges",
+                    f"Grote margewijzigingen: {margin_summary}",
+                    f"{len(margin_variances)} categorie(ën)"
+                ))
+            else:
+                validation_ok.append(("Productcategorie marges", "Geen grote margewijzigingen ✓", "Binnen norm"))
+
             # Display validation results
             col1, col2, col3 = st.columns(3)
 
@@ -3151,6 +3401,107 @@ def main():
                 with st.expander("Details"):
                     for name, status, detail in validation_ok:
                         st.markdown(f"- **{name}**: {status}")
+
+            st.markdown("---")
+
+            # =================================================================
+            # COST COMPONENT DETAILS
+            # =================================================================
+            st.subheader("💼 Kostencomponenten Analyse")
+
+            with st.expander("📊 Details Kostencomponenten (40-49 rekeningen)", expanded=False):
+                # Show cost components table
+                cost_components_data = []
+                for prefix in ["40", "41", "42", "43", "44", "45", "46", "47", "48", "49"]:
+                    current_amount = current_costs_grouped.get(prefix, 0)
+                    prev_amount = prev_costs_grouped.get(prefix, 0)
+                    variance = current_amount - prev_amount
+                    variance_pct = ((variance / abs(prev_amount)) * 100) if prev_amount != 0 else (100 if current_amount != 0 else 0)
+
+                    category_name = CATEGORY_TRANSLATIONS.get(prefix, f"Categorie {prefix}")
+                    cost_components_data.append({
+                        "Code": prefix,
+                        "Categorie": category_name,
+                        f"Huidig ({period_label})": f"€{current_amount:,.0f}",
+                        f"Vorig ({prev_period_label})": f"€{prev_amount:,.0f}",
+                        "Verschil": f"€{variance:+,.0f}",
+                        "Verschil %": f"{variance_pct:+.1f}%"
+                    })
+
+                df_cost_components = pd.DataFrame(cost_components_data)
+                st.dataframe(df_cost_components, use_container_width=True, hide_index=True)
+
+                # Highlight major cost components status
+                st.markdown("**Grote kostencomponenten status:**")
+                for prefix, name in major_cost_components.items():
+                    amount = current_costs_grouped.get(prefix, 0)
+                    if abs(amount) >= 100:
+                        st.markdown(f"- ✅ **{name}**: €{amount:,.0f} geboekt")
+                    else:
+                        st.markdown(f"- ⚠️ **{name}**: Niet of minimaal geboekt (€{amount:,.0f})")
+
+            # =================================================================
+            # COST VARIANCE DETAILS (4* excl. 48, 49)
+            # =================================================================
+            with st.expander("📉 Details Kostenvarianties (40-47 rekeningen)", expanded=False):
+                if cost_variances:
+                    variance_table_data = []
+                    for v in cost_variances:
+                        variance_table_data.append({
+                            "Code": v["prefix"],
+                            "Categorie": v["name"],
+                            "Huidig": f"€{v['current']:,.0f}",
+                            "Vorig": f"€{v['previous']:,.0f}",
+                            "Verschil": f"€{v['variance_abs']:+,.0f}",
+                            "Verschil %": f"{v['variance_pct']:+.1f}%"
+                        })
+                    df_variances = pd.DataFrame(variance_table_data)
+                    st.warning(f"⚠️ {len(cost_variances)} categorie(ën) met grote afwijking (>30% en >€500)")
+                    st.dataframe(df_variances, use_container_width=True, hide_index=True)
+                else:
+                    st.success("✅ Geen grote kostenvarianties gevonden op 40-47 rekeningen")
+
+            # =================================================================
+            # PRODUCT CATEGORY MARGIN DETAILS
+            # =================================================================
+            with st.expander("📦 Details Productcategorie Marges", expanded=False):
+                if current_category_data:
+                    margin_table_data = []
+                    for categ, data in sorted(current_category_data.items(), key=lambda x: x[1]["revenue"], reverse=True):
+                        current_revenue_cat = data["revenue"]
+                        current_cogs_cat = data["cogs"]
+                        current_margin = ((current_revenue_cat - current_cogs_cat) / current_revenue_cat * 100) if current_revenue_cat > 0 else 0
+
+                        prev_data = prev_category_data.get(categ, {"revenue": 0, "cogs": 0})
+                        prev_revenue_cat = prev_data["revenue"]
+                        prev_margin = ((prev_revenue_cat - prev_data["cogs"]) / prev_revenue_cat * 100) if prev_revenue_cat > 0 else 0
+
+                        margin_change = current_margin - prev_margin
+
+                        if current_revenue_cat > 100:  # Only show categories with meaningful revenue
+                            margin_table_data.append({
+                                "Categorie": categ[:30] if len(categ) > 30 else categ,
+                                "Omzet": f"€{current_revenue_cat:,.0f}",
+                                "Kostprijs": f"€{current_cogs_cat:,.0f}",
+                                "Marge %": f"{current_margin:.1f}%",
+                                "Vorige marge %": f"{prev_margin:.1f}%",
+                                "Verandering": f"{margin_change:+.1f}pp"
+                            })
+
+                    if margin_table_data:
+                        df_margins = pd.DataFrame(margin_table_data)
+                        st.dataframe(df_margins, use_container_width=True, hide_index=True)
+
+                        # Show categories with big margin changes
+                        if margin_variances:
+                            st.warning(f"⚠️ {len(margin_variances)} categorie(ën) met margewijziging >10 procentpunt:")
+                            for v in margin_variances[:5]:
+                                direction = "gestegen" if v["margin_change"] > 0 else "gedaald"
+                                st.markdown(f"- **{v['category'][:30]}**: {v['prev_margin']:.1f}% → {v['current_margin']:.1f}% ({direction} met {abs(v['margin_change']):.1f}pp)")
+                    else:
+                        st.info("Geen productcategorieën met significante omzet gevonden")
+                else:
+                    st.info("Geen productcategorie data beschikbaar voor deze periode")
 
             st.markdown("---")
 
@@ -3390,6 +3741,18 @@ def main():
                     "issues": validation_issues,
                     "warnings_detail": validation_warnings
                 },
+                "cost_components": {
+                    "booked": [{"prefix": p, "name": n, "amount": a} for p, n, a in booked_components],
+                    "missing": [{"prefix": p, "name": n} for p, n in missing_components]
+                },
+                "cost_variances": [
+                    {"prefix": v["prefix"], "name": v["name"], "current": v["current"], "previous": v["previous"], "variance_pct": v["variance_pct"]}
+                    for v in cost_variances
+                ],
+                "margin_variances": [
+                    {"category": v["category"], "current_margin": v["current_margin"], "prev_margin": v["prev_margin"], "change": v["margin_change"]}
+                    for v in margin_variances
+                ],
                 "attention_items_count": len(attention_items),
                 "trend_data": [
                     {"month": t["Maand"], "revenue": t["Omzet"], "costs": t["Kosten"], "profit": t["Resultaat"]}
