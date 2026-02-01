@@ -2,7 +2,7 @@
 LAB Groep Financial Dashboard v13
 =================================
 Wijzigingen t.o.v. v12:
-- 📋 NIEUW: Maandafsluiting Checklist tab (wachtwoord: controller)
+- 📋 NIEUW: Maandafsluiting Checklist tab (wachtwoord: )
   * Automatische Odoo checks voor maandafsluiting
   * Ongeboekte facturen detectie
   * Bank reconciliatie status
@@ -58,6 +58,7 @@ import json
 from datetime import datetime, timedelta
 from functools import lru_cache
 import base64
+from typing import Optional, List, Dict, Any, Tuple
 
 # =============================================================================
 # CONFIGURATIE
