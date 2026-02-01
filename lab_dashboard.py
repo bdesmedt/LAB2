@@ -2587,38 +2587,25 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         if company_id:
             base_domain.append(["company_id", "=", company_id])
 
-        # Get account patterns from mapping (use defaults if not configured)
-        acct_mapping = st.session_state.get("forecast_account_mapping", DEFAULT_ACCOUNT_MAPPING)
-        revenue_patterns = acct_mapping.get("revenue", {}).get("account_patterns", ["70", "71", "72", "73", "74"])
-        cogs_patterns = acct_mapping.get("cogs", {}).get("account_patterns", ["60", "61"])
+        # Fetch revenue (accounts starting with 8)
+        revenue_domain = base_domain + [["account_id.code", "=like", "8%"]]
+        revenue_data = odoo_read_group(
+            "account.move.line",
+            revenue_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
 
-        # Fetch revenue from configured account patterns
-        revenue_data = []
-        for pattern in revenue_patterns:
-            revenue_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
-            data = odoo_read_group(
-                "account.move.line",
-                revenue_domain,
-                ["balance:sum"],
-                ["date:month"]
-            )
-            if data:
-                revenue_data.extend(data)
+        # Fetch COGS (accounts starting with 7)
+        cogs_domain = base_domain + [["account_id.code", "=like", "7%"]]
+        cogs_data = odoo_read_group(
+            "account.move.line",
+            cogs_domain,
+            ["balance:sum"],
+            ["date:month"]
+        )
 
-        # Fetch COGS from configured account patterns
-        cogs_data = []
-        for pattern in cogs_patterns:
-            cogs_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
-            data = odoo_read_group(
-                "account.move.line",
-                cogs_domain,
-                ["balance:sum"],
-                ["date:month"]
-            )
-            if data:
-                cogs_data.extend(data)
-
-        # Fetch operating expenses (accounts 61-66)
+        # Fetch operating expenses (accounts 40-49)
         expenses_by_category = {}
         for cat_code in EXPENSE_CATEGORIES.keys():
             exp_domain = base_domain + [["account_id.code", "=like", f"{cat_code}%"]]
@@ -2628,45 +2615,26 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
                 ["balance:sum"],
                 ["date:month"]
             )
-            expenses_by_category[cat_code] = exp_data if exp_data else []
+            expenses_by_category[cat_code] = exp_data
 
-        # Also fetch new expense categories if available
-        new_expenses_by_category = {}
-        draggable_map = get_draggable_mapping()
-        for cat_code, account_codes in draggable_map.get("categories", {}).items():
-            if account_codes:
-                cat_data = []
-                for acc_code in account_codes:
-                    exp_domain = base_domain + [["account_id.code", "=like", f"{acc_code}%"]]
-                    data = odoo_read_group(
-                        "account.move.line",
-                        exp_domain,
-                        ["balance:sum"],
-                        ["date:month"]
-                    )
-                    if data:
-                        cat_data.extend(data)
-                new_expenses_by_category[cat_code] = cat_data
-
-        # Generate month labels - Odoo returns format like "January 2024"
+        # Convert to monthly arrays
         months = []
         current = start
         for i in range(num_months):
             months.append(current.strftime("%B %Y"))
             current = (current + timedelta(days=32)).replace(day=1)
 
-        # Helper to find and sum values for a month (handles multiple entries)
+        # Helper to find value for a month
         def get_month_value(data_list, month_str):
-            total = 0
             for item in data_list:
                 if item.get("date:month") == month_str:
-                    total += item.get("balance:sum", 0)
-            return total
+                    return item.get("balance:sum", 0)
+            return 0
 
         actual_revenue = []
         actual_cogs = []
         for month in months:
-            # Revenue is negative in Odoo (credit), flip sign
+            # Revenue is negative in Odoo, flip sign
             actual_revenue.append(-get_month_value(revenue_data, month))
             actual_cogs.append(get_month_value(cogs_data, month))
 
@@ -2674,22 +2642,14 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         for cat_code, cat_data in expenses_by_category.items():
             actual_expenses[cat_code] = [get_month_value(cat_data, m) for m in months]
 
-        # Build new expenses structure
-        actual_new_expenses = {}
-        for cat_code, cat_data in new_expenses_by_category.items():
-            actual_new_expenses[cat_code] = [get_month_value(cat_data, m) for m in months]
-
         return {
             "revenue": actual_revenue,
             "cogs": actual_cogs,
             "operating_expenses": actual_expenses,
-            "expenses": actual_new_expenses,
             "months": months
         }
     except Exception as e:
         st.error(f"Fout bij ophalen actuele data: {e}")
-        import traceback
-        traceback.print_exc()
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
