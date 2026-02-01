@@ -38,9 +38,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import json
+import re
+import random
 from datetime import datetime, timedelta
 from functools import lru_cache
 import base64
+from typing import Optional, Dict, List, Any, Tuple
 
 # =============================================================================
 # CONFIGURATIE
@@ -58,6 +61,22 @@ ODOO_URL = "https://lab.odoo.works/jsonrpc"
 ODOO_DB = "bluezebra-works-nl-vestingh-production-13415483"
 ODOO_UID = 37
 
+# Cache TTL configuratie (in seconden)
+CACHE_TTL_SHORT = 300    # 5 minuten - voor snel veranderende data
+CACHE_TTL_LONG = 3600    # 1 uur - voor aggregaties
+
+# Account code ranges voor domein queries
+ACCOUNT_RANGES = {
+    "revenue": ("800000", "900000"),
+    "cost_4": ("400000", "500000"),
+    "cost_6": ("600000", "700000"),
+    "cost_7": ("700000", "800000"),
+}
+
+# Product IDs voor Verf/Behang analyse (LAB Projects)
+ARBEID_VERF_ID = 735083
+ARBEID_BEHANG_IDS = [735084, 777873]
+
 # API Key - probeer secrets, anders gebruik session state (input in main)
 def get_api_key():
     # Probeer eerst uit secrets
@@ -65,7 +84,7 @@ def get_api_key():
         key = st.secrets.get("ODOO_API_KEY", "")
         if key:
             return key
-    except:
+    except (FileNotFoundError, KeyError, AttributeError):
         pass
     
     # Fallback: uit session state (wordt gezet in main())
@@ -74,7 +93,9 @@ def get_api_key():
 COMPANIES = {
     1: "LAB Conceptstore",
     2: "LAB Shops",
-    3: "LAB Projects"
+    3: "LAB Projects",
+    4: "Verf en Wand",
+    5: "Vestingh Art of Living"
 }
 
 # =============================================================================
@@ -254,8 +275,15 @@ ACCOUNT_TRANSLATIONS = {
     "Current account": "Rekening-courant"
 }
 
-def translate_account_name(name):
-    """Vertaal Engelse rekeningnaam naar Nederlands indien beschikbaar"""
+def translate_account_name(name: Optional[str]) -> Optional[str]:
+    """Vertaal Engelse rekeningnaam naar Nederlands indien beschikbaar.
+
+    Args:
+        name: De Engelse rekeningnaam
+
+    Returns:
+        De Nederlandse vertaling of de originele naam als geen vertaling bestaat
+    """
     if not name:
         return name
     # Eerst exacte match proberen
@@ -267,8 +295,16 @@ def translate_account_name(name):
             return name.replace(eng, nl)
     return name
 
-def get_category_name(account_code):
-    """Haal Nederlandse categorienaam op basis van rekeningcode"""
+
+def get_category_name(account_code: Optional[str]) -> str:
+    """Haal Nederlandse categorienaam op basis van rekeningcode.
+
+    Args:
+        account_code: De grootboekcode (bijv. "400000")
+
+    Returns:
+        Nederlandse categorienaam of "Overig" als niet gevonden
+    """
     if not account_code or len(str(account_code)) < 2:
         return "Overig"
     prefix = str(account_code)[:2]
@@ -278,8 +314,29 @@ def get_category_name(account_code):
 # ODOO API HELPERS
 # =============================================================================
 
-def odoo_call(model, method, domain, fields, limit=None, timeout=120, include_archived=False):
-    """Generieke Odoo JSON-RPC call met verbeterde timeout handling"""
+def odoo_call(
+    model: str,
+    method: str,
+    domain: List,
+    fields: List[str],
+    limit: Optional[int] = None,
+    timeout: int = 120,
+    include_archived: bool = False
+) -> List[Dict]:
+    """Generieke Odoo JSON-RPC call met verbeterde timeout handling.
+
+    Args:
+        model: Odoo model naam (bijv. "account.move.line")
+        method: API methode (bijv. "search_read")
+        domain: Odoo domein filter
+        fields: Velden om op te halen
+        limit: Max aantal records (None voor onbeperkt)
+        timeout: Request timeout in seconden
+        include_archived: Ook gearchiveerde records ophalen
+
+    Returns:
+        Lijst van record dicts, of lege lijst bij fout
+    """
     api_key = get_api_key()
     if not api_key:
         return []
@@ -310,14 +367,24 @@ def odoo_call(model, method, domain, fields, limit=None, timeout=120, include_ar
         response = requests.post(ODOO_URL, json=payload, timeout=timeout)
         result = response.json()
         if "error" in result:
-            st.error(f"Odoo error: {result['error']}")
+            error_msg = result.get("error", {})
+            error_data = error_msg.get("data", {}) if isinstance(error_msg, dict) else {}
+            error_name = error_data.get("name", "Unknown error")
+            error_message = error_data.get("message", str(error_msg))
+            st.error(f"❌ Odoo fout bij {model}.{method}: {error_name} - {error_message}")
             return []
         return result.get("result", [])
     except requests.exceptions.Timeout:
-        st.error("⏱️ Timeout - probeer een kortere periode of specifieke entiteit")
+        st.error(f"⏱️ Timeout ({timeout}s) bij {model}.{method} - probeer een kortere periode of specifieke entiteit")
+        return []
+    except requests.exceptions.ConnectionError:
+        st.error(f"🔌 Geen verbinding met Odoo server ({ODOO_URL}) - controleer je internetverbinding")
+        return []
+    except requests.exceptions.JSONDecodeError:
+        st.error(f"⚠️ Ongeldig antwoord van Odoo server bij {model}.{method}")
         return []
     except Exception as e:
-        st.error(f"Connection error: {e}")
+        st.error(f"❌ Onverwachte fout bij {model}.{method}: {type(e).__name__} - {e}")
         return []
 
 # =============================================================================
@@ -334,9 +401,9 @@ Je hebt toegang tot de Odoo boekhouding en kunt vragen beantwoorden over:
 - Cashflow en balans
 
 BEDRIJVEN (company_id):
-- 1: LAB Shops (retail)
-- 2: LAB Projects (projecten/behang/verf)
-- 3: LAB Holding (holding)
+- 1: LAB Conceptstore (retail POS)
+- 2: LAB Shops (winkels)
+- 3: LAB Projects (projecten/behang/verf)
 - 4: Verf en Wand (verf specialist)
 - 5: Vestingh Art of Living (premium interieur)
 
@@ -448,7 +515,6 @@ def process_chat_message(user_message, chat_history, context_info):
     
     # Check of er een Odoo query in het antwoord zit
     if "```odoo_query" in response:
-        import re
         query_match = re.search(r'```odoo_query\s*\n(.*?)\n```', response, re.DOTALL)
         if query_match:
             query_json = query_match.group(1)
@@ -475,18 +541,43 @@ def process_chat_message(user_message, chat_history, context_info):
 # DATA FUNCTIES
 # =============================================================================
 
-@st.cache_data(ttl=300)
-def get_bank_balances():
-    """Haal alle banksaldi op per rekening (excl. R/C intercompany)"""
+def _is_rc_account(name: str, account_code: str) -> bool:
+    """Bepaal of een rekening een R/C (rekening-courant) intercompany rekening is.
+
+    Args:
+        name: Naam van het journal
+        account_code: Grootboekcode van de rekening
+
+    Returns:
+        True als het een R/C rekening is, anders False
+    """
+    return (
+        "R/C" in name or
+        "RC " in name or
+        str(account_code).startswith("12") or  # Vorderingen op groepsmaatschappijen
+        str(account_code).startswith("14")     # Schulden aan groepsmaatschappijen
+    )
+
+
+def _get_journal_accounts() -> Tuple[List[Dict], Dict[int, Dict]]:
+    """Haal bank journals op met bijbehorende account info.
+
+    Returns:
+        Tuple van (journals lijst, account_id -> account dict mapping)
+    """
     journals = odoo_call(
         "account.journal", "search_read",
         [["type", "=", "bank"]],
         ["name", "company_id", "default_account_id", "current_statement_balance", "code"]
     )
-    
-    # Haal account codes op voor de journals om R/C te kunnen filteren
-    account_ids = [j.get("default_account_id", [None])[0] for j in journals if j.get("default_account_id")]
-    accounts = {}
+
+    # Haal account codes op voor de journals
+    account_ids = [
+        j.get("default_account_id", [None])[0]
+        for j in journals
+        if j.get("default_account_id")
+    ]
+    accounts: Dict[int, Dict] = {}
     if account_ids:
         account_data = odoo_call(
             "account.account", "search_read",
@@ -494,68 +585,44 @@ def get_bank_balances():
             ["id", "code", "name"]
         )
         accounts = {a["id"]: a for a in account_data}
-    
-    # Filter: echte bankrekeningen vs R/C intercompany
+
+    return journals, accounts
+
+
+@st.cache_data(ttl=CACHE_TTL_SHORT)
+def get_bank_balances() -> List[Dict]:
+    """Haal alle banksaldi op per rekening (excl. R/C intercompany)."""
+    journals, accounts = _get_journal_accounts()
+
     bank_only = []
     for j in journals:
         name = j.get("name", "")
         account_id = j.get("default_account_id", [None])[0]
         account_code = accounts.get(account_id, {}).get("code", "") if account_id else ""
-        
-        # R/C detectie: naam bevat R/C OF rekeningcode begint met 12 of 14
-        is_rc = (
-            "R/C" in name or 
-            "RC " in name or
-            str(account_code).startswith("12") or  # Vorderingen op groepsmaatschappijen
-            str(account_code).startswith("14")     # Schulden aan groepsmaatschappijen
-        )
-        
-        if not is_rc:
+
+        if not _is_rc_account(name, account_code):
             bank_only.append(j)
-    
+
     return bank_only
 
-@st.cache_data(ttl=300)
-def get_rc_balances():
-    """Haal R/C (Rekening Courant) intercompany saldi op"""
-    journals = odoo_call(
-        "account.journal", "search_read",
-        [["type", "=", "bank"]],
-        ["name", "company_id", "default_account_id", "current_statement_balance", "code"]
-    )
-    
-    # Haal account codes op voor de journals
-    account_ids = [j.get("default_account_id", [None])[0] for j in journals if j.get("default_account_id")]
-    accounts = {}
-    if account_ids:
-        account_data = odoo_call(
-            "account.account", "search_read",
-            [["id", "in", account_ids]],
-            ["id", "code", "name"]
-        )
-        accounts = {a["id"]: a for a in account_data}
-    
-    # Filter: alleen R/C rekeningen
+
+@st.cache_data(ttl=CACHE_TTL_SHORT)
+def get_rc_balances() -> List[Dict]:
+    """Haal R/C (Rekening Courant) intercompany saldi op."""
+    journals, accounts = _get_journal_accounts()
+
     rc_only = []
     for j in journals:
         name = j.get("name", "")
         account_id = j.get("default_account_id", [None])[0]
         account_code = accounts.get(account_id, {}).get("code", "") if account_id else ""
-        
-        # R/C detectie
-        is_rc = (
-            "R/C" in name or 
-            "RC " in name or
-            str(account_code).startswith("12") or
-            str(account_code).startswith("14")
-        )
-        
-        if is_rc:
-            # Voeg account code toe aan journal voor weergave
+
+        if _is_rc_account(name, account_code):
+            # Voeg account info toe aan journal voor weergave
             j["account_code"] = account_code
             j["account_type"] = "Vordering" if str(account_code).startswith("12") else "Schuld"
             rc_only.append(j)
-    
+
     return rc_only
 
 # Intercompany partner IDs (LAB Conceptstore, LAB Shops, LAB Projects)
@@ -593,86 +660,112 @@ def odoo_read_group(model, domain, fields, groupby, timeout=120):
         response = requests.post(ODOO_URL, json=payload, timeout=timeout)
         result = response.json()
         if "error" in result:
-            st.error(f"Odoo read_group error: {result['error']}")
+            error_msg = result.get("error", {})
+            error_data = error_msg.get("data", {}) if isinstance(error_msg, dict) else {}
+            error_message = error_data.get("message", str(error_msg))
+            st.error(f"❌ Odoo aggregatie fout bij {model}: {error_message}")
             return []
         return result.get("result", [])
+    except requests.exceptions.Timeout:
+        st.error(f"⏱️ Timeout ({timeout}s) bij aggregatie van {model} - probeer een kortere periode")
+        return []
+    except requests.exceptions.ConnectionError:
+        st.error(f"🔌 Geen verbinding met Odoo server - controleer je internetverbinding")
+        return []
     except Exception as e:
-        st.error(f"Read group error: {e}")
+        st.error(f"❌ Aggregatie fout bij {model}: {type(e).__name__} - {e}")
         return []
 
-@st.cache_data(ttl=3600)  # 1 uur cache
-def get_revenue_aggregated(year, company_id=None):
-    """Server-side geaggregeerde omzetdata - geen limiet!"""
+
+def _build_cost_domain(
+    year: int,
+    account_range: Tuple[str, str],
+    company_id: Optional[int] = None,
+    intercompany_only: bool = False
+) -> List[Tuple]:
+    """Helper: bouw een Odoo domein voor kostenrekeningen.
+
+    Args:
+        year: Het boekjaar
+        account_range: Tuple met (min_code, max_code) voor rekeningfilter
+        company_id: Optioneel company ID filter
+        intercompany_only: Als True, filter alleen IC partners
+
+    Returns:
+        Lijst met Odoo domein condities
+    """
     domain = [
-        ("account_id.code", ">=", "800000"),
-        ("account_id.code", "<", "900000"),
+        ("account_id.code", ">=", account_range[0]),
+        ("account_id.code", "<", account_range[1]),
         ("date", ">=", f"{year}-01-01"),
         ("date", "<=", f"{year}-12-31"),
         ("parent_state", "=", "posted")
     ]
     if company_id:
         domain.append(("company_id", "=", company_id))
-    
+    if intercompany_only:
+        domain.append(("partner_id", "in", INTERCOMPANY_PARTNERS))
+    return domain
+
+
+def _aggregate_cost_results(results_list: List[List[Dict]]) -> List[Dict]:
+    """Helper: combineer cost query resultaten per maand.
+
+    Args:
+        results_list: Lijst van result lists van odoo_read_group
+
+    Returns:
+        Gecombineerde resultaten per maand
+    """
+    monthly: Dict[str, float] = {}
+    for result in results_list:
+        for r in result:
+            month = r.get("date:month", "Unknown")
+            if month not in monthly:
+                monthly[month] = 0
+            monthly[month] += r.get("balance", 0)
+    return [{"date:month": k, "balance": v} for k, v in monthly.items()]
+
+
+@st.cache_data(ttl=CACHE_TTL_LONG)
+def get_revenue_aggregated(year: int, company_id: Optional[int] = None) -> List[Dict]:
+    """Server-side geaggregeerde omzetdata - geen limiet!"""
+    min_code, max_code = ACCOUNT_RANGES["revenue"]
+    domain = [
+        ("account_id.code", ">=", min_code),
+        ("account_id.code", "<", max_code),
+        ("date", ">=", f"{year}-01-01"),
+        ("date", "<=", f"{year}-12-31"),
+        ("parent_state", "=", "posted")
+    ]
+    if company_id:
+        domain.append(("company_id", "=", company_id))
+
     # Groepeer per maand
     result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
     return result
 
-@st.cache_data(ttl=3600)  # 1 uur cache
-def get_cost_aggregated(year, company_id=None):
+@st.cache_data(ttl=CACHE_TTL_LONG)
+def get_cost_aggregated(year: int, company_id: Optional[int] = None) -> List[Dict]:
     """Server-side geaggregeerde kostendata - geen limiet!"""
-    # Query voor 4* rekeningen
-    domain_4 = [
-        ("account_id.code", ">=", "400000"),
-        ("account_id.code", "<", "500000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted")
-    ]
-    if company_id:
-        domain_4.append(("company_id", "=", company_id))
-    
-    # Query voor 6* rekeningen
-    domain_6 = [
-        ("account_id.code", ">=", "600000"),
-        ("account_id.code", "<", "700000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted")
-    ]
-    if company_id:
-        domain_6.append(("company_id", "=", company_id))
-    
-    # Query voor 7* rekeningen (kostprijs verkopen)
-    domain_7 = [
-        ("account_id.code", ">=", "700000"),
-        ("account_id.code", "<", "800000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted")
-    ]
-    if company_id:
-        domain_7.append(("company_id", "=", company_id))
-    
+    # Bouw domeinen voor 4*, 6*, en 7* rekeningen met helper
+    domain_4 = _build_cost_domain(year, ACCOUNT_RANGES["cost_4"], company_id)
+    domain_6 = _build_cost_domain(year, ACCOUNT_RANGES["cost_6"], company_id)
+    domain_7 = _build_cost_domain(year, ACCOUNT_RANGES["cost_7"], company_id)
+
     result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
     result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
     result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
-    
-    # Combineer resultaten per maand
-    monthly = {}
-    for r in result_4 + result_6 + result_7:
-        month = r.get("date:month", "Unknown")
-        if month not in monthly:
-            monthly[month] = 0
-        monthly[month] += r.get("balance", 0)
-    
-    return [{"date:month": k, "balance": v} for k, v in monthly.items()]
 
-@st.cache_data(ttl=3600)
-def get_intercompany_revenue(year, company_id=None):
-    """Haal alleen intercompany omzet op voor IC filtering"""
+    return _aggregate_cost_results([result_4, result_6, result_7])
+
+@st.cache_data(ttl=CACHE_TTL_LONG)
+def get_intercompany_revenue(year: int, company_id: Optional[int] = None) -> List[Dict]:
+    """Haal alleen intercompany omzet op voor IC filtering."""
+    min_code, max_code = ACCOUNT_RANGES["revenue"]
     domain = [
-        ("account_id.code", ">=", "800000"),
-        ("account_id.code", "<", "900000"),
+        ("account_id.code", ">=", min_code),
+        ("account_id.code", "<", max_code),
         ("date", ">=", f"{year}-01-01"),
         ("date", "<=", f"{year}-12-31"),
         ("parent_state", "=", "posted"),
@@ -680,63 +773,25 @@ def get_intercompany_revenue(year, company_id=None):
     ]
     if company_id:
         domain.append(("company_id", "=", company_id))
-    
-    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
-    return result
 
-@st.cache_data(ttl=3600)
-def get_intercompany_costs(year, company_id=None):
-    """Haal alleen intercompany kosten op voor IC filtering"""
-    # 4* rekeningen
-    domain_4 = [
-        ("account_id.code", ">=", "400000"),
-        ("account_id.code", "<", "500000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted"),
-        ("partner_id", "in", INTERCOMPANY_PARTNERS)
-    ]
-    if company_id:
-        domain_4.append(("company_id", "=", company_id))
-    
-    # 6* rekeningen
-    domain_6 = [
-        ("account_id.code", ">=", "600000"),
-        ("account_id.code", "<", "700000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted"),
-        ("partner_id", "in", INTERCOMPANY_PARTNERS)
-    ]
-    if company_id:
-        domain_6.append(("company_id", "=", company_id))
-    
-    # 7* rekeningen
-    domain_7 = [
-        ("account_id.code", ">=", "700000"),
-        ("account_id.code", "<", "800000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
-        ("parent_state", "=", "posted"),
-        ("partner_id", "in", INTERCOMPANY_PARTNERS)
-    ]
-    if company_id:
-        domain_7.append(("company_id", "=", company_id))
-    
+    return odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
+
+
+@st.cache_data(ttl=CACHE_TTL_LONG)
+def get_intercompany_costs(year: int, company_id: Optional[int] = None) -> List[Dict]:
+    """Haal alleen intercompany kosten op voor IC filtering."""
+    # Bouw domeinen voor 4*, 6*, en 7* rekeningen met IC filter
+    domain_4 = _build_cost_domain(year, ACCOUNT_RANGES["cost_4"], company_id, intercompany_only=True)
+    domain_6 = _build_cost_domain(year, ACCOUNT_RANGES["cost_6"], company_id, intercompany_only=True)
+    domain_7 = _build_cost_domain(year, ACCOUNT_RANGES["cost_7"], company_id, intercompany_only=True)
+
     result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
     result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
     result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
-    
-    monthly = {}
-    for r in result_4 + result_6 + result_7:
-        month = r.get("date:month", "Unknown")
-        if month not in monthly:
-            monthly[month] = 0
-        monthly[month] += r.get("balance", 0)
-    
-    return [{"date:month": k, "balance": v} for k, v in monthly.items()]
 
-@st.cache_data(ttl=3600)
+    return _aggregate_cost_results([result_4, result_6, result_7])
+
+@st.cache_data(ttl=CACHE_TTL_LONG)
 def get_weekly_revenue(year, company_id=None, exclude_intercompany=False):
     """Haal wekelijkse omzetdata op via read_group (geen record limiet)"""
     domain = [
@@ -756,8 +811,6 @@ def get_weekly_revenue(year, company_id=None, exclude_intercompany=False):
     
     # Converteer naar lijst met weeknummer en omzet (omzet is negatief in Odoo)
     weekly_data = []
-    import re
-    from datetime import datetime
     for r in result:
         week_str = r.get("date:week", "")
         balance = -r.get("balance", 0)  # Negatief -> positief voor omzet
@@ -778,14 +831,15 @@ def get_weekly_revenue(year, company_id=None, exclude_intercompany=False):
                         "date": date.strftime("%Y-%m-%d"),
                         "omzet": balance
                     })
-            except:
+            except (ValueError, AttributeError):
+                # Skip invalid date formats
                 pass
     
     # Sorteer op datum
     weekly_data.sort(key=lambda x: x.get("date", ""))
     return weekly_data
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=CACHE_TTL_LONG)
 def get_daily_revenue(year, company_id=None, exclude_intercompany=False):
     """Haal dagelijkse omzetdata op via read_group (geen record limiet)"""
     domain = [
@@ -830,7 +884,8 @@ def get_daily_revenue(year, company_id=None, exclude_intercompany=False):
                         "dag": date_str,
                         "omzet": balance
                     })
-            except:
+            except (ValueError, IndexError, AttributeError):
+                # Skip invalid date formats
                 pass
     
     # Sorteer op datum
@@ -838,7 +893,7 @@ def get_daily_revenue(year, company_id=None, exclude_intercompany=False):
     return daily_data
 
 # Legacy functies voor compatibiliteit (niet meer primair gebruikt)
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_revenue_data(year, company_id=None):
     """Haal omzetdata op van 8* rekeningen - LEGACY, gebruik get_revenue_aggregated"""
     domain = [
@@ -859,7 +914,7 @@ def get_revenue_data(year, company_id=None):
         include_archived=True  # Inclusief gearchiveerde records
     )
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_cost_data(year, company_id=None):
     """Haal kostendata op van 4*, 6* en 7* rekeningen - LEGACY"""
     domain = [
@@ -882,7 +937,7 @@ def get_cost_data(year, company_id=None):
         include_archived=True  # Inclusief gearchiveerde records
     )
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_receivables_payables(company_id=None):
     """Haal debiteuren en crediteuren saldi op"""
     # Debiteuren
@@ -921,7 +976,7 @@ def get_receivables_payables(company_id=None):
     
     return receivables, payables
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_invoices(year, company_id=None, invoice_type=None, state=None, search_term=None):
     """Haal facturen op met filters"""
     domain = [
@@ -958,7 +1013,7 @@ def get_invoices(year, company_id=None, invoice_type=None, state=None, search_te
         include_archived=True  # Inclusief gearchiveerde contacten
     )
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_product_sales(year, company_id=None):
     """Haal verkopen per productcategorie op"""
     domain = [
@@ -979,7 +1034,7 @@ def get_product_sales(year, company_id=None):
         include_archived=True  # Inclusief gearchiveerde producten
     )
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_product_categories_for_ids(product_ids_tuple):
     """Haal categorieën op voor specifieke product IDs (inclusief gearchiveerde)
     
@@ -1001,7 +1056,7 @@ def get_product_categories_for_ids(product_ids_tuple):
     )
     return {p["id"]: p.get("categ_id", [None, "Onbekend"]) for p in products}
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_product_categories():
     """Backward compatibility - haalt eerste batch producten op"""
     products = odoo_call(
@@ -1013,7 +1068,7 @@ def get_product_categories():
     )
     return {p["id"]: p.get("categ_id", [None, "Onbekend"]) for p in products}
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_pos_product_sales(year, company_id=None):
     """Haal POS verkopen op met productinfo (voor LAB Conceptstore)"""
     # Haal POS orders op voor het jaar
@@ -1049,19 +1104,18 @@ def get_pos_product_sales(year, company_id=None):
     
     return lines
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_verf_behang_analysis(year):
     """Haal Verf vs Behang analyse op voor LAB Projects (company 3)
     
     Logica:
-    - Arbeid (ID 735083) op factuur → Verfproject
-    - Arbeid Behanger (ID 735084, 777873) op factuur → Behangproject
+    - Arbeid (ID {ARBEID_VERF_ID}) op factuur → Verfproject
+    - Arbeid Behanger (ID {ARBEID_BEHANG_IDS}) op factuur → Behangproject
     - Arbeid regels = dienst omzet
     - Overige regels op zelfde factuur = materiaalkosten
+
+    Gebruikt module-level constanten ARBEID_VERF_ID en ARBEID_BEHANG_IDS.
     """
-    ARBEID_VERF_ID = 735083
-    ARBEID_BEHANG_IDS = [735084, 777873]
-    
     # Haal alle factuurregels op voor LAB Projects
     lines = odoo_call(
         "account.move.line", "search_read",
@@ -1131,7 +1185,7 @@ def get_verf_behang_analysis(year):
         "behang": {"omzet": behang_omzet, "materiaal": behang_materiaal}
     }
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_top_products(year, company_id=None, limit=20):
     """Haal top producten op met omzet"""
     domain = [
@@ -1168,7 +1222,7 @@ def get_top_products(year, company_id=None, limit=20):
     sorted_products = sorted(products.values(), key=lambda x: -x["omzet"])
     return sorted_products[:limit]
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=CACHE_TTL_SHORT)
 def get_customer_locations(company_id=3):
     """Haal klantlocaties op voor LAB Projects (of andere entiteit)"""
     # Haal alle klanten met adressen op die facturen hebben gehad
@@ -1365,7 +1419,7 @@ def get_coords_from_postcode(postcode):
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v8 - Met klantenkaart & verbeterde R/C filtering")
+    st.caption("Real-time data uit Odoo | v11 - Met AI Chatbot & Balans tab")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -1375,7 +1429,7 @@ def main():
     try:
         if st.secrets.get("ODOO_API_KEY", ""):
             api_from_secrets = True
-    except:
+    except (FileNotFoundError, KeyError, AttributeError):
         pass
     
     if not api_from_secrets:
@@ -1537,7 +1591,7 @@ def main():
                     month_num = month_map.get(month_name, '00')
                     return f"{year}-{month_num}"
                 return month_str
-            except:
+            except (ValueError, AttributeError):
                 return month_str
         
         # Bouw monthly data van geaggregeerde resultaten
@@ -2174,7 +2228,6 @@ def main():
                     lat, lon = get_coords_from_postcode(c.get("zip"))
                     if lat and lon:
                         # Voeg kleine random offset toe om overlapping te voorkomen
-                        import random
                         lat += random.uniform(-0.02, 0.02)
                         lon += random.uniform(-0.02, 0.02)
                         
@@ -2423,7 +2476,7 @@ def main():
             key="balance_date"
         )
         
-        @st.cache_data(ttl=3600)
+        @st.cache_data(ttl=CACHE_TTL_LONG)
         def get_balance_sheet_data(date_str, comp_id=None):
             """Haal balanssaldi op per account type"""
             domain = [
