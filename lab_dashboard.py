@@ -4014,6 +4014,155 @@ Antwoord in het Nederlands en wees praktisch/actionable."""
 
                 return call_openai(messages)
 
+            def analyze_cost_variances_with_ai(cost_variances, current_costs_grouped, prev_costs_grouped, period_label, prev_period_label):
+                """Use AI to analyze cost variances and provide insights."""
+                if not get_openai_key():
+                    return None, "Geen OpenAI API key geconfigureerd"
+
+                if not cost_variances:
+                    return None, "Geen kostenvarianties om te analyseren"
+
+                # Prepare data summary for AI
+                variance_summary = []
+                for v in cost_variances:
+                    variance_summary.append({
+                        "categorie": v["name"],
+                        "code": v["prefix"],
+                        "huidig": v["current"],
+                        "vorig": v["previous"],
+                        "verschil_euro": v["variance_abs"],
+                        "verschil_procent": v["variance_pct"]
+                    })
+
+                # All cost categories for context
+                all_costs = []
+                for prefix in ["40", "41", "42", "43", "44", "45", "46", "47"]:
+                    current_amount = current_costs_grouped.get(prefix, 0)
+                    prev_amount = prev_costs_grouped.get(prefix, 0)
+                    category_name = CATEGORY_TRANSLATIONS.get(prefix, f"Categorie {prefix}")
+                    all_costs.append({
+                        "categorie": category_name,
+                        "code": prefix,
+                        "huidig": current_amount,
+                        "vorig": prev_amount
+                    })
+
+                total_current = sum(c["huidig"] for c in all_costs)
+                total_prev = sum(c["vorig"] for c in all_costs)
+
+                prompt = f"""Analyseer de volgende kostenvarianties voor een Nederlands bedrijf en geef een praktische analyse.
+
+**Periode:** {period_label}
+**Vergelijkingsperiode:** {prev_period_label}
+
+**Totale kosten:**
+- Huidige periode: €{total_current:,.2f}
+- Vorige periode: €{total_prev:,.2f}
+- Verschil: €{total_current - total_prev:+,.2f} ({((total_current - total_prev) / total_prev * 100) if total_prev != 0 else 0:+.1f}%)
+
+**Alle kostencategorieën (40-47):**
+{json.dumps(all_costs, indent=2, ensure_ascii=False)}
+
+**Categorieën met grote afwijkingen (>30% en >€500):**
+{json.dumps(variance_summary, indent=2, ensure_ascii=False)}
+
+Geef een bondige analyse (max 6 bullet points) met:
+1. Korte samenvatting van de kostenontwikkeling
+2. De belangrijkste afwijkingen en hun impact
+3. Mogelijke verklaringen voor de varianties (seizoenseffect, eenmalige kosten, structurele verandering, etc.)
+4. Correlaties tussen categorieën indien van toepassing
+5. Aanbevelingen voor verder onderzoek
+6. Risico's of aandachtspunten
+
+Focus op wat actionable is. Antwoord in het Nederlands."""
+
+                messages = [
+                    {"role": "system", "content": "Je bent een ervaren financial controller die kostenanalyses uitvoert voor Nederlandse bedrijven. Geef praktische, bondige analyses met focus op business impact."},
+                    {"role": "user", "content": prompt}
+                ]
+
+                return call_openai(messages)
+
+            def analyze_margin_variances_with_ai(margin_variances, current_category_data, prev_category_data, period_label, prev_period_label):
+                """Use AI to analyze margin variances and provide insights."""
+                if not get_openai_key():
+                    return None, "Geen OpenAI API key geconfigureerd"
+
+                if not margin_variances:
+                    return None, "Geen margevarianties om te analyseren"
+
+                # Prepare variance summary for AI
+                variance_summary = []
+                for v in margin_variances:
+                    variance_summary.append({
+                        "categorie": v["category"],
+                        "huidige_marge": v["current_margin"],
+                        "vorige_marge": v["prev_margin"],
+                        "marge_verandering_pp": v["margin_change"],
+                        "huidige_omzet": v["current_revenue"]
+                    })
+
+                # All category margins for context
+                all_margins = []
+                for categ, data in sorted(current_category_data.items(), key=lambda x: x[1]["revenue"], reverse=True)[:15]:
+                    current_revenue_cat = data["revenue"]
+                    current_cogs_cat = data["cogs"]
+                    current_margin = ((current_revenue_cat - current_cogs_cat) / current_revenue_cat * 100) if current_revenue_cat > 0 else 0
+
+                    prev_data = prev_category_data.get(categ, {"revenue": 0, "cogs": 0})
+                    prev_revenue_cat = prev_data["revenue"]
+                    prev_margin = ((prev_revenue_cat - prev_data["cogs"]) / prev_revenue_cat * 100) if prev_revenue_cat > 0 else 0
+
+                    if current_revenue_cat > 100:
+                        all_margins.append({
+                            "categorie": categ[:40],
+                            "omzet": current_revenue_cat,
+                            "kostprijs": current_cogs_cat,
+                            "huidige_marge": round(current_margin, 1),
+                            "vorige_marge": round(prev_margin, 1)
+                        })
+
+                total_revenue = sum(d["revenue"] for d in current_category_data.values())
+                total_cogs = sum(d["cogs"] for d in current_category_data.values())
+                overall_margin = ((total_revenue - total_cogs) / total_revenue * 100) if total_revenue > 0 else 0
+
+                prev_total_revenue = sum(d["revenue"] for d in prev_category_data.values())
+                prev_total_cogs = sum(d["cogs"] for d in prev_category_data.values())
+                prev_overall_margin = ((prev_total_revenue - prev_total_cogs) / prev_total_revenue * 100) if prev_total_revenue > 0 else 0
+
+                prompt = f"""Analyseer de volgende margevarianties per productcategorie voor een Nederlands bedrijf en geef een praktische analyse.
+
+**Periode:** {period_label}
+**Vergelijkingsperiode:** {prev_period_label}
+
+**Totale marge:**
+- Huidige periode: {overall_margin:.1f}% (omzet €{total_revenue:,.0f}, kostprijs €{total_cogs:,.0f})
+- Vorige periode: {prev_overall_margin:.1f}% (omzet €{prev_total_revenue:,.0f})
+- Verschil: {overall_margin - prev_overall_margin:+.1f} procentpunt
+
+**Overzicht productcategorieën (top 15 op omzet):**
+{json.dumps(all_margins, indent=2, ensure_ascii=False)}
+
+**Categorieën met grote margewijzigingen (>10pp en omzet >€1000):**
+{json.dumps(variance_summary, indent=2, ensure_ascii=False)}
+
+Geef een bondige analyse (max 6 bullet points) met:
+1. Korte samenvatting van de margeontwikkeling
+2. De belangrijkste margewijzigingen en hun impact op het totaalresultaat
+3. Mogelijke verklaringen (prijswijzigingen, inkoopkostenstijging, productmix, etc.)
+4. Categorieën die extra aandacht verdienen
+5. Aanbevelingen voor pricing of inkoop
+6. Risico's of kansen
+
+Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Nederlands."""
+
+                messages = [
+                    {"role": "system", "content": "Je bent een ervaren financial controller gespecialiseerd in marge-analyses voor Nederlandse bedrijven. Geef praktische, bondige analyses met focus op pricing en winstgevendheid."},
+                    {"role": "user", "content": prompt}
+                ]
+
+                return call_openai(messages)
+
             # =================================================================
             # LOAD DATA
             # =================================================================
@@ -4429,6 +4578,31 @@ Antwoord in het Nederlands en wees praktisch/actionable."""
                     df_variances = pd.DataFrame(variance_table_data)
                     st.warning(f"⚠️ {len(cost_variances)} categorie(ën) met grote afwijking (>30% en >€500)")
                     st.dataframe(df_variances, use_container_width=True, hide_index=True)
+
+                    # AI Analysis button for cost variances
+                    if st.button("🤖 AI Analyse Kostenvarianties", key="cost_variance_ai_analysis", help="Laat AI de kostenvarianties analyseren"):
+                        st.session_state.show_cost_variance_ai_analysis = True
+
+                    # Show AI Analysis if requested
+                    if st.session_state.get("show_cost_variance_ai_analysis", False):
+                        with st.spinner("🤖 AI analyseert kostenvarianties..."):
+                            ai_response, ai_error = analyze_cost_variances_with_ai(
+                                cost_variances,
+                                current_costs_grouped,
+                                prev_costs_grouped,
+                                period_label,
+                                prev_period_label
+                            )
+
+                        if ai_error:
+                            st.error(f"❌ AI Analyse fout: {ai_error}")
+                        elif ai_response:
+                            st.markdown("---")
+                            st.markdown("### 🤖 AI Kostenvariantie Analyse")
+                            st.markdown(ai_response)
+                            if st.button("🔄 Verberg analyse", key="hide_cost_variance_analysis"):
+                                st.session_state.show_cost_variance_ai_analysis = False
+                                st.rerun()
                 else:
                     st.success("✅ Geen grote kostenvarianties gevonden op 40-47 rekeningen")
 
@@ -4469,6 +4643,31 @@ Antwoord in het Nederlands en wees praktisch/actionable."""
                             for v in margin_variances[:5]:
                                 direction = "gestegen" if v["margin_change"] > 0 else "gedaald"
                                 st.markdown(f"- **{v['category'][:30]}**: {v['prev_margin']:.1f}% → {v['current_margin']:.1f}% ({direction} met {abs(v['margin_change']):.1f}pp)")
+
+                            # AI Analysis button for margin variances
+                            if st.button("🤖 AI Analyse Margevarianties", key="margin_variance_ai_analysis", help="Laat AI de margevarianties analyseren"):
+                                st.session_state.show_margin_variance_ai_analysis = True
+
+                            # Show AI Analysis if requested
+                            if st.session_state.get("show_margin_variance_ai_analysis", False):
+                                with st.spinner("🤖 AI analyseert margevarianties..."):
+                                    ai_response, ai_error = analyze_margin_variances_with_ai(
+                                        margin_variances,
+                                        current_category_data,
+                                        prev_category_data,
+                                        period_label,
+                                        prev_period_label
+                                    )
+
+                                if ai_error:
+                                    st.error(f"❌ AI Analyse fout: {ai_error}")
+                                elif ai_response:
+                                    st.markdown("---")
+                                    st.markdown("### 🤖 AI Margevariantie Analyse")
+                                    st.markdown(ai_response)
+                                    if st.button("🔄 Verberg analyse", key="hide_margin_variance_analysis"):
+                                        st.session_state.show_margin_variance_ai_analysis = False
+                                        st.rerun()
                     else:
                         st.info("Geen productcategorieën met significante omzet gevonden")
                 else:
