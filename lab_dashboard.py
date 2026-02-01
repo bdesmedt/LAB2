@@ -2,7 +2,7 @@
 LAB Groep Financial Dashboard v13
 =================================
 Wijzigingen t.o.v. v12:
-- 📋 NIEUW: Maandafsluiting Checklist tab (wachtwoord: )
+- 📋 NIEUW: Maandafsluiting Checklist tab (wachtwoord: controller)
   * Automatische Odoo checks voor maandafsluiting
   * Ongeboekte facturen detectie
   * Bank reconciliatie status
@@ -4029,7 +4029,7 @@ def main():
             
             # Haal P&L anomalie data op
             with st.spinner("W&V analyse laden..."):
-                pl_data = get_pl_anomalies(selected_year, selected_month, company_id, threshold_pct, threshold_abs)
+                pl_data = get_pl_anomalies(closing_year, closing_month, company_id, threshold_pct, threshold_abs)
             
             anomalies = pl_data.get("anomalies", [])
             high_severity = [a for a in anomalies if a.get("severity") == "high"]
@@ -4076,7 +4076,7 @@ def main():
                         
                         # Drill-down optie
                         if st.button(f"📋 Details {anom['code']}", key=f"pl_detail_{anom['code']}_{anom['type']}_{checklist_key}"):
-                            details = get_pl_details_for_category(selected_year, selected_month, anom['code'], company_id)
+                            details = get_pl_details_for_category(closing_year, closing_month, anom['code'], company_id)
                             if details:
                                 st.write("**Boekingen per rekening:**")
                                 for d in details[:10]:
@@ -4099,7 +4099,7 @@ def main():
                         comparison_data.append({
                             "Categorie": curr["name"],
                             "Code": f"{code}xxx",
-                            f"Huidige ({selected_month:02d}/{selected_year})": curr["value"],
+                            f"Huidige ({closing_month:02d}/{closing_year})": curr["value"],
                             "Vorige maand": prev["value"],
                             "12-mnd gem.": avg["value"],
                             "% vs vorig": vs_prev,
@@ -4112,7 +4112,7 @@ def main():
                     # Formattering
                     st.dataframe(
                         df_pl.style.format({
-                            f"Huidige ({selected_month:02d}/{selected_year})": "€{:,.0f}",
+                            f"Huidige ({closing_month:02d}/{closing_year})": "€{:,.0f}",
                             "Vorige maand": "€{:,.0f}",
                             "12-mnd gem.": "€{:,.0f}",
                             "% vs vorig": "{:+.1f}%",
