@@ -462,7 +462,16 @@ Zeg NOOIT dat je iets niet kunt opvragen als het via bovenstaande modellen besch
 Als je echt geen data kunt vinden na een query, geef dat aan met de resultaten."""
 
 def get_openai_key():
-    """Haal OpenAI API key op"""
+    """Haal OpenAI API key op - probeer secrets, anders session state"""
+    # Probeer eerst uit secrets
+    try:
+        key = st.secrets.get("OPENAI_API_KEY", "")
+        if key:
+            return key
+    except:
+        pass
+
+    # Fallback: uit session state (wordt gezet in main())
     return st.session_state.get("openai_key", "")
 
 def call_openai(messages, model="gpt-4o-mini"):
