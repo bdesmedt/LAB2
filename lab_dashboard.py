@@ -6524,6 +6524,21 @@ Gegenereerd door LAB Groep Financial Dashboard
                             st.metric("Gem. maand COGS", f"€ {base_year_data['average_monthly_cogs']:,.0f}")
                         with preview_col3:
                             st.metric("COGS %", f"{base_year_data['cogs_percentage']*100:.1f}%")
+
+                        # Show expense categories breakdown
+                        if base_year_data.get("average_monthly_expenses"):
+                            with st.expander("📊 Operationele Kosten per Categorie", expanded=False):
+                                total_expenses = 0
+                                expense_cols = st.columns(2)
+                                expense_items = list(base_year_data["average_monthly_expenses"].items())
+                                for i, (cat_code, avg_expense) in enumerate(expense_items):
+                                    cat_name = EXPENSE_CATEGORIES.get(cat_code, f"Categorie {cat_code}")
+                                    with expense_cols[i % 2]:
+                                        if avg_expense > 0:
+                                            st.metric(cat_name, f"€ {avg_expense:,.0f}/mnd")
+                                            total_expenses += avg_expense
+                                st.markdown("---")
+                                st.metric("**Totaal Operationele Kosten**", f"€ {total_expenses:,.0f}/mnd")
                     else:
                         st.warning(f"Geen data gevonden voor {base_year}")
                         base_year_data = None
