@@ -1,12 +1,19 @@
 """
-LAB Groep Financial Dashboard v11
+LAB Groep Financial Dashboard v12
 =================================
-Wijzigingen t.o.v. v10:
-- 💬 AI Chatbot tab toegevoegd (OpenAI GPT-4)
-- Stel vragen over financiële data in natuurlijke taal
-- Chatbot kan Odoo queries uitvoeren en resultaten presenteren
+Wijzigingen t.o.v. v11:
+- 📋 Maandafsluiting (Financial Close) tab toegevoegd
+  - Wachtwoord-beveiligde toegang voor gevoelige financiële afsluitingen
+  - Periode-selectie (maand/jaar/entiteit)
+  - Financiële kerncijfers met vergelijking t.o.v. vorige maand
+  - Validatie controles (balans, ongeboekte entries, oude debiteuren)
+  - 6-maanden trend analyse met grafieken
+  - Aandachtspunten highlighting
+  - Export functionaliteit (JSON, CSV, TXT rapport)
+  - Graceful degradation: dashboard werkt zonder wachtwoord configuratie
 
-Eerdere features:
+Eerdere features (v11):
+- 💬 AI Chatbot tab (OpenAI GPT-4)
 - ✅ Nederlandse benamingen voor alle rekeningen/categorieën (nl_NL context)
 - ✅ Balans tab met Kwadrant format (ACTIVA | PASSIVA)
 - ✅ Intercompany filter werkt nu ook op week/dag omzet
@@ -76,6 +83,49 @@ COMPANIES = {
     2: "LAB Shops",
     3: "LAB Projects"
 }
+
+# =============================================================================
+# FINANCIAL CLOSE PASSWORD FUNCTIONS
+# =============================================================================
+
+def get_financial_close_password():
+    """
+    Get Financial Close password from secrets or environment.
+    Returns empty string if not configured (graceful degradation).
+    """
+    # Try Streamlit secrets first
+    try:
+        password = st.secrets.get("FINANCIAL_CLOSE_PASSWORD", "")
+        if password:
+            return password
+    except:
+        pass
+
+    # Fallback: try environment variable
+    import os
+    return os.environ.get("FINANCIAL_CLOSE_PASSWORD", "")
+
+def verify_financial_close_password(input_password):
+    """
+    Verify the input password against the configured password.
+    Uses simple string comparison (can be enhanced with hashing if needed).
+    Returns: (is_valid: bool, error_message: str or None)
+    """
+    configured_password = get_financial_close_password()
+
+    # Check if password is configured
+    if not configured_password:
+        return False, "no_password_configured"
+
+    # Verify password
+    if input_password == configured_password:
+        return True, None
+    else:
+        return False, "invalid_password"
+
+def is_financial_close_configured():
+    """Check if Financial Close password is configured in the system."""
+    return bool(get_financial_close_password())
 
 # =============================================================================
 # NEDERLANDSE VERTALINGEN (UITGEBREID)
@@ -1365,7 +1415,7 @@ def get_coords_from_postcode(postcode):
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v8 - Met klantenkaart & verbeterde R/C filtering")
+    st.caption("Real-time data uit Odoo | v12 - Met Maandafsluiting (Financial Close)")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -1445,7 +1495,7 @@ def main():
     # ==========================================================================
     # TABS
     # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat"])
+    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting"])
     
     # =========================================================================
     # TAB 1: OVERZICHT
@@ -2699,6 +2749,786 @@ def main():
                     if st.button(f"💬 {ex}", key=f"ex_{ex[:20]}"):
                         st.session_state.chat_messages.append({"role": "user", "content": ex})
                         st.rerun()
+
+    # =========================================================================
+    # TAB 10: MAANDAFSLUITING (FINANCIAL CLOSE)
+    # =========================================================================
+    with tabs[9]:
+        st.header("📋 Maandafsluiting (Financial Close)")
+
+        # Initialize session state for Financial Close authentication
+        if "financial_close_authenticated" not in st.session_state:
+            st.session_state.financial_close_authenticated = False
+        if "financial_close_password_attempt" not in st.session_state:
+            st.session_state.financial_close_password_attempt = ""
+
+        # Check if password is configured
+        password_configured = is_financial_close_configured()
+
+        def show_financial_close_content():
+            """Display the Financial Close content after authentication."""
+
+            st.markdown("---")
+
+            # =================================================================
+            # PERIOD SELECTION
+            # =================================================================
+            st.subheader("📅 Periode Selectie")
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                close_year = st.selectbox(
+                    "Jaar",
+                    options=list(range(datetime.now().year, 2021, -1)),
+                    key="fc_year"
+                )
+            with col2:
+                close_month = st.selectbox(
+                    "Maand",
+                    options=list(range(1, 13)),
+                    format_func=lambda x: [
+                        "Januari", "Februari", "Maart", "April", "Mei", "Juni",
+                        "Juli", "Augustus", "September", "Oktober", "November", "December"
+                    ][x - 1],
+                    index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+                    key="fc_month"
+                )
+            with col3:
+                close_company = st.selectbox(
+                    "Entiteit",
+                    options=["Alle bedrijven"] + list(COMPANIES.values()),
+                    key="fc_company"
+                )
+
+            fc_company_id = None
+            if close_company != "Alle bedrijven":
+                fc_company_id = [k for k, v in COMPANIES.items() if v == close_company][0]
+
+            # Calculate period dates
+            from calendar import monthrange
+            period_start = f"{close_year}-{close_month:02d}-01"
+            period_end_day = monthrange(close_year, close_month)[1]
+            period_end = f"{close_year}-{close_month:02d}-{period_end_day:02d}"
+
+            # Previous period for comparison
+            if close_month == 1:
+                prev_year, prev_month = close_year - 1, 12
+            else:
+                prev_year, prev_month = close_year, close_month - 1
+            prev_start = f"{prev_year}-{prev_month:02d}-01"
+            prev_end_day = monthrange(prev_year, prev_month)[1]
+            prev_end = f"{prev_year}-{prev_month:02d}-{prev_end_day:02d}"
+
+            month_names = [
+                "Januari", "Februari", "Maart", "April", "Mei", "Juni",
+                "Juli", "Augustus", "September", "Oktober", "November", "December"
+            ]
+            period_label = f"{month_names[close_month - 1]} {close_year}"
+            prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
+
+            st.info(f"📊 Periode: **{period_label}** | Vergelijking met: **{prev_period_label}**")
+
+            # =================================================================
+            # DATA FETCHING FUNCTIONS FOR FINANCIAL CLOSE
+            # =================================================================
+
+            @st.cache_data(ttl=1800)
+            def get_period_revenue(start_date, end_date, comp_id=None):
+                """Get revenue for a specific period."""
+                domain = [
+                    ("account_id.code", ">=", "800000"),
+                    ("account_id.code", "<", "900000"),
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted")
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+                result = odoo_read_group("account.move.line", domain, ["balance:sum"], [])
+                return -sum(r.get("balance", 0) for r in result)
+
+            @st.cache_data(ttl=1800)
+            def get_period_costs(start_date, end_date, comp_id=None):
+                """Get costs for a specific period (4*, 6*, 7* accounts)."""
+                total = 0
+                for prefix, next_prefix in [("400000", "500000"), ("600000", "700000"), ("700000", "800000")]:
+                    domain = [
+                        ("account_id.code", ">=", prefix),
+                        ("account_id.code", "<", next_prefix),
+                        ("date", ">=", start_date),
+                        ("date", "<=", end_date),
+                        ("parent_state", "=", "posted")
+                    ]
+                    if comp_id:
+                        domain.append(("company_id", "=", comp_id))
+                    result = odoo_read_group("account.move.line", domain, ["balance:sum"], [])
+                    total += sum(r.get("balance", 0) for r in result)
+                return total
+
+            @st.cache_data(ttl=1800)
+            def get_period_revenue_by_account(start_date, end_date, comp_id=None):
+                """Get revenue grouped by account for the period."""
+                domain = [
+                    ("account_id.code", ">=", "800000"),
+                    ("account_id.code", "<", "900000"),
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted")
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+                return odoo_read_group("account.move.line", domain, ["balance:sum"], ["account_id"])
+
+            @st.cache_data(ttl=1800)
+            def get_period_costs_by_account(start_date, end_date, comp_id=None):
+                """Get costs grouped by account for the period."""
+                all_results = []
+                for prefix, next_prefix in [("400000", "500000"), ("600000", "700000"), ("700000", "800000")]:
+                    domain = [
+                        ("account_id.code", ">=", prefix),
+                        ("account_id.code", "<", next_prefix),
+                        ("date", ">=", start_date),
+                        ("date", "<=", end_date),
+                        ("parent_state", "=", "posted")
+                    ]
+                    if comp_id:
+                        domain.append(("company_id", "=", comp_id))
+                    result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["account_id"])
+                    all_results.extend(result)
+                return all_results
+
+            @st.cache_data(ttl=1800)
+            def get_unposted_entries(start_date, end_date, comp_id=None):
+                """Get draft/unposted journal entries for the period."""
+                domain = [
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("state", "=", "draft")
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+                return odoo_call(
+                    "account.move", "search_read",
+                    domain,
+                    ["name", "date", "amount_total", "partner_id", "company_id", "move_type"],
+                    limit=500
+                )
+
+            @st.cache_data(ttl=1800)
+            def get_unreconciled_items(comp_id=None):
+                """Get unreconciled receivables and payables."""
+                # Receivables
+                rec_domain = [
+                    ("account_id.account_type", "=", "asset_receivable"),
+                    ("parent_state", "=", "posted"),
+                    ("amount_residual", "!=", 0),
+                    ("reconciled", "=", False)
+                ]
+                if comp_id:
+                    rec_domain.append(("company_id", "=", comp_id))
+                receivables = odoo_call(
+                    "account.move.line", "search_read",
+                    rec_domain,
+                    ["date", "name", "partner_id", "amount_residual", "company_id"],
+                    limit=1000
+                )
+
+                # Payables
+                pay_domain = [
+                    ("account_id.account_type", "=", "liability_payable"),
+                    ("parent_state", "=", "posted"),
+                    ("amount_residual", "!=", 0),
+                    ("reconciled", "=", False)
+                ]
+                if comp_id:
+                    pay_domain.append(("company_id", "=", comp_id))
+                payables = odoo_call(
+                    "account.move.line", "search_read",
+                    pay_domain,
+                    ["date", "name", "partner_id", "amount_residual", "company_id"],
+                    limit=1000
+                )
+
+                return receivables, payables
+
+            @st.cache_data(ttl=1800)
+            def get_balance_check(date_str, comp_id=None):
+                """Get total debit and credit for balance verification."""
+                domain = [
+                    ("date", "<=", date_str),
+                    ("parent_state", "=", "posted")
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+
+                result = odoo_read_group(
+                    "account.move.line",
+                    domain,
+                    ["debit:sum", "credit:sum"],
+                    []
+                )
+                if result:
+                    return result[0].get("debit", 0), result[0].get("credit", 0)
+                return 0, 0
+
+            @st.cache_data(ttl=1800)
+            def get_invoices_without_payment(start_date, end_date, comp_id=None):
+                """Get invoices in the period that are still unpaid."""
+                domain = [
+                    ("invoice_date", ">=", start_date),
+                    ("invoice_date", "<=", end_date),
+                    ("state", "=", "posted"),
+                    ("payment_state", "in", ["not_paid", "partial"]),
+                    ("move_type", "in", ["out_invoice", "in_invoice"])
+                ]
+                if comp_id:
+                    domain.append(("company_id", "=", comp_id))
+                return odoo_call(
+                    "account.move", "search_read",
+                    domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "amount_residual", "move_type", "company_id"],
+                    limit=500
+                )
+
+            # =================================================================
+            # LOAD DATA
+            # =================================================================
+            with st.spinner("📊 Data laden voor maandafsluiting..."):
+                # Current period data
+                current_revenue = get_period_revenue(period_start, period_end, fc_company_id)
+                current_costs = get_period_costs(period_start, period_end, fc_company_id)
+                current_profit = current_revenue - current_costs
+
+                # Previous period data
+                prev_revenue = get_period_revenue(prev_start, prev_end, fc_company_id)
+                prev_costs = get_period_costs(prev_start, prev_end, fc_company_id)
+                prev_profit = prev_revenue - prev_costs
+
+                # Validation data
+                unposted = get_unposted_entries(period_start, period_end, fc_company_id)
+                unreconciled_rec, unreconciled_pay = get_unreconciled_items(fc_company_id)
+                total_debit, total_credit = get_balance_check(period_end, fc_company_id)
+                unpaid_invoices = get_invoices_without_payment(period_start, period_end, fc_company_id)
+
+            st.markdown("---")
+
+            # =================================================================
+            # KEY FINANCIAL METRICS
+            # =================================================================
+            st.subheader("💰 Financiële Kerncijfers")
+
+            # Calculate deltas
+            revenue_delta = current_revenue - prev_revenue
+            revenue_pct = (revenue_delta / prev_revenue * 100) if prev_revenue else 0
+            costs_delta = current_costs - prev_costs
+            costs_pct = (costs_delta / prev_costs * 100) if prev_costs else 0
+            profit_delta = current_profit - prev_profit
+            profit_pct = (profit_delta / abs(prev_profit) * 100) if prev_profit else 0
+            margin = (current_profit / current_revenue * 100) if current_revenue else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric(
+                    "📈 Omzet",
+                    f"€{current_revenue:,.0f}",
+                    delta=f"{revenue_pct:+.1f}% vs vorige maand"
+                )
+            with col2:
+                st.metric(
+                    "📉 Kosten",
+                    f"€{current_costs:,.0f}",
+                    delta=f"{costs_pct:+.1f}% vs vorige maand",
+                    delta_color="inverse"
+                )
+            with col3:
+                st.metric(
+                    "💵 Resultaat",
+                    f"€{current_profit:,.0f}",
+                    delta=f"{profit_pct:+.1f}% vs vorige maand"
+                )
+            with col4:
+                st.metric(
+                    "📊 Marge",
+                    f"{margin:.1f}%",
+                    delta=f"€{profit_delta:+,.0f}"
+                )
+
+            st.markdown("---")
+
+            # =================================================================
+            # DATA VALIDATION CHECKS
+            # =================================================================
+            st.subheader("✅ Validatie Controles")
+
+            validation_issues = []
+            validation_warnings = []
+            validation_ok = []
+
+            # Check 1: Balance verification (Debit = Credit)
+            balance_diff = abs(total_debit - total_credit)
+            if balance_diff < 0.01:
+                validation_ok.append(("Balans controle", "Debet = Credit ✓", f"Verschil: €{balance_diff:.2f}"))
+            else:
+                validation_issues.append(("Balans controle", f"Debet ≠ Credit!", f"Verschil: €{balance_diff:,.2f}"))
+
+            # Check 2: Unposted entries
+            if len(unposted) == 0:
+                validation_ok.append(("Ongeboekte entries", "Geen ongeboekte boekingen ✓", "0 stuks"))
+            else:
+                validation_warnings.append(("Ongeboekte entries", f"{len(unposted)} ongeboekte boeking(en)", "Actie vereist"))
+
+            # Check 3: Unpaid invoices from period
+            unpaid_in_period = [inv for inv in unpaid_invoices if inv.get("move_type") == "out_invoice"]
+            unpaid_bills = [inv for inv in unpaid_invoices if inv.get("move_type") == "in_invoice"]
+            if len(unpaid_in_period) == 0:
+                validation_ok.append(("Openstaande facturen", "Alle verkoopfacturen betaald ✓", "0 stuks"))
+            else:
+                total_unpaid = sum(inv.get("amount_residual", 0) for inv in unpaid_in_period)
+                validation_warnings.append((
+                    "Openstaande verkoop",
+                    f"{len(unpaid_in_period)} facturen onbetaald",
+                    f"€{total_unpaid:,.0f}"
+                ))
+
+            if len(unpaid_bills) == 0:
+                validation_ok.append(("Openstaande inkoop", "Alle inkoopfacturen betaald ✓", "0 stuks"))
+            else:
+                total_unpaid_bills = sum(inv.get("amount_residual", 0) for inv in unpaid_bills)
+                validation_warnings.append((
+                    "Openstaande inkoop",
+                    f"{len(unpaid_bills)} facturen onbetaald",
+                    f"€{total_unpaid_bills:,.0f}"
+                ))
+
+            # Check 4: Large unreconciled items (>90 days old)
+            old_date_threshold = datetime.now() - timedelta(days=90)
+            old_receivables = [r for r in unreconciled_rec
+                             if r.get("date") and datetime.strptime(r["date"], "%Y-%m-%d") < old_date_threshold]
+            old_payables = [p for p in unreconciled_pay
+                          if p.get("date") and datetime.strptime(p["date"], "%Y-%m-%d") < old_date_threshold]
+
+            if len(old_receivables) == 0:
+                validation_ok.append(("Oude debiteuren", "Geen vorderingen >90 dagen ✓", "0 stuks"))
+            else:
+                old_rec_total = sum(r.get("amount_residual", 0) for r in old_receivables)
+                validation_issues.append((
+                    "Oude debiteuren",
+                    f"{len(old_receivables)} vorderingen >90 dagen",
+                    f"€{old_rec_total:,.0f}"
+                ))
+
+            if len(old_payables) == 0:
+                validation_ok.append(("Oude crediteuren", "Geen schulden >90 dagen ✓", "0 stuks"))
+            else:
+                old_pay_total = sum(abs(p.get("amount_residual", 0)) for p in old_payables)
+                validation_warnings.append((
+                    "Oude crediteuren",
+                    f"{len(old_payables)} schulden >90 dagen",
+                    f"€{old_pay_total:,.0f}"
+                ))
+
+            # Display validation results
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if validation_issues:
+                    st.error(f"🚨 **{len(validation_issues)} Kritieke issue(s)**")
+                    for name, issue, detail in validation_issues:
+                        st.markdown(f"- **{name}**: {issue} ({detail})")
+                else:
+                    st.success("✅ Geen kritieke issues gevonden")
+
+            with col2:
+                if validation_warnings:
+                    st.warning(f"⚠️ **{len(validation_warnings)} Waarschuwing(en)**")
+                    for name, warning, detail in validation_warnings:
+                        st.markdown(f"- **{name}**: {warning} ({detail})")
+                else:
+                    st.success("✅ Geen waarschuwingen")
+
+            with col3:
+                st.success(f"✅ **{len(validation_ok)} Controle(s) geslaagd**")
+                with st.expander("Details"):
+                    for name, status, detail in validation_ok:
+                        st.markdown(f"- **{name}**: {status}")
+
+            st.markdown("---")
+
+            # =================================================================
+            # TREND ANALYSIS
+            # =================================================================
+            st.subheader("📈 Trend Analyse")
+
+            # Get last 6 months of data for trend
+            trend_data = []
+            for i in range(6):
+                if close_month - i > 0:
+                    t_year = close_year
+                    t_month = close_month - i
+                else:
+                    t_year = close_year - 1
+                    t_month = 12 + (close_month - i)
+
+                t_start = f"{t_year}-{t_month:02d}-01"
+                t_end_day = monthrange(t_year, t_month)[1]
+                t_end = f"{t_year}-{t_month:02d}-{t_end_day:02d}"
+
+                t_revenue = get_period_revenue(t_start, t_end, fc_company_id)
+                t_costs = get_period_costs(t_start, t_end, fc_company_id)
+                t_profit = t_revenue - t_costs
+
+                trend_data.append({
+                    "Maand": f"{month_names[t_month - 1][:3]} {t_year}",
+                    "Omzet": t_revenue,
+                    "Kosten": t_costs,
+                    "Resultaat": t_profit,
+                    "sort_key": f"{t_year}{t_month:02d}"
+                })
+
+            # Reverse to show oldest first
+            trend_data = sorted(trend_data, key=lambda x: x["sort_key"])
+
+            df_trend = pd.DataFrame(trend_data)
+
+            # Create trend chart
+            fig_trend = go.Figure()
+            fig_trend.add_trace(go.Scatter(
+                x=df_trend["Maand"],
+                y=df_trend["Omzet"],
+                name="Omzet",
+                mode="lines+markers",
+                line=dict(color="#2ecc71", width=3),
+                marker=dict(size=8)
+            ))
+            fig_trend.add_trace(go.Scatter(
+                x=df_trend["Maand"],
+                y=df_trend["Kosten"],
+                name="Kosten",
+                mode="lines+markers",
+                line=dict(color="#e74c3c", width=3),
+                marker=dict(size=8)
+            ))
+            fig_trend.add_trace(go.Bar(
+                x=df_trend["Maand"],
+                y=df_trend["Resultaat"],
+                name="Resultaat",
+                marker_color=["#27ae60" if r >= 0 else "#c0392b" for r in df_trend["Resultaat"]],
+                opacity=0.6
+            ))
+            fig_trend.update_layout(
+                title="Omzet, Kosten & Resultaat - Laatste 6 Maanden",
+                xaxis_title="Maand",
+                yaxis_title="Bedrag (€)",
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+            # Trend statistics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**📊 Periode Statistieken**")
+                avg_revenue = df_trend["Omzet"].mean()
+                avg_costs = df_trend["Kosten"].mean()
+                avg_profit = df_trend["Resultaat"].mean()
+                st.markdown(f"- Gemiddelde omzet: **€{avg_revenue:,.0f}**/maand")
+                st.markdown(f"- Gemiddelde kosten: **€{avg_costs:,.0f}**/maand")
+                st.markdown(f"- Gemiddeld resultaat: **€{avg_profit:,.0f}**/maand")
+
+            with col2:
+                st.markdown("**📈 Huidige Maand vs Gemiddelde**")
+                rev_vs_avg = ((current_revenue - avg_revenue) / avg_revenue * 100) if avg_revenue else 0
+                cost_vs_avg = ((current_costs - avg_costs) / avg_costs * 100) if avg_costs else 0
+                profit_vs_avg = ((current_profit - avg_profit) / abs(avg_profit) * 100) if avg_profit else 0
+
+                rev_color = "green" if rev_vs_avg >= 0 else "red"
+                cost_color = "red" if cost_vs_avg > 0 else "green"
+                profit_color = "green" if profit_vs_avg >= 0 else "red"
+
+                st.markdown(f"- Omzet: :{rev_color}[{rev_vs_avg:+.1f}%] vs gemiddelde")
+                st.markdown(f"- Kosten: :{cost_color}[{cost_vs_avg:+.1f}%] vs gemiddelde")
+                st.markdown(f"- Resultaat: :{profit_color}[{profit_vs_avg:+.1f}%] vs gemiddelde")
+
+            st.markdown("---")
+
+            # =================================================================
+            # ITEMS REQUIRING ATTENTION
+            # =================================================================
+            st.subheader("⚠️ Aandachtspunten")
+
+            attention_items = []
+
+            # Large variances from previous month
+            if abs(revenue_pct) > 20:
+                attention_items.append({
+                    "Type": "📈 Omzet",
+                    "Beschrijving": f"Grote afwijking t.o.v. vorige maand ({revenue_pct:+.1f}%)",
+                    "Bedrag": f"€{abs(revenue_delta):,.0f}",
+                    "Status": "Onderzoeken"
+                })
+
+            if abs(costs_pct) > 20:
+                attention_items.append({
+                    "Type": "📉 Kosten",
+                    "Beschrijving": f"Grote afwijking t.o.v. vorige maand ({costs_pct:+.1f}%)",
+                    "Bedrag": f"€{abs(costs_delta):,.0f}",
+                    "Status": "Onderzoeken"
+                })
+
+            # Negative profit
+            if current_profit < 0:
+                attention_items.append({
+                    "Type": "💰 Resultaat",
+                    "Beschrijving": "Negatief resultaat deze maand",
+                    "Bedrag": f"€{current_profit:,.0f}",
+                    "Status": "Kritiek"
+                })
+
+            # Unposted entries
+            if unposted:
+                for entry in unposted[:5]:  # Show max 5
+                    attention_items.append({
+                        "Type": "📝 Ongeboekt",
+                        "Beschrijving": f"{entry.get('name', 'Onbekend')}",
+                        "Bedrag": f"€{entry.get('amount_total', 0):,.0f}",
+                        "Status": "Boeken"
+                    })
+
+            # Old receivables
+            for rec in old_receivables[:5]:  # Show max 5
+                partner_name = rec.get("partner_id", [None, "Onbekend"])[1] if isinstance(rec.get("partner_id"), list) else "Onbekend"
+                attention_items.append({
+                    "Type": "👥 Debiteur",
+                    "Beschrijving": f"{partner_name} - >90 dagen oud",
+                    "Bedrag": f"€{rec.get('amount_residual', 0):,.0f}",
+                    "Status": "Incasso"
+                })
+
+            if attention_items:
+                df_attention = pd.DataFrame(attention_items)
+                st.dataframe(
+                    df_attention,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Status": st.column_config.Column(width="small")
+                    }
+                )
+            else:
+                st.success("✅ Geen bijzondere aandachtspunten gevonden!")
+
+            st.markdown("---")
+
+            # =================================================================
+            # PERIOD RECONCILIATION SUMMARY
+            # =================================================================
+            st.subheader("📑 Periode Afsluiting Samenvatting")
+
+            summary_data = {
+                "Categorie": [
+                    "Omzet",
+                    "Kostprijs verkopen (7*)",
+                    "Bruto marge",
+                    "Overige kosten (4* + 6*)",
+                    "**Netto resultaat**"
+                ],
+                f"{period_label}": [
+                    f"€{current_revenue:,.0f}",
+                    "Incl. in kosten",
+                    f"€{current_revenue - (current_costs * 0.6):,.0f}",  # Approx
+                    "Incl. in kosten",
+                    f"**€{current_profit:,.0f}**"
+                ],
+                f"{prev_period_label}": [
+                    f"€{prev_revenue:,.0f}",
+                    "Incl. in kosten",
+                    f"€{prev_revenue - (prev_costs * 0.6):,.0f}",
+                    "Incl. in kosten",
+                    f"**€{prev_profit:,.0f}**"
+                ],
+                "Verschil": [
+                    f"€{revenue_delta:+,.0f}",
+                    "-",
+                    f"€{(current_revenue - prev_revenue) - ((current_costs - prev_costs) * 0.6):+,.0f}",
+                    "-",
+                    f"**€{profit_delta:+,.0f}**"
+                ]
+            }
+            df_summary = pd.DataFrame(summary_data)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+
+            # =================================================================
+            # EXPORT FUNCTIONALITY
+            # =================================================================
+            st.subheader("📥 Export Rapport")
+
+            col1, col2, col3 = st.columns(3)
+
+            # Prepare export data
+            export_data = {
+                "report_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "period": period_label,
+                "company": close_company,
+                "metrics": {
+                    "revenue": current_revenue,
+                    "costs": current_costs,
+                    "profit": current_profit,
+                    "margin_pct": margin
+                },
+                "comparison": {
+                    "prev_period": prev_period_label,
+                    "revenue_change_pct": revenue_pct,
+                    "costs_change_pct": costs_pct,
+                    "profit_change_pct": profit_pct
+                },
+                "validation": {
+                    "critical_issues": len(validation_issues),
+                    "warnings": len(validation_warnings),
+                    "passed_checks": len(validation_ok),
+                    "issues": validation_issues,
+                    "warnings_detail": validation_warnings
+                },
+                "attention_items_count": len(attention_items),
+                "trend_data": [
+                    {"month": t["Maand"], "revenue": t["Omzet"], "costs": t["Kosten"], "profit": t["Resultaat"]}
+                    for t in trend_data
+                ]
+            }
+
+            with col1:
+                # JSON Export
+                json_str = json.dumps(export_data, indent=2, default=str)
+                st.download_button(
+                    label="📄 Download JSON",
+                    data=json_str,
+                    file_name=f"financial_close_{close_year}_{close_month:02d}.json",
+                    mime="application/json"
+                )
+
+            with col2:
+                # CSV Export (trend data)
+                csv_data = df_trend[["Maand", "Omzet", "Kosten", "Resultaat"]].to_csv(index=False)
+                st.download_button(
+                    label="📊 Download CSV (Trend)",
+                    data=csv_data,
+                    file_name=f"financial_close_trend_{close_year}_{close_month:02d}.csv",
+                    mime="text/csv"
+                )
+
+            with col3:
+                # Summary report as text
+                report_text = f"""
+MAANDAFSLUITING RAPPORT
+========================
+Rapport datum: {datetime.now().strftime("%Y-%m-%d %H:%M")}
+Periode: {period_label}
+Entiteit: {close_company}
+
+FINANCIËLE KERNCIJFERS
+----------------------
+Omzet:      €{current_revenue:,.0f} ({revenue_pct:+.1f}% vs vorige maand)
+Kosten:     €{current_costs:,.0f} ({costs_pct:+.1f}% vs vorige maand)
+Resultaat:  €{current_profit:,.0f} ({profit_pct:+.1f}% vs vorige maand)
+Marge:      {margin:.1f}%
+
+VALIDATIE STATUS
+----------------
+Kritieke issues:  {len(validation_issues)}
+Waarschuwingen:   {len(validation_warnings)}
+Geslaagd:         {len(validation_ok)}
+
+AANDACHTSPUNTEN
+---------------
+Aantal items: {len(attention_items)}
+
+{''.join([f"- {item['Type']}: {item['Beschrijving']} ({item['Bedrag']})" + chr(10) for item in attention_items])}
+
+TREND (laatste 6 maanden)
+-------------------------
+{''.join([f"{t['Maand']}: Omzet €{t['Omzet']:,.0f}, Kosten €{t['Kosten']:,.0f}, Resultaat €{t['Resultaat']:,.0f}" + chr(10) for t in trend_data])}
+
+---
+Gegenereerd door LAB Groep Financial Dashboard
+"""
+                st.download_button(
+                    label="📝 Download Rapport (TXT)",
+                    data=report_text,
+                    file_name=f"financial_close_report_{close_year}_{close_month:02d}.txt",
+                    mime="text/plain"
+                )
+
+            # Show close status
+            st.markdown("---")
+            total_issues = len(validation_issues) + len(validation_warnings)
+            if total_issues == 0:
+                st.success(f"✅ **Maand {period_label} is gereed voor afsluiting!**")
+            elif len(validation_issues) > 0:
+                st.error(f"🚨 **Maand {period_label} kan niet worden afgesloten** - {len(validation_issues)} kritieke issue(s) gevonden")
+            else:
+                st.warning(f"⚠️ **Maand {period_label} kan worden afgesloten** met {len(validation_warnings)} waarschuwing(en)")
+
+        # =================================================================
+        # PASSWORD PROTECTION FLOW
+        # =================================================================
+        if not password_configured:
+            # No password configured - show setup instructions
+            st.warning("⚠️ **Wachtwoord niet geconfigureerd**")
+            st.markdown("""
+            De Maandafsluiting functie vereist een wachtwoord voor toegang.
+
+            **Configuratie instructies:**
+
+            1. **Streamlit Cloud / Secrets:**
+               Voeg toe aan je `secrets.toml` bestand:
+               ```toml
+               FINANCIAL_CLOSE_PASSWORD = "jouw_veilige_wachtwoord"
+               ```
+
+            2. **Environment Variable:**
+               ```bash
+               export FINANCIAL_CLOSE_PASSWORD="jouw_veilige_wachtwoord"
+               ```
+
+            3. **Lokaal (.streamlit/secrets.toml):**
+               Maak een bestand `.streamlit/secrets.toml` aan met:
+               ```toml
+               FINANCIAL_CLOSE_PASSWORD = "jouw_veilige_wachtwoord"
+               ```
+
+            Na configuratie, herstart de applicatie.
+            """)
+            st.info("💡 Alle andere dashboard functionaliteit blijft normaal beschikbaar.")
+
+        elif st.session_state.financial_close_authenticated:
+            # Already authenticated - show content
+            show_financial_close_content()
+
+        else:
+            # Password configured but not yet authenticated - show login form
+            st.markdown("### 🔐 Authenticatie Vereist")
+            st.markdown("Voer het wachtwoord in om toegang te krijgen tot de Maandafsluiting.")
+
+            password_input = st.text_input(
+                "Wachtwoord",
+                type="password",
+                key="fc_password_input",
+                help="Voer het Maandafsluiting wachtwoord in"
+            )
+
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("🔓 Inloggen", type="primary"):
+                    is_valid, error = verify_financial_close_password(password_input)
+                    if is_valid:
+                        st.session_state.financial_close_authenticated = True
+                        st.rerun()
+                    else:
+                        st.error("❌ Onjuist wachtwoord. Probeer opnieuw.")
+
+            st.markdown("---")
+            st.info("💡 Het wachtwoord is geconfigureerd door de beheerder. Neem contact op als je toegang nodig hebt.")
 
 if __name__ == "__main__":
     main()
