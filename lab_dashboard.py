@@ -2521,9 +2521,9 @@ def main():
                 return month_str
         
         # Bouw monthly data van geaggregeerde resultaten
+        monthly = {}  # Altijd initialiseren om UnboundLocalError te voorkomen
+
         if revenue_agg:
-            monthly = {}
-            
             # Omzet per maand
             for r in revenue_agg:
                 month_raw = r.get("date:month", "Unknown")
@@ -2531,7 +2531,7 @@ def main():
                 if month not in monthly:
                     monthly[month] = {"omzet": 0, "kosten": 0}
                 monthly[month]["omzet"] += -r.get("balance", 0)
-            
+
             # Kosten per maand
             for c in cost_agg:
                 month_raw = c.get("date:month", "Unknown")
@@ -2539,29 +2539,31 @@ def main():
                 if month not in monthly:
                     monthly[month] = {"omzet": 0, "kosten": 0}
                 monthly[month]["kosten"] += c.get("balance", 0)
-            
+
             # Als IC filter aan: trek IC bedragen af per maand
             if exclude_intercompany:
                 ic_revenue = get_intercompany_revenue(selected_year, company_id)
                 ic_costs = get_intercompany_costs(selected_year, company_id)
-                
+
                 for r in ic_revenue:
                     month_raw = r.get("date:month", "Unknown")
                     month = parse_month_key(month_raw)
                     if month in monthly:
                         monthly[month]["omzet"] -= -r.get("balance", 0)
-                
+
                 for c in ic_costs:
                     month_raw = c.get("date:month", "Unknown")
                     month = parse_month_key(month_raw)
                     if month in monthly:
                         monthly[month]["kosten"] -= c.get("balance", 0)
-            
+
+        # DataFrame en grafiek - ook als revenue_agg leeg is
+        if monthly:
             df_monthly = pd.DataFrame([
                 {"Maand": k, "Omzet": v["omzet"], "Kosten": v["kosten"]}
                 for k, v in sorted(monthly.items())
             ])
-            
+
             if not df_monthly.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(name="Omzet", x=df_monthly["Maand"], y=df_monthly["Omzet"],
@@ -2570,6 +2572,8 @@ def main():
                                     marker_color="#87CEEB"))
                 fig.update_layout(barmode="group", height=400)
                 st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Geen data beschikbaar voor Omzet vs Kosten grafiek. Controleer de API verbinding.")
         
         # =====================================================================
         # OMZET GRAFIEK MET INTERACTIEVE SLIDER (WEEK/DAG TOGGLE)
