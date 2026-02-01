@@ -1084,6 +1084,58 @@ def get_payables_by_partner(company_id=None):
 
     return partner_totals
 
+@st.cache_data(ttl=1800)  # 30 minuten cache
+def get_vat_monthly_data(company_id=None, months_back=6):
+    """Haal BTW-data op uit de 15* rekeningen per maand voor cashflow prognose.
+
+    BTW accounts (15* rekeningen in Odoo):
+    - 1500xx: Te vorderen BTW (voorbelasting / input VAT) - debit
+    - 1510xx: Af te dragen BTW (output VAT) - credit
+    - 1520xx: BTW verrekenrekening
+
+    Returns per maand de netto BTW positie (credit - debit = af te dragen).
+    """
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
+
+    today = datetime.now().date()
+    start_date = (today.replace(day=1) - relativedelta(months=months_back)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+
+    # Domain voor 15* rekeningen (BTW rekeningen)
+    vat_domain = [
+        ("date", ">=", start_date),
+        ("date", "<=", end_date),
+        ("parent_state", "=", "posted"),
+        ("account_id.code", "like", "15%")  # BTW rekeningen starten met 15
+    ]
+    if company_id:
+        vat_domain.append(("company_id", "=", company_id))
+
+    # Groepeer per maand
+    result = odoo_read_group(
+        "account.move.line",
+        vat_domain,
+        ["debit:sum", "credit:sum"],
+        ["date:month"]
+    )
+
+    # Bereken netto BTW per maand (credit - debit = af te dragen BTW)
+    monthly_vat = []
+    for item in result:
+        debit = item.get("debit", 0) or 0
+        credit = item.get("credit", 0) or 0
+        net_vat = credit - debit  # Positief = af te dragen, negatief = te ontvangen
+        month_label = item.get("date:month", "Onbekend")
+        monthly_vat.append({
+            "month": month_label,
+            "debit": debit,
+            "credit": credit,
+            "net_vat": net_vat
+        })
+
+    return monthly_vat
+
 @st.cache_data(ttl=300)
 def get_historical_bank_movements(company_id=None, weeks_back=8):
     """Haal historische bankmutaties op per week uit de bankdagboeken"""
@@ -2753,6 +2805,19 @@ def main():
         st.subheader("💼 Vaste Lasten")
         st.caption("Voeg terugkerende kosten toe die niet in de crediteuren staan")
 
+        # Haal BTW-data op uit de 15* rekeningen
+        vat_monthly_data = get_vat_monthly_data(company_id if selected_entity != "Alle bedrijven" else None, months_back=6)
+
+        # Bereken gemiddelde maandelijkse BTW (voor kwartaalprognose)
+        if vat_monthly_data:
+            avg_monthly_vat = sum(m["net_vat"] for m in vat_monthly_data) / len(vat_monthly_data)
+            avg_quarterly_vat = avg_monthly_vat * 3  # Kwartaal = 3 maanden
+            suggested_vat = int(max(0, avg_quarterly_vat))  # Alleen positief (af te dragen)
+        else:
+            avg_monthly_vat = 0
+            avg_quarterly_vat = 0
+            suggested_vat = 0
+
         fixed_costs_cols = st.columns(3)
         with fixed_costs_cols[0]:
             monthly_salaries = st.number_input(
@@ -2761,16 +2826,16 @@ def main():
                 step=1000,
                 min_value=0,
                 key="cf_monthly_salaries",
-                help="Totale maandelijkse loonkosten inclusief werkgeverslasten"
+                help="Totale maandelijkse loonkosten inclusief werkgeverslasten (betaling in 3de week van de maand)"
             )
         with fixed_costs_cols[1]:
             vat_payment = st.number_input(
                 "BTW afdracht per kwartaal (€)",
-                value=0,
+                value=suggested_vat,
                 step=1000,
                 min_value=0,
                 key="cf_vat_payment",
-                help="Geschatte BTW afdracht per kwartaal (betaling rond 1e maand na kwartaal)"
+                help="Berekend op basis van 15* rekeningen (BTW). Pas aan indien nodig."
             )
         with fixed_costs_cols[2]:
             other_fixed_costs = st.number_input(
@@ -2781,6 +2846,18 @@ def main():
                 key="cf_other_fixed",
                 help="Huur, verzekeringen, abonnementen, etc."
             )
+
+        # Toon BTW details uit 15* rekeningen
+        if vat_monthly_data:
+            with st.expander("📊 BTW Historie (15* rekeningen)", expanded=False):
+                st.caption("Maandelijkse BTW op basis van de 15* rekeningen in Odoo")
+                vat_df = pd.DataFrame(vat_monthly_data)
+                vat_df.columns = ["Maand", "Voorbelasting (debet)", "Af te dragen (credit)", "Netto BTW"]
+                vat_df["Voorbelasting (debet)"] = vat_df["Voorbelasting (debet)"].apply(lambda x: f"€{x:,.0f}")
+                vat_df["Af te dragen (credit)"] = vat_df["Af te dragen (credit)"].apply(lambda x: f"€{x:,.0f}")
+                vat_df["Netto BTW"] = vat_df["Netto BTW"].apply(lambda x: f"€{x:,.0f}")
+                st.dataframe(vat_df, use_container_width=True, hide_index=True)
+                st.info(f"💡 Gemiddelde maandelijkse netto BTW: **€{avg_monthly_vat:,.0f}** → Kwartaalprognose: **€{avg_quarterly_vat:,.0f}**")
 
         # Bereken wanneer BTW betaald moet worden (maanden na kwartaaleinde: jan, apr, jul, okt)
         def get_vat_payment_weeks(start_date, num_weeks):
@@ -2798,11 +2875,30 @@ def main():
                         vat_weeks.append(week)
             return vat_weeks
 
+        # Bereken wanneer lonen betaald worden (3de week van elke maand)
+        def get_salary_payment_weeks(start_date, num_weeks):
+            """Bepaal in welke weken lonen betaald worden (3de week van de maand)"""
+            salary_weeks = []
+
+            for week in range(1, num_weeks + 1):
+                week_date = start_date + timedelta(weeks=week)
+                # 3de week van de maand = dag 15-21
+                if 15 <= week_date.day <= 21:
+                    salary_weeks.append(week)
+            return salary_weeks
+
         vat_payment_weeks = get_vat_payment_weeks(current_week_start, forecast_weeks) if vat_payment > 0 else []
+        salary_payment_weeks = get_salary_payment_weeks(current_week_start, forecast_weeks) if monthly_salaries > 0 else []
 
         if monthly_salaries > 0 or vat_payment > 0 or other_fixed_costs > 0:
-            st.info(f"💡 Vaste lasten per week: lonen €{monthly_salaries/4.33:,.0f} + overig €{other_fixed_costs/4.33:,.0f} = €{(monthly_salaries + other_fixed_costs)/4.33:,.0f}/week" +
-                   (f" | BTW afdracht €{vat_payment:,.0f} in weken: {vat_payment_weeks}" if vat_payment_weeks else ""))
+            info_parts = []
+            if monthly_salaries > 0:
+                info_parts.append(f"Lonen €{monthly_salaries:,.0f}/maand (betaling 3de week)")
+            if other_fixed_costs > 0:
+                info_parts.append(f"Overige vaste kosten €{other_fixed_costs/4.33:,.0f}/week")
+            if vat_payment > 0 and vat_payment_weeks:
+                info_parts.append(f"BTW afdracht €{vat_payment:,.0f} in weken: {vat_payment_weeks}")
+            st.info(f"💡 Vaste lasten: {' | '.join(info_parts)}")
 
         # =====================================================================
         # GECOMBINEERDE DATASET BOUWEN
@@ -2863,7 +2959,6 @@ def main():
         remaining_pay = filtered_payables
 
         # Bereken wekelijkse vaste lasten
-        weekly_salaries = monthly_salaries / 4.33  # Gemiddeld 4.33 weken per maand
         weekly_other_fixed = other_fixed_costs / 4.33
 
         for week in range(1, forecast_weeks + 1):
@@ -2878,8 +2973,11 @@ def main():
             payments = remaining_pay * (payment_rate / 100)
             remaining_pay -= payments
 
+            # Lonen alleen in de 3de week van de maand (volledige maandbedrag)
+            salaries_this_week = monthly_salaries if week in salary_payment_weeks else 0
+
             # Vaste lasten toevoegen
-            fixed_costs_this_week = weekly_salaries + weekly_other_fixed
+            fixed_costs_this_week = salaries_this_week + weekly_other_fixed
 
             # BTW afdracht in specifieke weken
             vat_this_week = vat_payment if week in vat_payment_weeks else 0
@@ -2889,10 +2987,15 @@ def main():
             # Nieuw saldo
             balance = balance + inflow - outflow
 
-            # Bepaal label met extra info bij BTW week
+            # Bepaal label met extra info bij loon/BTW week
             week_label = f"Week +{week}"
+            label_extras = []
+            if salaries_this_week > 0:
+                label_extras.append("Lonen")
             if vat_this_week > 0:
-                week_label += " (BTW)"
+                label_extras.append("BTW")
+            if label_extras:
+                week_label += f" ({', '.join(label_extras)})"
 
             all_data.append({
                 "week_key": week_start.strftime("%Y-%m-%d"),
@@ -2903,7 +3006,7 @@ def main():
                 "outflow": outflow,
                 "net": inflow - outflow,
                 "balance": balance,
-                "salaries": weekly_salaries,
+                "salaries": salaries_this_week,
                 "vat": vat_this_week,
                 "other_fixed": weekly_other_fixed
             })
