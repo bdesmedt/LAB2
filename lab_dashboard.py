@@ -1,21 +1,20 @@
 """
-LAB Groep Financial Dashboard v8
-================================
-Wijzigingen t.o.v. v7:
-- R/C filter verbeterd: nu ook op 12xxx/14xxx rekeningcodes
-- Products tab herstructureerd met subtabs
-- Nieuwe Kaart tab voor LAB Projects klantlocaties
-- Nederlandse vertalingen uitgebreid
+LAB Groep Financial Dashboard v11
+=================================
+Wijzigingen t.o.v. v10:
+- 💬 AI Chatbot tab toegevoegd (OpenAI GPT-4)
+- Stel vragen over financiële data in natuurlijke taal
+- Chatbot kan Odoo queries uitvoeren en resultaten presenteren
 
-Features:
-- ✅ Nederlandse benamingen voor alle rekeningen/categorieën
+Eerdere features:
+- ✅ Nederlandse benamingen voor alle rekeningen/categorieën (nl_NL context)
+- ✅ Balans tab met Kwadrant format (ACTIVA | PASSIVA)
+- ✅ Intercompany filter werkt nu ook op week/dag omzet
 - ✅ Aparte tab met banksaldi per rekening per entiteit
-- ✅ R/C herkenning via naam OF rekeningcode 12xxx/14xxx
-- ✅ Timeout fixes + caching
 - ✅ Factuur drill-down met PDF/Odoo link
 - ✅ Kostendetail per categorie
 - ✅ Cashflow prognose
-- ✅ LAB Projects: Verf vs Behang analyse (in Products subtab)
+- ✅ LAB Projects: Verf vs Behang analyse
 - ✅ Klantenkaart voor LAB Projects
 """
 
@@ -320,6 +319,157 @@ def odoo_call(model, method, domain, fields, limit=None, timeout=120, include_ar
     except Exception as e:
         st.error(f"Connection error: {e}")
         return []
+
+# =============================================================================
+# OPENAI CHATBOT HELPERS
+# =============================================================================
+
+CHATBOT_SYSTEM_PROMPT = """Je bent een financieel assistent voor LAB Groep, een holding met meerdere bedrijven.
+Je hebt toegang tot de Odoo boekhouding en kunt vragen beantwoorden over:
+- Omzet en kosten
+- Facturen (debiteuren en crediteuren)
+- Banksaldi
+- Klanten en leveranciers
+- Producten en categorieën
+- Cashflow en balans
+
+BEDRIJVEN (company_id):
+- 1: LAB Shops (retail)
+- 2: LAB Projects (projecten/behang/verf)
+- 3: LAB Holding (holding)
+- 4: Verf en Wand (verf specialist)
+- 5: Vestingh Art of Living (premium interieur)
+
+BELANGRIJKE ODOO MODELLEN:
+- account.move: Facturen/boekingen (move_type: 'out_invoice'=verkoopfactuur, 'in_invoice'=inkoopfactuur)
+- account.move.line: Boekingsregels (debit/credit, account_id, partner_id)
+- res.partner: Klanten/leveranciers
+- product.product: Producten
+- account.account: Grootboekrekeningen
+
+REKENINGSTRUCTUUR:
+- 8xxx: Omzet rekeningen
+- 4xxx, 6xxx, 7xxx: Kostenrekeningen  
+- 1xxx: Activa (bank: 1100-1199)
+- 0xxx: Vaste activa
+- 2xxx: Passiva
+
+INTERCOMPANY PARTNERS (filter deze uit voor externe analyse):
+IDs: [1, 2, 3, 4, 23, 24, 4509, 20618, 74170, 79863]
+
+Als je Odoo data nodig hebt, genereer een JSON query in dit formaat:
+```odoo_query
+{
+    "model": "account.move.line",
+    "domain": [["date", ">=", "2025-01-01"], ["date", "<=", "2025-12-31"]],
+    "fields": ["name", "debit", "credit", "partner_id"],
+    "groupby": ["partner_id"],
+    "limit": 100
+}
+```
+
+Geef ALTIJD bedragen in Euro's met juiste opmaak (€1.234,56).
+Antwoord in het Nederlands, bondig maar informatief.
+Als je iets niet weet of niet kunt opzoeken, zeg dat eerlijk."""
+
+def get_openai_key():
+    """Haal OpenAI API key op"""
+    return st.session_state.get("openai_key", "")
+
+def call_openai(messages, model="gpt-4o-mini"):
+    """Roep OpenAI API aan"""
+    api_key = get_openai_key()
+    if not api_key:
+        return None, "Geen OpenAI API key geconfigureerd"
+    
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_tokens": 2000
+            },
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]["content"], None
+        else:
+            return None, f"OpenAI error: {response.status_code} - {response.text}"
+    except Exception as e:
+        return None, f"OpenAI connection error: {e}"
+
+def execute_odoo_query(query_json):
+    """Voer een Odoo query uit op basis van chatbot instructies"""
+    try:
+        query = json.loads(query_json)
+        model = query.get("model", "account.move.line")
+        domain = query.get("domain", [])
+        fields = query.get("fields", [])
+        groupby = query.get("groupby", [])
+        limit = query.get("limit", 100)
+        
+        if groupby:
+            # Gebruik read_group voor geaggregeerde data
+            result = odoo_read_group(model, domain, fields, groupby)
+        else:
+            # Gebruik normale search_read
+            result = odoo_call(model, "search_read", domain, fields, limit=limit)
+        
+        return result, None
+    except Exception as e:
+        return None, f"Query error: {e}"
+
+def process_chat_message(user_message, chat_history, context_info):
+    """Verwerk een chat bericht en genereer antwoord"""
+    
+    # Bouw berichten op voor OpenAI
+    messages = [
+        {"role": "system", "content": CHATBOT_SYSTEM_PROMPT + f"\n\nHuidige context:\n{context_info}"}
+    ]
+    
+    # Voeg chat geschiedenis toe
+    for msg in chat_history[-10:]:  # Laatste 10 berichten
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    
+    # Voeg nieuwe vraag toe
+    messages.append({"role": "user", "content": user_message})
+    
+    # Eerste OpenAI call
+    response, error = call_openai(messages)
+    if error:
+        return f"❌ {error}", None
+    
+    # Check of er een Odoo query in het antwoord zit
+    if "```odoo_query" in response:
+        import re
+        query_match = re.search(r'```odoo_query\s*\n(.*?)\n```', response, re.DOTALL)
+        if query_match:
+            query_json = query_match.group(1)
+            query_result, query_error = execute_odoo_query(query_json)
+            
+            if query_error:
+                return f"❌ Query fout: {query_error}", None
+            
+            # Tweede call met query resultaten
+            messages.append({"role": "assistant", "content": response})
+            messages.append({
+                "role": "user", 
+                "content": f"Hier zijn de resultaten van de Odoo query:\n```json\n{json.dumps(query_result[:50], indent=2, default=str)}\n```\nGeef nu een duidelijk antwoord op basis van deze data."
+            })
+            
+            final_response, error = call_openai(messages)
+            if error:
+                return f"❌ {error}", query_result
+            return final_response, query_result
+    
+    return response, None
 
 # =============================================================================
 # DATA FUNCTIES
@@ -1241,6 +1391,19 @@ def main():
             st.session_state.api_key = api_input
         st.sidebar.markdown("---")
     
+    # OpenAI API Key voor chatbot
+    st.sidebar.markdown("### 🤖 AI Chat")
+    openai_input = st.sidebar.text_input(
+        "OpenAI API Key",
+        value=st.session_state.get("openai_key", ""),
+        type="password",
+        help="Voer je OpenAI API key in voor de AI Chat functie",
+        key="openai_key_input"
+    )
+    if openai_input:
+        st.session_state.openai_key = openai_input
+    st.sidebar.markdown("---")
+    
     # Check of we een API key hebben
     if not get_api_key():
         st.warning("👈 Voer je Odoo API Key in via de sidebar om te beginnen")
@@ -1282,7 +1445,7 @@ def main():
     # ==========================================================================
     # TABS
     # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans"])
+    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat"])
     
     # =========================================================================
     # TAB 1: OVERZICHT
@@ -2430,6 +2593,112 @@ def main():
                     f"balans_{balance_date}.csv",
                     "text/csv"
                 )
+
+    # =========================================================================
+    # TAB 9: AI CHAT
+    # =========================================================================
+    with tabs[8]:
+        st.header("💬 AI Financial Assistant")
+        
+        # Check voor OpenAI API key
+        if not get_openai_key():
+            st.warning("👈 Voer je OpenAI API Key in via de sidebar om de chatbot te gebruiken")
+            st.info("""
+            **Wat kan de AI Assistant?**
+            - Vragen beantwoorden over omzet, kosten en winst
+            - Facturen en betalingen opzoeken
+            - Klant- en leveranciersgegevens analyseren
+            - Specifieke Odoo queries uitvoeren
+            
+            **Voorbeeldvragen:**
+            - "Wat is de omzet van LAB Shops in januari 2025?"
+            - "Toon de top 5 klanten op basis van omzet"
+            - "Hoeveel openstaande facturen zijn er?"
+            - "Wat zijn de grootste kostenposten dit kwartaal?"
+            """)
+        else:
+            # Initialiseer chat geschiedenis
+            if "chat_messages" not in st.session_state:
+                st.session_state.chat_messages = []
+            
+            # Context info voor de chatbot
+            context_info = f"""
+            - Geselecteerd jaar: {selected_year}
+            - Geselecteerde entiteit: {selected_entity}
+            - Company ID: {company_id if company_id else 'Alle bedrijven'}
+            - Intercompany uitgesloten: {exclude_intercompany}
+            - Huidige datum: {datetime.now().strftime('%Y-%m-%d')}
+            """
+            
+            # Chat container
+            chat_container = st.container()
+            
+            # Toon chat geschiedenis
+            with chat_container:
+                for message in st.session_state.chat_messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+                        if message.get("data"):
+                            with st.expander("📊 Onderliggende data"):
+                                st.json(message["data"][:20] if len(message.get("data", [])) > 20 else message.get("data"))
+            
+            # Chat input
+            if prompt := st.chat_input("Stel een vraag over je financiële data..."):
+                # Toon user message
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                
+                # Genereer antwoord
+                with st.chat_message("assistant"):
+                    with st.spinner("Denken..."):
+                        response, query_data = process_chat_message(
+                            prompt, 
+                            st.session_state.chat_messages, 
+                            context_info
+                        )
+                        st.markdown(response)
+                        
+                        if query_data:
+                            with st.expander("📊 Onderliggende data"):
+                                st.json(query_data[:20] if len(query_data) > 20 else query_data)
+                
+                # Sla antwoord op
+                st.session_state.chat_messages.append({
+                    "role": "assistant", 
+                    "content": response,
+                    "data": query_data
+                })
+            
+            # Clear chat knop
+            col1, col2, col3 = st.columns([1, 1, 3])
+            with col1:
+                if st.button("🗑️ Wis chat"):
+                    st.session_state.chat_messages = []
+                    st.rerun()
+            with col2:
+                if st.button("💡 Voorbeelden"):
+                    st.session_state.show_examples = not st.session_state.get("show_examples", False)
+                    st.rerun()
+            
+            # Toon voorbeeldvragen
+            if st.session_state.get("show_examples", False):
+                st.markdown("---")
+                st.markdown("**Voorbeeldvragen die je kunt stellen:**")
+                examples = [
+                    "Wat is de totale omzet van dit jaar?",
+                    "Toon de top 10 klanten op omzet",
+                    "Hoeveel openstaande inkoopfacturen zijn er?",
+                    "Wat zijn de grootste kostenposten?",
+                    "Vergelijk de omzet van Q1 met Q2",
+                    "Welke leveranciers hebben de hoogste facturen?",
+                    "Wat is het banksaldo op dit moment?",
+                    "Toon alle facturen boven €10.000"
+                ]
+                for ex in examples:
+                    if st.button(f"💬 {ex}", key=f"ex_{ex[:20]}"):
+                        st.session_state.chat_messages.append({"role": "user", "content": ex})
+                        st.rerun()
 
 if __name__ == "__main__":
     main()
