@@ -6536,11 +6536,95 @@ Gegenereerd door LAB Groep Financial Dashboard
 
             st.markdown("---")
 
+            # Use Previous Year Actuals as Basis
+            st.subheader("📅 Basis op Vorig Jaar Actuals")
+            st.caption("Laad de werkelijke cijfers van vorig jaar als startpunt voor je forecast")
+
+            with st.container(border=True):
+                actuals_cols = st.columns([2, 1, 1, 1])
+                with actuals_cols[0]:
+                    st.markdown("**Gebruik actuele cijfers van vorig jaar**")
+                    st.caption("Haalt de werkelijke omzet, kosten en categorieën op uit Odoo voor dezelfde periode vorig jaar")
+                with actuals_cols[1]:
+                    growth_adjustment = st.number_input(
+                        "Groei aanpassing (%)",
+                        min_value=-50.0,
+                        max_value=100.0,
+                        value=5.0,
+                        step=1.0,
+                        key="actuals_growth_adj",
+                        help="Pas groei toe op de cijfers van vorig jaar (bijv. 5% = vorig jaar + 5%)"
+                    )
+                with actuals_cols[2]:
+                    cost_adjustment = st.number_input(
+                        "Kosten aanpassing (%)",
+                        min_value=-50.0,
+                        max_value=100.0,
+                        value=3.0,
+                        step=1.0,
+                        key="actuals_cost_adj",
+                        help="Pas aanpassing toe op kosten (bijv. 3% = verwachte kostenstijging)"
+                    )
+                with actuals_cols[3]:
+                    st.markdown("&nbsp;")  # Spacer
+                    if st.button("📥 Laad Vorig Jaar", type="secondary", key="load_prev_year"):
+                        # Calculate previous year period
+                        today = datetime.today()
+                        prev_year_start = datetime(today.year - 1, today.month, 1)
+                        start_date_str = prev_year_start.strftime("%Y-%m-%d")
+
+                        # Get actuals from previous year
+                        prev_year_actuals = get_actual_data_for_comparison(
+                            company_id=forecast_company,
+                            start_date=start_date_str,
+                            num_months=time_period
+                        )
+
+                        if prev_year_actuals:
+                            # Create new forecast based on previous year actuals
+                            forecast = create_empty_forecast(
+                                company_id=forecast_company,
+                                time_period_months=time_period
+                            )
+                            forecast["name"] = f"Forecast o.b.v. actuals {today.year - 1}"
+                            forecast["description"] = f"Gebaseerd op werkelijke cijfers van {today.year - 1} met {growth_adjustment}% groei en {cost_adjustment}% kostenaanpassing"
+
+                            # Apply growth adjustment to revenue
+                            growth_factor = 1 + (growth_adjustment / 100)
+                            for i, rev_val in enumerate(prev_year_actuals.get("revenue", [])):
+                                if i < len(forecast["revenue"]["values"]):
+                                    forecast["revenue"]["values"][i] = rev_val * growth_factor
+
+                            # Apply cost adjustment to COGS
+                            cost_factor = 1 + (cost_adjustment / 100)
+                            for i, cogs_val in enumerate(prev_year_actuals.get("cogs", [])):
+                                if i < len(forecast["cogs"]["values"]):
+                                    forecast["cogs"]["values"][i] = cogs_val * cost_factor
+
+                            # Apply cost adjustment to operating expenses by category
+                            for cat_code, cat_values in prev_year_actuals.get("operating_expenses", {}).items():
+                                if cat_code in forecast["operating_expenses"]:
+                                    for i, exp_val in enumerate(cat_values):
+                                        if i < len(forecast["operating_expenses"][cat_code]["values"]):
+                                            forecast["operating_expenses"][cat_code]["values"][i] = exp_val * cost_factor
+                                            # Also update session state for the input widgets
+                                            widget_key = f"exp_{cat_code}_{i}"
+                                            if widget_key in st.session_state:
+                                                st.session_state[widget_key] = exp_val * cost_factor
+
+                            st.session_state.current_forecast = forecast
+                            st.success(f"✅ Actuals van {today.year - 1} geladen als basis! Groei: {growth_adjustment}%, Kosten: +{cost_adjustment}%")
+                            st.rerun()
+                        else:
+                            st.error("❌ Kon geen actuele data ophalen van vorig jaar. Controleer de Odoo connectie.")
+
+            st.markdown("---")
+
             # Manual Input Section
             st.subheader("✏️ Handmatige Invoer")
 
             if st.session_state.current_forecast is None:
-                st.info("👆 Selecteer een scenario hierboven of klik op 'Nieuwe Forecast' om te beginnen")
+                st.info("👆 Selecteer een scenario hierboven, laad vorig jaar actuals, of klik op 'Nieuwe Forecast' om te beginnen")
             else:
                 forecast = st.session_state.current_forecast
                 periods = forecast.get("periods", [])
@@ -6668,6 +6752,11 @@ Gegenereerd door LAB Groep Financial Dashboard
                         if st.button("Vul alle maanden"):
                             for i in range(len(forecast["operating_expenses"][selected_cat]["values"])):
                                 forecast["operating_expenses"][selected_cat]["values"][i] = qf_amount
+                                # Also update the session state keys for the number inputs
+                                widget_key = f"exp_{selected_cat}_{i}"
+                                if widget_key in st.session_state:
+                                    st.session_state[widget_key] = qf_amount
+                            st.session_state.current_forecast = forecast
                             st.rerun()
 
                     st.markdown("---")
