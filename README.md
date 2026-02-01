@@ -1,4 +1,4 @@
-# LAB Groep Financial Dashboard
+# Financial Dashboard
 
 Real-time financial analytics dashboard for LAB Groep, built with Streamlit and connected to Odoo ERP.
 
