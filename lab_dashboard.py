@@ -2586,58 +2586,42 @@ def get_account_mapping():
 # DRAGGABLE MAPPING FUNCTIONS
 # =============================================================================
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_all_accounts_with_details(company_id, year):
     """
     Fetch all accounts with their codes, names, and balances for a given year.
     Returns a list of accounts that can be assigned to report categories.
+    Uses the existing discover_account_groups function and expands the data.
     """
-    try:
-        start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31"
+    # Use the existing working function to get account groups
+    account_groups = discover_account_groups(company_id, year)
 
-        domain = [
-            ["date", ">=", start_date],
-            ["date", "<=", end_date],
-            ["parent_state", "=", "posted"]
-        ]
-        if company_id:
-            domain.append(["company_id", "=", company_id])
+    if not account_groups:
+        return []
 
-        # Fetch all account move lines grouped by account
-        data = odoo_read_group(
-            "account.move.line",
-            domain,
-            ["balance:sum"],
-            ["account_id"]
-        )
-
-        accounts = []
-        for item in data:
-            account = item.get("account_id")
+    accounts = []
+    for prefix, info in account_groups.items():
+        # Each account in the group
+        for account in info.get("accounts", []):
             if account and isinstance(account, (list, tuple)) and len(account) >= 2:
                 account_id = account[0]
                 account_display = account[1]  # Format: "CODE Description"
                 parts = account_display.split(" ", 1)
                 code = parts[0] if parts else str(account_id)
                 name = parts[1] if len(parts) > 1 else account_display
-                balance = item.get("balance:sum", 0)
 
-                if balance != 0:  # Only include accounts with activity
+                # Check if already added (avoid duplicates)
+                if not any(a["code"] == code for a in accounts):
                     accounts.append({
                         "id": account_id,
                         "code": code,
                         "name": name,
                         "display": f"{code} - {name[:50]}",
-                        "balance": balance
+                        "balance": info.get("balance", 0) / max(len(info.get("accounts", [])), 1)  # Approximate
                     })
 
-        # Sort by account code
-        accounts.sort(key=lambda x: x["code"])
-        return accounts
-    except Exception as e:
-        print(f"Error fetching accounts: {e}")
-        return []
+    # Sort by account code
+    accounts.sort(key=lambda x: x["code"])
+    return accounts
 
 
 def save_draggable_mapping(mapping_data):
@@ -2713,7 +2697,8 @@ def render_draggable_mapping_tool(company_id, year):
     col_refresh, col_year = st.columns([1, 2])
     with col_refresh:
         if st.button("🔄 Ververs Rekeningen", key="refresh_accounts"):
-            get_all_accounts_with_details.clear()
+            # Clear the cache of discover_account_groups which is used internally
+            discover_account_groups.clear()
             st.rerun()
     with col_year:
         st.caption(f"Data van jaar: {year}")
@@ -2722,7 +2707,18 @@ def render_draggable_mapping_tool(company_id, year):
         available_accounts = get_all_accounts_with_details(company_id, year)
 
     if not available_accounts:
-        st.warning("Geen rekeningen gevonden. Controleer de API verbinding.")
+        st.warning(f"Geen rekeningen gevonden voor jaar {year}.")
+        st.info("""
+        **Mogelijke oorzaken:**
+        - Geen geboekte transacties in het geselecteerde jaar
+        - API verbinding niet actief (controleer API key in sidebar)
+        - Bedrijf heeft geen boekhouddata
+
+        **Probeer:**
+        - Selecteer een ander jaar met data
+        - Klik op 'Ververs Rekeningen'
+        - Controleer de API key in de sidebar
+        """)
         return
 
     # Get list of already assigned account codes
@@ -7207,8 +7203,16 @@ Gegenereerd door LAB Groep Financial Dashboard
                 - **Resultaat voor Belasting** → Belastingen → **Resultaat na Belasting**
                 """)
 
-                # Get year for account discovery
-                mapping_year = datetime.now().year - 1
+                # Get year for account discovery - allow user to select
+                current_year = datetime.now().year
+                mapping_year_options = list(range(current_year - 5, current_year + 1))
+                mapping_year = st.selectbox(
+                    "Jaar voor rekeningen ophalen",
+                    options=mapping_year_options,
+                    index=len(mapping_year_options) - 2,  # Default to previous year
+                    key="mapping_year_select",
+                    help="Selecteer het jaar waarvan de rekeningen opgehaald moeten worden"
+                )
                 render_draggable_mapping_tool(forecast_company, mapping_year)
 
             # Legacy Account Mapping Configuration (collapsed by default)
