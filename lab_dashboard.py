@@ -392,10 +392,31 @@ BEDRIJVEN (company_id):
 
 BELANGRIJKE ODOO MODELLEN:
 - account.move: Facturen/boekingen (move_type: 'out_invoice'=verkoopfactuur, 'in_invoice'=inkoopfactuur)
+  Belangrijke velden:
+  - name: factuurnummer
+  - partner_id: klant/leverancier
+  - invoice_date: factuurdatum
+  - invoice_date_due: vervaldatum
+  - amount_total: totaalbedrag
+  - amount_residual: openstaand bedrag (0 = betaald)
+  - state: 'draft'=concept, 'posted'=geboekt, 'cancel'=geannuleerd
+  - payment_state: 'not_paid'=niet betaald, 'partial'=deels betaald, 'paid'=betaald, 'reversed'=teruggedraaid
+  - ref: referentie/omschrijving
+  - company_id: bedrijf
 - account.move.line: Boekingsregels (debit/credit, account_id, partner_id)
-- res.partner: Klanten/leveranciers
+- res.partner: Klanten/leveranciers (name, street, zip, city, country_id, supplier_rank, customer_rank)
 - product.product: Producten
 - account.account: Grootboekrekeningen
+
+VOORBEELD QUERY VOOR FACTUURSTATUS:
+```odoo_query
+{
+    "model": "account.move",
+    "domain": [["move_type", "=", "in_invoice"], ["invoice_date", ">=", "2025-01-01"], ["state", "=", "posted"]],
+    "fields": ["name", "partner_id", "invoice_date", "amount_total", "amount_residual", "payment_state", "ref"],
+    "limit": 100
+}
+```
 
 REKENINGSTRUCTUUR:
 - 8xxx: Omzet rekeningen
@@ -420,7 +441,15 @@ Als je Odoo data nodig hebt, genereer een JSON query in dit formaat:
 
 Geef ALTIJD bedragen in Euro's met juiste opmaak (€1.234,56).
 Antwoord in het Nederlands, bondig maar informatief.
-Als je iets niet weet of niet kunt opzoeken, zeg dat eerlijk."""
+
+BELANGRIJK: Genereer ALTIJD een odoo_query wanneer de gebruiker vraagt naar:
+- Factuurstatus of openstaande facturen
+- Welke leveranciers/klanten facturen hebben
+- Betaalstatus van facturen
+- Specifieke transacties of bedragen
+
+Zeg NOOIT dat je iets niet kunt opvragen als het via bovenstaande modellen beschikbaar is.
+Als je echt geen data kunt vinden na een query, geef dat aan met de resultaten."""
 
 def get_openai_key():
     """Haal OpenAI API key op"""
