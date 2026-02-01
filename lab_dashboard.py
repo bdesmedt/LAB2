@@ -2290,6 +2290,7 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         st.error(f"Fout bij ophalen actuele data: {e}")
         return None
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_base_year_data(company_id, base_year):
     """
     Fetch annual financial data from Odoo for a specific year to use as forecast base.
@@ -2380,7 +2381,9 @@ def get_base_year_data(company_id, base_year):
             "cogs_percentage": (total_cogs / total_revenue) if total_revenue > 0 else 0.6
         }
     except Exception as e:
-        st.error(f"Fout bij ophalen basisjaar data: {e}")
+        # Note: st.error() cannot be used inside cached functions
+        # Error will be handled by caller showing "Geen data gevonden"
+        print(f"Error fetching base year data: {e}")
         return None
 
 def export_forecast_to_csv(forecast, calculated):
@@ -6455,10 +6458,16 @@ Gegenereerd door LAB Groep Financial Dashboard
                     )
                 with base_year_col2:
                     current_year = datetime.now().year
+                    base_year_options = list(range(current_year - 5, current_year + 1))
+                    # Calculate default index based on session_state or default to previous year
+                    if "base_year_select" in st.session_state and st.session_state.base_year_select in base_year_options:
+                        default_index = base_year_options.index(st.session_state.base_year_select)
+                    else:
+                        default_index = len(base_year_options) - 2  # Previous year
                     base_year = st.selectbox(
                         "Basisjaar",
-                        options=list(range(current_year - 5, current_year + 1)),
-                        index=4,  # Default to previous year
+                        options=base_year_options,
+                        index=default_index,
                         key="base_year_select",
                         disabled=not use_base_year,
                         help="Selecteer het jaar waarvan de historische data gebruikt moet worden"
