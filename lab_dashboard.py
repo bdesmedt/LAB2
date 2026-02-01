@@ -1,7 +1,17 @@
 """
-LAB Groep Financial Dashboard v12
+LAB Groep Financial Dashboard v13
 =================================
-Wijzigingen t.o.v. v11:
+Wijzigingen t.o.v. v12:
+- 🧾 BTW Analyse module toegevoegd aan Maandafsluiting
+  - Checkbox voor maandelijkse vs kwartaal BTW aangifte
+  - Automatische periode berekening (Q1-Q4 of per maand)
+  - BTW overzicht met voorbelasting, af te dragen, en netto positie
+  - Vergelijking met vorige periode (maand of kwartaal)
+  - Detail tabel per BTW rekening
+  - 🤖 AI Analyse knop: laat AI afwijkingen analyseren en verklaren
+  - Waarschuwing bij grote BTW afwijkingen (>25%)
+
+Wijzigingen in v12:
 - 📋 Maandafsluiting (Financial Close) tab toegevoegd
   - Wachtwoord-beveiligde toegang voor gevoelige financiële afsluitingen
   - Periode-selectie (maand/jaar/entiteit)
@@ -3318,7 +3328,7 @@ def main():
             # =================================================================
             st.subheader("📅 Periode Selectie")
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
             with col1:
                 close_year = st.selectbox(
                     "Jaar",
@@ -3341,6 +3351,13 @@ def main():
                     "Entiteit",
                     options=["Alle bedrijven"] + list(COMPANIES.values()),
                     key="fc_company"
+                )
+            with col4:
+                btw_monthly = st.checkbox(
+                    "BTW per maand",
+                    value=False,
+                    key="fc_btw_monthly",
+                    help="Vink aan als de BTW maandelijks wordt aangegeven i.p.v. per kwartaal"
                 )
 
             fc_company_id = None
@@ -3369,7 +3386,40 @@ def main():
             period_label = f"{month_names[close_month - 1]} {close_year}"
             prev_period_label = f"{month_names[prev_month - 1]} {prev_year}"
 
-            st.info(f"📊 Periode: **{period_label}** | Vergelijking met: **{prev_period_label}**")
+            # BTW period calculation (monthly or quarterly)
+            if btw_monthly:
+                # Monthly BTW - same as regular period
+                btw_period_start = period_start
+                btw_period_end = period_end
+                btw_prev_start = prev_start
+                btw_prev_end = prev_end
+                btw_period_label = period_label
+                btw_prev_label = prev_period_label
+            else:
+                # Quarterly BTW - calculate quarter based on selected month
+                quarter = (close_month - 1) // 3 + 1
+                quarter_start_month = (quarter - 1) * 3 + 1
+                quarter_end_month = quarter * 3
+                btw_period_start = f"{close_year}-{quarter_start_month:02d}-01"
+                btw_period_end_day = monthrange(close_year, quarter_end_month)[1]
+                btw_period_end = f"{close_year}-{quarter_end_month:02d}-{btw_period_end_day:02d}"
+                btw_period_label = f"Q{quarter} {close_year}"
+
+                # Previous quarter
+                if quarter == 1:
+                    prev_quarter = 4
+                    prev_quarter_year = close_year - 1
+                else:
+                    prev_quarter = quarter - 1
+                    prev_quarter_year = close_year
+                prev_quarter_start_month = (prev_quarter - 1) * 3 + 1
+                prev_quarter_end_month = prev_quarter * 3
+                btw_prev_start = f"{prev_quarter_year}-{prev_quarter_start_month:02d}-01"
+                btw_prev_end_day = monthrange(prev_quarter_year, prev_quarter_end_month)[1]
+                btw_prev_end = f"{prev_quarter_year}-{prev_quarter_end_month:02d}-{btw_prev_end_day:02d}"
+                btw_prev_label = f"Q{prev_quarter} {prev_quarter_year}"
+
+            st.info(f"📊 Periode: **{period_label}** | Vergelijking met: **{prev_period_label}** | BTW periode: **{btw_period_label}** ({'maandelijks' if btw_monthly else 'per kwartaal'})")
 
             # =================================================================
             # DATA FETCHING FUNCTIONS FOR FINANCIAL CLOSE
@@ -3590,6 +3640,134 @@ def main():
 
                 return revenue_data, cogs_data
 
+            @st.cache_data(ttl=1800)
+            def get_vat_data(start_date, end_date, comp_id=None):
+                """Get VAT/BTW data for the period.
+
+                BTW accounts typically used in Odoo:
+                - 1500xx: Te vorderen BTW (VAT receivable - input VAT)
+                - 1510xx: Af te dragen BTW (VAT payable - output VAT)
+                - 1520xx: BTW verrekenrekening
+                """
+                # Get all VAT-related account move lines
+                # Search for accounts with 'BTW' or 'VAT' in the name
+                vat_domain = [
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted"),
+                    "|", "|", "|",
+                    ("account_id.code", "like", "15%"),  # Common BTW accounts
+                    ("account_id.name", "ilike", "BTW"),
+                    ("account_id.name", "ilike", "VAT"),
+                    ("account_id.name", "ilike", "belasting")
+                ]
+                if comp_id:
+                    vat_domain.append(("company_id", "=", comp_id))
+
+                return odoo_read_group(
+                    "account.move.line",
+                    vat_domain,
+                    ["debit:sum", "credit:sum", "balance:sum"],
+                    ["account_id"]
+                )
+
+            @st.cache_data(ttl=1800)
+            def get_vat_details(start_date, end_date, comp_id=None):
+                """Get detailed VAT/BTW transactions for the period."""
+                vat_domain = [
+                    ("date", ">=", start_date),
+                    ("date", "<=", end_date),
+                    ("parent_state", "=", "posted"),
+                    "|", "|", "|",
+                    ("account_id.code", "like", "15%"),
+                    ("account_id.name", "ilike", "BTW"),
+                    ("account_id.name", "ilike", "VAT"),
+                    ("account_id.name", "ilike", "belasting")
+                ]
+                if comp_id:
+                    vat_domain.append(("company_id", "=", comp_id))
+
+                return odoo_call(
+                    "account.move.line", "search_read",
+                    vat_domain,
+                    ["date", "name", "account_id", "debit", "credit", "balance", "partner_id", "move_id"],
+                    limit=500
+                )
+
+            def analyze_vat_with_ai(vat_current, vat_previous, period_label, prev_period_label, btw_is_monthly):
+                """Use AI to analyze VAT deviations and provide insights."""
+                if not get_openai_key():
+                    return None, "Geen OpenAI API key geconfigureerd"
+
+                # Prepare data summary for AI
+                current_summary = []
+                for item in vat_current:
+                    account_info = item.get("account_id", [None, "Onbekend"])
+                    account_name = account_info[1] if isinstance(account_info, list) and len(account_info) > 1 else str(account_info)
+                    current_summary.append({
+                        "account": account_name,
+                        "debit": item.get("debit", 0),
+                        "credit": item.get("credit", 0),
+                        "balance": item.get("balance", 0)
+                    })
+
+                prev_summary = []
+                for item in vat_previous:
+                    account_info = item.get("account_id", [None, "Onbekend"])
+                    account_name = account_info[1] if isinstance(account_info, list) and len(account_info) > 1 else str(account_info)
+                    prev_summary.append({
+                        "account": account_name,
+                        "debit": item.get("debit", 0),
+                        "credit": item.get("credit", 0),
+                        "balance": item.get("balance", 0)
+                    })
+
+                # Calculate totals
+                current_total_debit = sum(item.get("debit", 0) for item in vat_current)
+                current_total_credit = sum(item.get("credit", 0) for item in vat_current)
+                current_net = current_total_credit - current_total_debit
+
+                prev_total_debit = sum(item.get("debit", 0) for item in vat_previous)
+                prev_total_credit = sum(item.get("credit", 0) for item in vat_previous)
+                prev_net = prev_total_credit - prev_total_debit
+
+                period_type = "maand" if btw_is_monthly else "kwartaal"
+
+                prompt = f"""Analyseer de volgende BTW-gegevens voor een Nederlands bedrijf en geef een korte, praktische analyse van afwijkingen.
+
+**Periode:** {period_label} (BTW per {period_type})
+**Vergelijkingsperiode:** {prev_period_label}
+
+**Huidige periode BTW-data:**
+{json.dumps(current_summary, indent=2)}
+Totaal debet (voorbelasting): €{current_total_debit:,.2f}
+Totaal credit (af te dragen): €{current_total_credit:,.2f}
+Netto af te dragen: €{current_net:,.2f}
+
+**Vorige periode BTW-data:**
+{json.dumps(prev_summary, indent=2)}
+Totaal debet (voorbelasting): €{prev_total_debit:,.2f}
+Totaal credit (af te dragen): €{prev_total_credit:,.2f}
+Netto af te dragen: €{prev_net:,.2f}
+
+**Verschil:** €{current_net - prev_net:,.2f}
+
+Geef een bondige analyse (max 5 bullet points) met:
+1. Korte samenvatting van de BTW-positie
+2. Belangrijkste afwijkingen t.o.v. vorige periode
+3. Mogelijke oorzaken voor de afwijkingen
+4. Aandachtspunten voor de BTW-aangifte
+5. Eventuele risico's of actiepunten
+
+Antwoord in het Nederlands en wees praktisch/actionable."""
+
+                messages = [
+                    {"role": "system", "content": "Je bent een ervaren fiscalist/boekhouder die BTW-analyses uitvoert voor Nederlandse bedrijven. Geef praktische, bondige analyses."},
+                    {"role": "user", "content": prompt}
+                ]
+
+                return call_openai(messages)
+
             # =================================================================
             # LOAD DATA
             # =================================================================
@@ -3617,6 +3795,10 @@ def main():
                 # Product category margin data
                 current_revenue_by_product, current_cogs_by_product = get_product_category_margins(period_start, period_end, fc_company_id)
                 prev_revenue_by_product, prev_cogs_by_product = get_product_category_margins(prev_start, prev_end, fc_company_id)
+
+                # BTW/VAT data
+                current_vat_data = get_vat_data(btw_period_start, btw_period_end, fc_company_id)
+                prev_vat_data = get_vat_data(btw_prev_start, btw_prev_end, fc_company_id)
 
             st.markdown("---")
 
@@ -4142,6 +4324,122 @@ def main():
                 st.markdown(f"- Omzet: :{rev_color}[{rev_vs_avg:+.1f}%] vs gemiddelde")
                 st.markdown(f"- Kosten: :{cost_color}[{cost_vs_avg:+.1f}%] vs gemiddelde")
                 st.markdown(f"- Resultaat: :{profit_color}[{profit_vs_avg:+.1f}%] vs gemiddelde")
+
+            st.markdown("---")
+
+            # =================================================================
+            # BTW/VAT ANALYSIS
+            # =================================================================
+            st.subheader(f"🧾 BTW Analyse ({btw_period_label})")
+
+            # Calculate BTW totals
+            current_vat_debit = sum(item.get("debit", 0) for item in current_vat_data)
+            current_vat_credit = sum(item.get("credit", 0) for item in current_vat_data)
+            current_vat_net = current_vat_credit - current_vat_debit
+
+            prev_vat_debit = sum(item.get("debit", 0) for item in prev_vat_data)
+            prev_vat_credit = sum(item.get("credit", 0) for item in prev_vat_data)
+            prev_vat_net = prev_vat_credit - prev_vat_debit
+
+            vat_change = current_vat_net - prev_vat_net
+            vat_change_pct = ((vat_change / abs(prev_vat_net)) * 100) if prev_vat_net != 0 else 0
+
+            # BTW Metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric(
+                    "📥 Voorbelasting",
+                    f"€{current_vat_debit:,.0f}",
+                    help="Te vorderen BTW (input VAT)"
+                )
+            with col2:
+                st.metric(
+                    "📤 Af te dragen",
+                    f"€{current_vat_credit:,.0f}",
+                    help="Af te dragen BTW (output VAT)"
+                )
+            with col3:
+                st.metric(
+                    "💶 Netto BTW",
+                    f"€{current_vat_net:,.0f}",
+                    delta=f"{vat_change_pct:+.1f}% vs {btw_prev_label}",
+                    delta_color="inverse" if current_vat_net > 0 else "normal",
+                    help="Positief = af te dragen, Negatief = te ontvangen"
+                )
+            with col4:
+                # AI Analysis button
+                if st.button("🤖 AI Analyse", key="btw_ai_analysis", help="Laat AI de BTW afwijkingen analyseren"):
+                    st.session_state.show_btw_ai_analysis = True
+
+            # Show AI Analysis if requested
+            if st.session_state.get("show_btw_ai_analysis", False):
+                with st.spinner("🤖 AI analyseert BTW data..."):
+                    ai_response, ai_error = analyze_vat_with_ai(
+                        current_vat_data,
+                        prev_vat_data,
+                        btw_period_label,
+                        btw_prev_label,
+                        btw_monthly
+                    )
+
+                if ai_error:
+                    st.error(f"❌ AI Analyse fout: {ai_error}")
+                elif ai_response:
+                    with st.expander("🤖 AI BTW Analyse", expanded=True):
+                        st.markdown(ai_response)
+                        if st.button("🔄 Verberg analyse", key="hide_btw_analysis"):
+                            st.session_state.show_btw_ai_analysis = False
+                            st.rerun()
+
+            # BTW Details expander
+            with st.expander("📊 BTW Details per Rekening", expanded=False):
+                if current_vat_data:
+                    vat_table_data = []
+                    for item in current_vat_data:
+                        account_info = item.get("account_id", [None, "Onbekend"])
+                        account_name = account_info[1] if isinstance(account_info, list) and len(account_info) > 1 else str(account_info)
+
+                        # Find previous period data for same account
+                        prev_item = next(
+                            (p for p in prev_vat_data if p.get("account_id") == item.get("account_id")),
+                            {"debit": 0, "credit": 0, "balance": 0}
+                        )
+
+                        current_balance = item.get("credit", 0) - item.get("debit", 0)
+                        prev_balance = prev_item.get("credit", 0) - prev_item.get("debit", 0)
+                        change = current_balance - prev_balance
+                        change_pct = ((change / abs(prev_balance)) * 100) if prev_balance != 0 else 0
+
+                        vat_table_data.append({
+                            "Rekening": account_name,
+                            "Debet": f"€{item.get('debit', 0):,.0f}",
+                            "Credit": f"€{item.get('credit', 0):,.0f}",
+                            "Saldo": f"€{current_balance:,.0f}",
+                            f"Vorige ({btw_prev_label})": f"€{prev_balance:,.0f}",
+                            "Verschil": f"€{change:+,.0f}",
+                            "Verschil %": f"{change_pct:+.1f}%"
+                        })
+
+                    if vat_table_data:
+                        df_vat = pd.DataFrame(vat_table_data)
+                        st.dataframe(df_vat, use_container_width=True, hide_index=True)
+
+                        # Summary
+                        st.markdown(f"""
+                        **Samenvatting BTW {btw_period_label}:**
+                        - Totaal voorbelasting (debet): **€{current_vat_debit:,.0f}**
+                        - Totaal af te dragen (credit): **€{current_vat_credit:,.0f}**
+                        - **Netto {'af te dragen' if current_vat_net > 0 else 'te ontvangen'}: €{abs(current_vat_net):,.0f}**
+                        - Verschil t.o.v. {btw_prev_label}: €{vat_change:+,.0f} ({vat_change_pct:+.1f}%)
+                        """)
+                    else:
+                        st.info("Geen BTW-rekeningen gevonden voor deze periode")
+                else:
+                    st.info("Geen BTW data beschikbaar voor deze periode")
+
+            # BTW Warning if large variance
+            if abs(vat_change_pct) > 25 and abs(vat_change) > 500:
+                st.warning(f"⚠️ **Grote BTW afwijking**: {vat_change_pct:+.1f}% (€{vat_change:+,.0f}) t.o.v. {btw_prev_label}. Controleer de onderliggende transacties.")
 
             st.markdown("---")
 
