@@ -2810,9 +2810,96 @@ def render_draggable_mapping_tool(company_id, year):
     Render the mapping tool interface with two-column layout:
     - Left: Hierarchical report structure with categories
     - Right: Unmapped accounts panel with search
+
+    Features a "Edit Mode" (Bewerk Modus) that collects changes without refreshing,
+    then commits all changes at once for better performance.
     """
     # Get current mapping
     mapping = get_draggable_mapping()
+
+    # =========================================================================
+    # EDIT MODE STATE MANAGEMENT
+    # =========================================================================
+    # Initialize edit mode state
+    if "mapping_edit_mode" not in st.session_state:
+        st.session_state.mapping_edit_mode = False
+
+    # Initialize pending changes (only used in edit mode)
+    if "pending_adds" not in st.session_state:
+        st.session_state.pending_adds = {}  # {category_key: [account_codes]}
+    if "pending_removes" not in st.session_state:
+        st.session_state.pending_removes = {}  # {category_key: [account_codes]}
+
+    edit_mode = st.session_state.mapping_edit_mode
+    pending_adds = st.session_state.pending_adds
+    pending_removes = st.session_state.pending_removes
+
+    # Count total pending changes
+    total_pending_adds = sum(len(v) for v in pending_adds.values())
+    total_pending_removes = sum(len(v) for v in pending_removes.values())
+    total_pending = total_pending_adds + total_pending_removes
+
+    # =========================================================================
+    # EDIT MODE TOGGLE AND COMMIT/DISCARD BUTTONS
+    # =========================================================================
+    mode_col1, mode_col2, mode_col3, mode_col4 = st.columns([2, 1, 1, 1])
+
+    with mode_col1:
+        if edit_mode:
+            st.markdown(f"### ✏️ **Bewerk Modus** - {total_pending} wijziging(en) pending")
+        else:
+            st.markdown("### 📊 Mapping Tool")
+
+    with mode_col2:
+        if not edit_mode:
+            if st.button("✏️ Bewerk Modus", key="enter_edit_mode", type="primary", help="Activeer bewerk modus om wijzigingen te verzamelen zonder te refreshen"):
+                st.session_state.mapping_edit_mode = True
+                st.session_state.pending_adds = {}
+                st.session_state.pending_removes = {}
+                st.rerun()
+        else:
+            # Show pending changes summary
+            if total_pending > 0:
+                st.caption(f"➕ {total_pending_adds} toe te voegen")
+                st.caption(f"➖ {total_pending_removes} te verwijderen")
+
+    with mode_col3:
+        if edit_mode:
+            if st.button("✅ Commit", key="commit_changes", type="primary", disabled=total_pending == 0, help="Pas alle wijzigingen toe"):
+                # Apply all pending adds
+                for cat_key, codes in pending_adds.items():
+                    if cat_key not in mapping["categories"]:
+                        mapping["categories"][cat_key] = []
+                    for code in codes:
+                        if code not in mapping["categories"][cat_key]:
+                            mapping["categories"][cat_key].append(code)
+
+                # Apply all pending removes
+                for cat_key, codes in pending_removes.items():
+                    if cat_key in mapping["categories"]:
+                        mapping["categories"][cat_key] = [
+                            c for c in mapping["categories"][cat_key] if c not in codes
+                        ]
+
+                # Update session state
+                st.session_state.draggable_mapping = mapping
+                st.session_state.pending_adds = {}
+                st.session_state.pending_removes = {}
+                st.session_state.mapping_edit_mode = False
+                st.success(f"✅ {total_pending} wijziging(en) toegepast!")
+                st.rerun()
+
+    with mode_col4:
+        if edit_mode:
+            if st.button("❌ Annuleer", key="discard_changes", help="Verwerp alle pending wijzigingen"):
+                st.session_state.pending_adds = {}
+                st.session_state.pending_removes = {}
+                st.session_state.mapping_edit_mode = False
+                st.rerun()
+
+    if edit_mode:
+        st.info("💡 **Bewerk Modus actief**: Wijzigingen worden verzameld maar niet direct toegepast. Klik op 'Commit' om alle wijzigingen in één keer toe te passen, of 'Annuleer' om te verwerpen.")
+        st.markdown("---")
 
     # Fetch available accounts
     with st.spinner("Rekeningen ophalen..."):
@@ -2827,11 +2914,22 @@ def render_draggable_mapping_tool(company_id, year):
                 st.rerun()
         return
 
-    # Get list of already assigned account codes
+    # Get list of already assigned account codes (including pending changes in edit mode)
     assigned_codes = set()
     for cat_key, cat_accounts in mapping.get("categories", {}).items():
         for acc_code in cat_accounts:
             assigned_codes.add(acc_code)
+
+    # In edit mode: include pending adds as assigned, exclude pending removes
+    if edit_mode:
+        # Add pending adds to assigned (so they don't show in unassigned list)
+        for cat_key, codes in pending_adds.items():
+            for code in codes:
+                assigned_codes.add(code)
+        # Remove pending removes from assigned (so they show in unassigned list again)
+        for cat_key, codes in pending_removes.items():
+            for code in codes:
+                assigned_codes.discard(code)
 
     # Filter unassigned accounts
     unassigned_accounts = [
@@ -2910,8 +3008,16 @@ def render_draggable_mapping_tool(company_id, year):
 
             # Expandable category row
             if cat_key and item.get("expandable"):
-                current_accounts = mapping.get("categories", {}).get(cat_key, [])
-                num_accounts = len(current_accounts)
+                current_accounts = mapping.get("categories", {}).get(cat_key, []).copy()
+
+                # In edit mode, calculate effective accounts (including pending changes)
+                cat_pending_adds = pending_adds.get(cat_key, []) if edit_mode else []
+                cat_pending_removes = pending_removes.get(cat_key, []) if edit_mode else []
+
+                # Effective accounts = current - pending_removes + pending_adds
+                effective_accounts = [a for a in current_accounts if a not in cat_pending_removes] + cat_pending_adds
+                num_accounts = len(effective_accounts)
+                num_pending_changes = len(cat_pending_adds) + len(cat_pending_removes)
 
                 # Create row with expand arrow, name, and + button
                 row_col1, row_col2, row_col3 = st.columns([0.5, 4, 0.5])
@@ -2927,7 +3033,9 @@ def render_draggable_mapping_tool(company_id, year):
 
                 with row_col2:
                     badge = f" ({num_accounts})" if num_accounts > 0 else ""
-                    st.markdown(f"{indent}{item['name']}{badge}")
+                    # Show pending indicator in edit mode
+                    pending_indicator = f" 🔸" if edit_mode and num_pending_changes > 0 else ""
+                    st.markdown(f"{indent}{item['name']}{badge}{pending_indicator}")
 
                 with row_col3:
                     # + button to add accounts
@@ -2935,19 +3043,57 @@ def render_draggable_mapping_tool(company_id, year):
                         st.session_state[f"adding_to_{cat_key}"] = True
                         st.rerun()
 
-                # Show assigned accounts when expanded
-                if st.session_state.get(expand_key, False) and current_accounts:
+                # Show assigned accounts when expanded (including pending changes visualization)
+                if st.session_state.get(expand_key, False):
+                    # First show current accounts (excluding pending removes)
                     for i, acc_code in enumerate(current_accounts):
+                        is_pending_remove = acc_code in cat_pending_removes
                         acc = account_lookup.get(acc_code)
                         acc_name = acc["name"][:35] if acc else "Onbekend"
                         acc_col1, acc_col2 = st.columns([4.5, 0.5])
                         with acc_col1:
-                            st.caption(f"{indent}　　`{acc_code}` - {acc_name}")
+                            if is_pending_remove:
+                                # Show strikethrough for pending removes
+                                st.caption(f"{indent}　　~~`{acc_code}` - {acc_name}~~ ❌ _te verwijderen_")
+                            else:
+                                st.caption(f"{indent}　　`{acc_code}` - {acc_name}")
                         with acc_col2:
-                            if st.button("✕", key=f"rm_{cat_key}_{i}", help="Verwijder"):
-                                current_accounts.remove(acc_code)
-                                mapping["categories"][cat_key] = current_accounts
-                                st.session_state.draggable_mapping = mapping
+                            if is_pending_remove:
+                                # Undo remove button
+                                if st.button("↩️", key=f"undo_rm_{cat_key}_{i}", help="Ongedaan maken"):
+                                    st.session_state.pending_removes[cat_key].remove(acc_code)
+                                    if not st.session_state.pending_removes[cat_key]:
+                                        del st.session_state.pending_removes[cat_key]
+                                    st.rerun()
+                            else:
+                                if st.button("✕", key=f"rm_{cat_key}_{i}", help="Verwijder"):
+                                    if edit_mode:
+                                        # In edit mode: add to pending removes
+                                        if cat_key not in st.session_state.pending_removes:
+                                            st.session_state.pending_removes[cat_key] = []
+                                        if acc_code not in st.session_state.pending_removes[cat_key]:
+                                            st.session_state.pending_removes[cat_key].append(acc_code)
+                                        st.rerun()
+                                    else:
+                                        # Normal mode: direct remove
+                                        current_accounts.remove(acc_code)
+                                        mapping["categories"][cat_key] = current_accounts
+                                        st.session_state.draggable_mapping = mapping
+                                        st.rerun()
+
+                    # Show pending adds (in edit mode)
+                    for i, acc_code in enumerate(cat_pending_adds):
+                        acc = account_lookup.get(acc_code)
+                        acc_name = acc["name"][:35] if acc else "Onbekend"
+                        acc_col1, acc_col2 = st.columns([4.5, 0.5])
+                        with acc_col1:
+                            st.caption(f"{indent}　　`{acc_code}` - {acc_name} ✅ _toe te voegen_")
+                        with acc_col2:
+                            # Undo add button
+                            if st.button("↩️", key=f"undo_add_{cat_key}_{i}", help="Ongedaan maken"):
+                                st.session_state.pending_adds[cat_key].remove(acc_code)
+                                if not st.session_state.pending_adds[cat_key]:
+                                    del st.session_state.pending_adds[cat_key]
                                 st.rerun()
 
                 # Show add dialog if active
@@ -2959,9 +3105,17 @@ def render_draggable_mapping_tool(company_id, year):
                     with btn_col1:
                         if st.button("Toevoegen", key=f"confirm_{cat_key}") and selected:
                             code = selected.split(" - ")[0]
-                            current_accounts.append(code)
-                            mapping["categories"][cat_key] = current_accounts
-                            st.session_state.draggable_mapping = mapping
+                            if edit_mode:
+                                # In edit mode: add to pending adds
+                                if cat_key not in st.session_state.pending_adds:
+                                    st.session_state.pending_adds[cat_key] = []
+                                if code not in st.session_state.pending_adds[cat_key]:
+                                    st.session_state.pending_adds[cat_key].append(code)
+                            else:
+                                # Normal mode: direct add
+                                current_accounts.append(code)
+                                mapping["categories"][cat_key] = current_accounts
+                                st.session_state.draggable_mapping = mapping
                             st.session_state[f"adding_to_{cat_key}"] = False
                             st.rerun()
                     with btn_col2:
@@ -3054,18 +3208,32 @@ def render_draggable_mapping_tool(company_id, year):
                 # Extract account codes from selection
                 codes_to_add = [sel.split(" - ")[0] for sel in selected_accounts]
 
-                # Add to target category
-                if target_category not in mapping["categories"]:
-                    mapping["categories"][target_category] = []
+                if edit_mode:
+                    # In edit mode: add to pending adds
+                    if target_category not in st.session_state.pending_adds:
+                        st.session_state.pending_adds[target_category] = []
+                    for code in codes_to_add:
+                        if code not in st.session_state.pending_adds[target_category]:
+                            # Also check it's not already in the mapping
+                            existing = mapping.get("categories", {}).get(target_category, [])
+                            if code not in existing:
+                                st.session_state.pending_adds[target_category].append(code)
+                    st.session_state.bulk_select_accounts = []  # Clear selection
+                    st.success(f"✅ {len(codes_to_add)} rekening(en) toegevoegd aan pending wijzigingen!")
+                    st.rerun()
+                else:
+                    # Normal mode: direct add
+                    if target_category not in mapping["categories"]:
+                        mapping["categories"][target_category] = []
 
-                for code in codes_to_add:
-                    if code not in mapping["categories"][target_category]:
-                        mapping["categories"][target_category].append(code)
+                    for code in codes_to_add:
+                        if code not in mapping["categories"][target_category]:
+                            mapping["categories"][target_category].append(code)
 
-                st.session_state.draggable_mapping = mapping
-                st.session_state.bulk_select_accounts = []  # Clear selection
-                st.success(f"✅ {len(codes_to_add)} rekening(en) toegevoegd!")
-                st.rerun()
+                    st.session_state.draggable_mapping = mapping
+                    st.session_state.bulk_select_accounts = []  # Clear selection
+                    st.success(f"✅ {len(codes_to_add)} rekening(en) toegevoegd!")
+                    st.rerun()
 
         st.markdown("---")
 
@@ -3082,10 +3250,17 @@ def render_draggable_mapping_tool(company_id, year):
     # SAVE / RESET BUTTONS
     # =========================================================================
     st.markdown("---")
+
+    # Warning if in edit mode with pending changes
+    if edit_mode and total_pending > 0:
+        st.warning(f"⚠️ Er zijn {total_pending} pending wijziging(en). Commit of annuleer deze eerst voordat je opslaat of reset.")
+
     save_col1, save_col2, save_col3 = st.columns([1, 1, 2])
 
     with save_col1:
-        if st.button("💾 Opslaan", key="save_mapping", type="primary"):
+        # Disable save in edit mode with pending changes
+        save_disabled = edit_mode and total_pending > 0
+        if st.button("💾 Opslaan", key="save_mapping", type="primary", disabled=save_disabled):
             success, message = save_draggable_mapping(st.session_state.draggable_mapping)
             if success:
                 st.success(f"✅ {message}")
@@ -3094,11 +3269,17 @@ def render_draggable_mapping_tool(company_id, year):
                 st.error(f"❌ {message}")
 
     with save_col2:
-        if st.button("🔄 Reset", key="reset_mapping"):
+        # Disable reset in edit mode with pending changes
+        reset_disabled = edit_mode and total_pending > 0
+        if st.button("🔄 Reset", key="reset_mapping", disabled=reset_disabled):
             st.session_state.draggable_mapping = {
                 "categories": {key: [] for key in REPORT_CATEGORIES.keys() if not REPORT_CATEGORIES[key].get("is_subtotal", False)},
                 "unassigned": []
             }
+            # Also clear edit mode state
+            st.session_state.mapping_edit_mode = False
+            st.session_state.pending_adds = {}
+            st.session_state.pending_removes = {}
             if os.path.exists(MAPPING_STORAGE_FILE):
                 os.remove(MAPPING_STORAGE_FILE)
             st.success("Mapping gereset!")
