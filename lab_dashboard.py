@@ -2544,7 +2544,7 @@ def calculate_forecast_metrics(forecast):
         "ebitda": ebitda,
         "ebitda_margin": ebitda_margin,
         "other_income": other_income,
-        "other_expenses": other_expenses,
+        "other_expenses": total_other_expenses,
         "capex": capex,
         "net_income": net_income,
         "net_margin": net_margin,
