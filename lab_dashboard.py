@@ -2560,7 +2560,7 @@ def calculate_forecast_metrics(forecast):
         "avg_net_margin": sum(net_margin) / num_periods if num_periods > 0 else 0
     }
 
-def get_actual_data_for_comparison(company_id, start_date, num_months):
+def get_actual_data_for_comparison(company_id, start_date, num_months, revenue_patterns=None, cogs_patterns=None, expense_categories=None):
     """
     Fetch actual financial data from Odoo for comparison with forecast.
 
@@ -2568,10 +2568,21 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         company_id: Company ID to filter by
         start_date: Start date string (YYYY-MM-DD)
         num_months: Number of months to fetch
+        revenue_patterns: List of account prefixes for revenue (default: from DEFAULT_ACCOUNT_MAPPING)
+        cogs_patterns: List of account prefixes for COGS (default: from DEFAULT_ACCOUNT_MAPPING)
+        expense_categories: Dict of category code -> name for expenses (default: EXPENSE_CATEGORIES)
 
     Returns:
         Dict with actual data matching forecast structure
     """
+    # Use defaults from mapping if not provided
+    if revenue_patterns is None:
+        revenue_patterns = DEFAULT_ACCOUNT_MAPPING["revenue"]["account_patterns"]
+    if cogs_patterns is None:
+        cogs_patterns = DEFAULT_ACCOUNT_MAPPING["cogs"]["account_patterns"]
+    if expense_categories is None:
+        expense_categories = EXPENSE_CATEGORIES
+
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = start + timedelta(days=32 * num_months)
@@ -2587,27 +2598,33 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
         if company_id:
             base_domain.append(["company_id", "=", company_id])
 
-        # Fetch revenue (accounts starting with 8)
-        revenue_domain = base_domain + [["account_id.code", "=like", "8%"]]
-        revenue_data = odoo_read_group(
-            "account.move.line",
-            revenue_domain,
-            ["balance:sum"],
-            ["date:month"]
-        )
+        # Fetch revenue using configured account patterns
+        revenue_data = []
+        for pattern in revenue_patterns:
+            revenue_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
+            data = odoo_read_group(
+                "account.move.line",
+                revenue_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            revenue_data.extend(data)
 
-        # Fetch COGS (accounts starting with 7)
-        cogs_domain = base_domain + [["account_id.code", "=like", "7%"]]
-        cogs_data = odoo_read_group(
-            "account.move.line",
-            cogs_domain,
-            ["balance:sum"],
-            ["date:month"]
-        )
+        # Fetch COGS using configured account patterns
+        cogs_data = []
+        for pattern in cogs_patterns:
+            cogs_domain = base_domain + [["account_id.code", "=like", f"{pattern}%"]]
+            data = odoo_read_group(
+                "account.move.line",
+                cogs_domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            cogs_data.extend(data)
 
-        # Fetch operating expenses (accounts 40-49)
+        # Fetch operating expenses using configured categories
         expenses_by_category = {}
-        for cat_code in EXPENSE_CATEGORIES.keys():
+        for cat_code in expense_categories.keys():
             exp_domain = base_domain + [["account_id.code", "=like", f"{cat_code}%"]]
             exp_data = odoo_read_group(
                 "account.move.line",
@@ -2624,12 +2641,13 @@ def get_actual_data_for_comparison(company_id, start_date, num_months):
             months.append(current.strftime("%B %Y"))
             current = (current + timedelta(days=32)).replace(day=1)
 
-        # Helper to find value for a month
+        # Helper to sum all values for a month (aggregates multiple entries from different account patterns)
         def get_month_value(data_list, month_str):
+            total = 0
             for item in data_list:
                 if item.get("date:month") == month_str:
-                    return item.get("balance:sum", 0)
-            return 0
+                    total += item.get("balance:sum", 0)
+            return total
 
         actual_revenue = []
         actual_cogs = []
@@ -7880,11 +7898,18 @@ Gegenereerd door LAB Groep Financial Dashboard
                         prev_year_start = datetime(today.year - 1, today.month, 1)
                         start_date_str = prev_year_start.strftime("%Y-%m-%d")
 
-                        # Get actuals from previous year
+                        # Get configured account mapping from user's report structure
+                        acct_mapping = st.session_state.get("forecast_account_mapping", DEFAULT_ACCOUNT_MAPPING)
+                        revenue_patterns = acct_mapping["revenue"]["account_patterns"]
+                        cogs_patterns = acct_mapping["cogs"]["account_patterns"]
+
+                        # Get actuals from previous year using user's configured mapping
                         prev_year_actuals = get_actual_data_for_comparison(
                             company_id=forecast_company,
                             start_date=start_date_str,
-                            num_months=time_period
+                            num_months=time_period,
+                            revenue_patterns=revenue_patterns,
+                            cogs_patterns=cogs_patterns
                         )
 
                         if prev_year_actuals:
@@ -8738,10 +8763,17 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # Fetch actual data button
                 if st.button("🔄 Actuele Data Ophalen", type="primary"):
                     with st.spinner("Actuele data ophalen uit Odoo..."):
+                        # Get configured account mapping from user's report structure
+                        acct_mapping = st.session_state.get("forecast_account_mapping", DEFAULT_ACCOUNT_MAPPING)
+                        revenue_patterns = acct_mapping["revenue"]["account_patterns"]
+                        cogs_patterns = acct_mapping["cogs"]["account_patterns"]
+
                         actual_data = get_actual_data_for_comparison(
                             forecast.get("company_id"),
                             forecast.get("start_date"),
-                            forecast.get("time_period_months", 12)
+                            forecast.get("time_period_months", 12),
+                            revenue_patterns=revenue_patterns,
+                            cogs_patterns=cogs_patterns
                         )
                         if actual_data:
                             st.session_state.actual_data = actual_data
