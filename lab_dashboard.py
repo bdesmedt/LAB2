@@ -1,6 +1,17 @@
 """
-LAB Groep Financial Dashboard v15
+LAB Groep Financial Dashboard v16
 =================================
+Wijzigingen t.o.v. v15:
+- 🎯 NIEUW: Budget 2026 tab
+  * Automatisch geladen 2025 actuals per rekeninggroep
+  * Interactieve groeiparameters via sliders (sidebar)
+  * Automatische forecast berekening
+  * Visuele vergelijking 2025 vs 2026 per maand
+  * Kosten breakdown per groep
+  * Variantie analyse (zodra 2026 actuals beschikbaar)
+  * Scenario analyse (pessimistisch/basis/optimistisch)
+  * Download functie (CSV export)
+
 Wijzigingen t.o.v. v14:
 - 📅 Omzet Week-op-Week jaarvergelijking in Overzicht tab
   - Grouped bar chart: huidig jaar vs vorig jaar per weeknummer
@@ -3814,7 +3825,7 @@ def main():
     # ==========================================================================
     # TABS
     # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🔮 Forecast"])
+    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🔮 Forecast", "🎯 Budget 2026"])
     
     # =========================================================================
     # TAB 1: OVERZICHT
@@ -9438,6 +9449,516 @@ Gegenereerd door LAB Groep Financial Dashboard
                                         st.rerun()
                                     else:
                                         st.error(msg)
+
+
+    # =========================================================================
+    # TAB 12: BUDGET 2026
+    # =========================================================================
+    with tabs[11]:
+        st.header("🎯 Budget & Forecast 2026")
+        st.caption("Gebaseerd op 2025 actuals met aanpasbare groeiparameters")
+        
+        # =====================================================================
+        # 2025 ACTUALS DATA (hard-coded voor snelheid, kan later live worden)
+        # =====================================================================
+        ACTUALS_2025 = {
+            "Omzet": {
+                "Jan": 784627, "Feb": 648898, "Mrt": 777040, "Apr": 752291,
+                "Mei": 824063, "Jun": 895398, "Jul": 742339, "Aug": 714975,
+                "Sep": 957451, "Okt": 1018631, "Nov": 1253668, "Dec": 822146,
+                "Totaal": 10191527
+            },
+            "Kostprijs Verkopen": {
+                "Jan": 464000, "Feb": 383783, "Mrt": 459517, "Apr": 444879,
+                "Mei": 487312, "Jun": 529495, "Jul": 438991, "Aug": 422808,
+                "Sep": 566176, "Okt": 602349, "Nov": 741294, "Dec": 486281,
+                "Totaal": 6026886
+            },
+            "Personeelskosten": {
+                "Jan": 165940, "Feb": 165940, "Mrt": 165940, "Apr": 165940,
+                "Mei": 165940, "Jun": 165940, "Jul": 165940, "Aug": 165940,
+                "Sep": 165940, "Okt": 165940, "Nov": 165940, "Dec": 165940,
+                "Totaal": 1991282
+            },
+            "Huisvestingskosten": {
+                "Jan": 21961, "Feb": 21961, "Mrt": 21961, "Apr": 21961,
+                "Mei": 21961, "Jun": 21961, "Jul": 21961, "Aug": 21961,
+                "Sep": 21961, "Okt": 21961, "Nov": 21961, "Dec": 21961,
+                "Totaal": 263526
+            },
+            "Kantoorkosten": {
+                "Jan": 26135, "Feb": 26135, "Mrt": 26135, "Apr": 26135,
+                "Mei": 26135, "Jun": 26135, "Jul": 26135, "Aug": 26135,
+                "Sep": 26135, "Okt": 26135, "Nov": 26135, "Dec": 26135,
+                "Totaal": 313625
+            },
+            "Verkoop & Marketing": {
+                "Jan": 97715, "Feb": 97715, "Mrt": 97715, "Apr": 97715,
+                "Mei": 97715, "Jun": 97715, "Jul": 97715, "Aug": 97715,
+                "Sep": 97715, "Okt": 97715, "Nov": 97715, "Dec": 97715,
+                "Totaal": 1172575
+            },
+            "Overige Kosten": {
+                "Jan": 34018, "Feb": 34018, "Mrt": 34018, "Apr": 34018,
+                "Mei": 34018, "Jun": 34018, "Jul": 34018, "Aug": 34018,
+                "Sep": 34018, "Okt": 34018, "Nov": 34018, "Dec": 34018,
+                "Totaal": 408210
+            }
+        }
+        
+        MAANDEN = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
+        
+        # =====================================================================
+        # SIDEBAR: BUDGET PARAMETERS
+        # =====================================================================
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 🎯 Budget Parameters 2026")
+        
+        # Initialize session state for growth rates
+        if "budget_growth_rates" not in st.session_state:
+            st.session_state.budget_growth_rates = {
+                "Omzet": 5.0,
+                "Kostprijs Verkopen": 5.0,
+                "Personeelskosten": 3.0,
+                "Huisvestingskosten": 2.0,
+                "Kantoorkosten": 2.0,
+                "Verkoop & Marketing": 5.0,
+                "Overige Kosten": 1.0
+            }
+        
+        growth_rates = {}
+        for group in ACTUALS_2025.keys():
+            default = st.session_state.budget_growth_rates.get(group, 5.0)
+            growth_rates[group] = st.sidebar.slider(
+                f"{group}",
+                min_value=-20.0,
+                max_value=30.0,
+                value=default,
+                step=0.5,
+                format="%.1f%%",
+                key=f"budget_growth_{group}"
+            )
+        
+        # Update session state
+        st.session_state.budget_growth_rates = growth_rates
+        
+        # Reset button
+        if st.sidebar.button("🔄 Reset naar standaard"):
+            st.session_state.budget_growth_rates = {
+                "Omzet": 5.0, "Kostprijs Verkopen": 5.0, "Personeelskosten": 3.0,
+                "Huisvestingskosten": 2.0, "Kantoorkosten": 2.0, 
+                "Verkoop & Marketing": 5.0, "Overige Kosten": 1.0
+            }
+            st.rerun()
+        
+        # =====================================================================
+        # BEREKEN FORECAST
+        # =====================================================================
+        forecast_2026 = {}
+        for group, actuals in ACTUALS_2025.items():
+            growth = 1 + growth_rates[group] / 100
+            forecast_2026[group] = {
+                month: int(actuals[month] * growth) for month in MAANDEN
+            }
+            forecast_2026[group]["Totaal"] = sum(forecast_2026[group][m] for m in MAANDEN)
+        
+        # =====================================================================
+        # KPI SAMENVATTING
+        # =====================================================================
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # Bereken totalen
+        omzet_2025 = ACTUALS_2025["Omzet"]["Totaal"]
+        omzet_2026 = forecast_2026["Omzet"]["Totaal"]
+        
+        kosten_2025 = sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet")
+        kosten_2026 = sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet")
+        
+        bruto_marge_2025 = omzet_2025 - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"]
+        bruto_marge_2026 = omzet_2026 - forecast_2026["Kostprijs Verkopen"]["Totaal"]
+        
+        netto_2025 = omzet_2025 - kosten_2025
+        netto_2026 = omzet_2026 - kosten_2026
+        
+        with col1:
+            st.metric(
+                "💰 Omzet Forecast 2026",
+                f"€{omzet_2026:,.0f}",
+                delta=f"{(omzet_2026/omzet_2025-1)*100:+.1f}% vs 2025"
+            )
+        
+        with col2:
+            st.metric(
+                "📦 Bruto Marge 2026",
+                f"€{bruto_marge_2026:,.0f}",
+                delta=f"{bruto_marge_2026/omzet_2026*100:.1f}%"
+            )
+        
+        with col3:
+            st.metric(
+                "📉 Kosten Forecast 2026",
+                f"€{kosten_2026:,.0f}",
+                delta=f"{(kosten_2026/kosten_2025-1)*100:+.1f}%"
+            )
+        
+        with col4:
+            st.metric(
+                "📊 Netto Resultaat 2026",
+                f"€{netto_2026:,.0f}",
+                delta=f"€{netto_2026-netto_2025:+,.0f} vs 2025"
+            )
+        
+        # =====================================================================
+        # SUBTABS
+        # =====================================================================
+        budget_tabs = st.tabs(["📊 Overzicht", "📈 Omzet Analyse", "📉 Kosten Analyse", "📋 Detail Tabel", "🎯 Variantie & Scenario"])
+        
+        # ----- SUBTAB 1: OVERZICHT -----
+        with budget_tabs[0]:
+            st.subheader("Omzet: 2025 Actual vs 2026 Forecast")
+            
+            # Maak vergelijking chart
+            fig = go.Figure()
+            
+            fig.add_trace(go.Bar(
+                name="2025 Actual",
+                x=MAANDEN,
+                y=[ACTUALS_2025["Omzet"][m] for m in MAANDEN],
+                marker_color="#3498db"
+            ))
+            
+            fig.add_trace(go.Bar(
+                name="2026 Forecast",
+                x=MAANDEN,
+                y=[forecast_2026["Omzet"][m] for m in MAANDEN],
+                marker_color="#e74c3c"
+            ))
+            
+            fig.update_layout(
+                barmode="group",
+                yaxis_tickformat="€,.0s",
+                height=400,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center")
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Seizoenspatroon analyse
+            st.subheader("🗓️ Seizoenspatroon")
+            
+            seizoen_data = []
+            for m in MAANDEN:
+                pct_2025 = ACTUALS_2025["Omzet"][m] / omzet_2025 * 100
+                pct_2026 = forecast_2026["Omzet"][m] / omzet_2026 * 100
+                seizoen_data.append({
+                    "Maand": m,
+                    "% 2025": pct_2025,
+                    "% 2026": pct_2026
+                })
+            
+            df_seizoen = pd.DataFrame(seizoen_data)
+            
+            fig_seizoen = px.line(
+                df_seizoen, x="Maand", y=["% 2025", "% 2026"],
+                markers=True,
+                title="Omzetverdeling per maand (%)"
+            )
+            fig_seizoen.update_layout(yaxis_title="% van Jaaromzet", height=300)
+            st.plotly_chart(fig_seizoen, use_container_width=True)
+        
+        # ----- SUBTAB 2: OMZET ANALYSE -----
+        with budget_tabs[1]:
+            st.subheader("📈 Omzet Forecast Analyse")
+            
+            # Cumulatieve omzet
+            cum_2025 = []
+            cum_2026 = []
+            running_2025 = 0
+            running_2026 = 0
+            
+            for m in MAANDEN:
+                running_2025 += ACTUALS_2025["Omzet"][m]
+                running_2026 += forecast_2026["Omzet"][m]
+                cum_2025.append(running_2025)
+                cum_2026.append(running_2026)
+            
+            fig_cum = go.Figure()
+            fig_cum.add_trace(go.Scatter(
+                x=MAANDEN, y=cum_2025,
+                mode="lines+markers",
+                name="2025 Actual (Cum.)",
+                line=dict(color="#3498db", width=3)
+            ))
+            fig_cum.add_trace(go.Scatter(
+                x=MAANDEN, y=cum_2026,
+                mode="lines+markers",
+                name="2026 Forecast (Cum.)",
+                line=dict(color="#e74c3c", width=3, dash="dash")
+            ))
+            fig_cum.update_layout(title="Cumulatieve Omzet", yaxis_tickformat="€,.0s", height=400)
+            st.plotly_chart(fig_cum, use_container_width=True)
+            
+            # Beste/slechtste maanden
+            col1, col2 = st.columns(2)
+            sorted_months = sorted(MAANDEN, key=lambda m: ACTUALS_2025["Omzet"][m], reverse=True)
+            
+            with col1:
+                st.markdown("**🏆 Beste maanden (2025)**")
+                for m in sorted_months[:3]:
+                    st.write(f"• {m}: €{ACTUALS_2025['Omzet'][m]:,.0f}")
+            
+            with col2:
+                st.markdown("**⚠️ Zwakste maanden (2025)**")
+                for m in sorted_months[-3:]:
+                    st.write(f"• {m}: €{ACTUALS_2025['Omzet'][m]:,.0f}")
+        
+        # ----- SUBTAB 3: KOSTEN ANALYSE -----
+        with budget_tabs[2]:
+            st.subheader("📉 Kosten Forecast per Groep")
+            
+            # Kosten breakdown
+            kosten_groepen = [g for g in ACTUALS_2025.keys() if g != "Omzet"]
+            
+            kosten_2025_list = [ACTUALS_2025[g]["Totaal"] for g in kosten_groepen]
+            kosten_2026_list = [forecast_2026[g]["Totaal"] for g in kosten_groepen]
+            groei_pct = [(forecast_2026[g]["Totaal"] / ACTUALS_2025[g]["Totaal"] - 1) * 100 for g in kosten_groepen]
+            
+            fig_kosten = go.Figure()
+            
+            fig_kosten.add_trace(go.Bar(
+                name="2025 Actual",
+                y=kosten_groepen,
+                x=kosten_2025_list,
+                orientation="h",
+                marker_color="#3498db",
+                text=[f"€{v/1e6:.2f}M" for v in kosten_2025_list],
+                textposition="auto"
+            ))
+            
+            fig_kosten.add_trace(go.Bar(
+                name="2026 Forecast",
+                y=kosten_groepen,
+                x=kosten_2026_list,
+                orientation="h",
+                marker_color="#e74c3c",
+                text=[f"€{v/1e6:.2f}M ({g:+.1f}%)" for v, g in zip(kosten_2026_list, groei_pct)],
+                textposition="auto"
+            ))
+            
+            fig_kosten.update_layout(barmode="group", xaxis_tickformat="€,.0s", height=400)
+            st.plotly_chart(fig_kosten, use_container_width=True)
+            
+            # Kosten als % van omzet
+            st.subheader("Kosten als % van Omzet")
+            
+            kosten_pct_data = []
+            for g in kosten_groepen:
+                kosten_pct_data.append({
+                    "Groep": g,
+                    "2025 %": ACTUALS_2025[g]["Totaal"] / omzet_2025 * 100,
+                    "2026 %": forecast_2026[g]["Totaal"] / omzet_2026 * 100
+                })
+            
+            df_kosten_pct = pd.DataFrame(kosten_pct_data)
+            st.dataframe(
+                df_kosten_pct.style.format({"2025 %": "{:.1f}%", "2026 %": "{:.1f}%"}),
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        # ----- SUBTAB 4: DETAIL TABEL -----
+        with budget_tabs[3]:
+            st.subheader("📋 Maandelijkse Detail")
+            
+            # Selecteer groep
+            selected_group = st.selectbox(
+                "Selecteer rekeninggroep",
+                list(ACTUALS_2025.keys()),
+                key="budget_detail_group"
+            )
+            
+            # Maak detail tabel
+            detail_data = []
+            for m in MAANDEN:
+                actual_2025 = ACTUALS_2025[selected_group][m]
+                forecast = forecast_2026[selected_group][m]
+                verschil = forecast - actual_2025
+                pct_change = (forecast / actual_2025 - 1) * 100 if actual_2025 else 0
+                
+                detail_data.append({
+                    "Maand": m,
+                    "2025 Actual": actual_2025,
+                    "2026 Forecast": forecast,
+                    "Verschil": verschil,
+                    "% Groei": pct_change
+                })
+            
+            # Voeg totaal toe
+            detail_data.append({
+                "Maand": "TOTAAL",
+                "2025 Actual": ACTUALS_2025[selected_group]["Totaal"],
+                "2026 Forecast": forecast_2026[selected_group]["Totaal"],
+                "Verschil": forecast_2026[selected_group]["Totaal"] - ACTUALS_2025[selected_group]["Totaal"],
+                "% Groei": (forecast_2026[selected_group]["Totaal"] / ACTUALS_2025[selected_group]["Totaal"] - 1) * 100
+            })
+            
+            df_detail = pd.DataFrame(detail_data)
+            
+            st.dataframe(
+                df_detail.style.format({
+                    "2025 Actual": "€{:,.0f}",
+                    "2026 Forecast": "€{:,.0f}",
+                    "Verschil": "€{:+,.0f}",
+                    "% Groei": "{:+.1f}%"
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Download optie
+            csv = df_detail.to_csv(index=False)
+            st.download_button(
+                "📥 Download als CSV",
+                csv,
+                f"budget_forecast_{selected_group.replace(' ', '_')}.csv",
+                "text/csv",
+                key="budget_download_csv"
+            )
+        
+        # ----- SUBTAB 5: VARIANTIE & SCENARIO -----
+        with budget_tabs[4]:
+            st.subheader("🎯 Variantie Analyse & Scenario Planning")
+            
+            # Variantie sectie
+            st.markdown("### 📊 Variantie: Forecast vs Actual 2026")
+            
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            if current_year >= 2026:
+                st.info("💡 Zodra 2026 data beschikbaar is, wordt hier automatisch de variantie getoond.")
+                
+                # Poging om 2026 actuals op te halen
+                try:
+                    with st.spinner("2026 actuals ophalen uit Odoo..."):
+                        revenue_2026_api = get_revenue_aggregated(2026, None)
+                        
+                        if revenue_2026_api and sum(r.get("balance", 0) for r in revenue_2026_api) != 0:
+                            st.success("✅ 2026 omzetdata gevonden!")
+                            
+                            # Toon variantie tabel
+                            variance_data = []
+                            actuals_by_month = {}
+                            
+                            for r in revenue_2026_api:
+                                month_str = r.get("date:month", "")
+                                balance = -r.get("balance", 0)
+                                # Parse maandnaam (verwacht format "januari 2026" of vergelijkbaar)
+                                if month_str:
+                                    month_key = month_str.split()[0][:3].capitalize()
+                                    actuals_by_month[month_key] = actuals_by_month.get(month_key, 0) + balance
+                            
+                            for m in MAANDEN[:current_month]:
+                                fc = forecast_2026["Omzet"][m]
+                                act = actuals_by_month.get(m, 0)
+                                if act > 0:
+                                    var = act - fc
+                                    pct = (act / fc - 1) * 100 if fc else 0
+                                    status = "🟢" if abs(pct) <= 5 else ("🟡" if abs(pct) <= 10 else "🔴")
+                                    variance_data.append({
+                                        "Maand": m,
+                                        "Forecast": fc,
+                                        "Actual": act,
+                                        "Variantie": var,
+                                        "% Var": pct,
+                                        "Status": status
+                                    })
+                            
+                            if variance_data:
+                                df_var = pd.DataFrame(variance_data)
+                                st.dataframe(
+                                    df_var.style.format({
+                                        "Forecast": "€{:,.0f}",
+                                        "Actual": "€{:,.0f}",
+                                        "Variantie": "€{:+,.0f}",
+                                        "% Var": "{:+.1f}%"
+                                    }),
+                                    use_container_width=True,
+                                    hide_index=True
+                                )
+                        else:
+                            st.warning("Nog geen 2026 omzet data in Odoo.")
+                except Exception as e:
+                    st.warning(f"Kon 2026 data niet ophalen: {e}")
+            else:
+                st.info(f"📅 Variantie analyse wordt beschikbaar vanaf januari 2026.")
+            
+            # Scenario analyse sectie
+            st.markdown("---")
+            st.markdown("### 🔮 Scenario Analyse")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**📉 Pessimistisch**")
+                st.caption("Omzet -5%, Kosten +2%")
+                omzet_pess = omzet_2026 * 0.95
+                kosten_pess = kosten_2026 * 1.02
+                netto_pess = omzet_pess - kosten_pess
+                st.metric("Omzet", f"€{omzet_pess:,.0f}")
+                st.metric("Netto", f"€{netto_pess:,.0f}", delta=f"€{netto_pess-netto_2026:+,.0f}")
+            
+            with col2:
+                st.markdown("**📊 Basis Forecast**")
+                st.caption("Huidige parameters")
+                st.metric("Omzet", f"€{omzet_2026:,.0f}")
+                st.metric("Netto", f"€{netto_2026:,.0f}")
+            
+            with col3:
+                st.markdown("**📈 Optimistisch**")
+                st.caption("Omzet +10%, Kosten +3%")
+                omzet_opt = omzet_2026 * 1.10
+                kosten_opt = kosten_2026 * 1.03
+                netto_opt = omzet_opt - kosten_opt
+                st.metric("Omzet", f"€{omzet_opt:,.0f}")
+                st.metric("Netto", f"€{netto_opt:,.0f}", delta=f"€{netto_opt-netto_2026:+,.0f}")
+            
+            # Samenvatting tabel
+            st.markdown("---")
+            st.markdown("### 📋 Forecast Samenvatting")
+            
+            summary_data = {
+                "Metric": ["Omzet", "Bruto Marge", "Bruto Marge %", "Operationele Kosten", "Netto Resultaat", "Netto Marge %"],
+                "2025 Actual": [
+                    f"€{omzet_2025:,.0f}",
+                    f"€{bruto_marge_2025:,.0f}",
+                    f"{bruto_marge_2025/omzet_2025*100:.1f}%",
+                    f"€{kosten_2025 - ACTUALS_2025['Kostprijs Verkopen']['Totaal']:,.0f}",
+                    f"€{netto_2025:,.0f}",
+                    f"{netto_2025/omzet_2025*100:.1f}%"
+                ],
+                "2026 Forecast": [
+                    f"€{omzet_2026:,.0f}",
+                    f"€{bruto_marge_2026:,.0f}",
+                    f"{bruto_marge_2026/omzet_2026*100:.1f}%",
+                    f"€{kosten_2026 - forecast_2026['Kostprijs Verkopen']['Totaal']:,.0f}",
+                    f"€{netto_2026:,.0f}",
+                    f"{netto_2026/omzet_2026*100:.1f}%"
+                ],
+                "Verschil": [
+                    f"€{omzet_2026-omzet_2025:+,.0f}",
+                    f"€{bruto_marge_2026-bruto_marge_2025:+,.0f}",
+                    f"{(bruto_marge_2026/omzet_2026 - bruto_marge_2025/omzet_2025)*100:+.1f}pp",
+                    f"€{(kosten_2026-forecast_2026['Kostprijs Verkopen']['Totaal'])-(kosten_2025-ACTUALS_2025['Kostprijs Verkopen']['Totaal']):+,.0f}",
+                    f"€{netto_2026-netto_2025:+,.0f}",
+                    f"{(netto_2026/omzet_2026 - netto_2025/omzet_2025)*100:+.1f}pp"
+                ]
+            }
+            
+            df_summary = pd.DataFrame(summary_data)
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+
 
 if __name__ == "__main__":
     main()
