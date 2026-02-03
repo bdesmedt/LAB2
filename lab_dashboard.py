@@ -1,6 +1,16 @@
 """
-LAB Groep Financial Dashboard v14
+LAB Groep Financial Dashboard v15
 =================================
+Wijzigingen t.o.v. v14:
+- 📅 Omzet Week-op-Week jaarvergelijking in Overzicht tab
+  - Grouped bar chart: huidig jaar vs vorig jaar per weeknummer
+  - YoY statistieken (totaal, verschil, percentage)
+- 📊 Categorie Trend subtab in Producten tab
+  - Productcategorie filter (selectbox)
+  - Week-op-week omzet grafiek per geselecteerde categorie
+  - Cumulatieve omzet grafiek per geselecteerde categorie
+  - Ondersteuning voor zowel factuur- als POS-data (Conceptstore)
+
 Wijzigingen t.o.v. v13:
 - 🔮 Financial Forecast module toegevoegd
   - Handmatige forecast invoer met omzet, COGS, en operationele kosten
@@ -1410,6 +1420,73 @@ def get_pos_product_sales(year, company_id=None):
         include_archived=True
     )
     
+    return lines
+
+@st.cache_data(ttl=300)
+def get_product_sales_with_dates(year, company_id=None):
+    """Haal verkopen per product op inclusief datum voor trend-analyse"""
+    domain = [
+        ["move_id.move_type", "=", "out_invoice"],
+        ["move_id.state", "=", "posted"],
+        ["move_id.invoice_date", ">=", f"{year}-01-01"],
+        ["move_id.invoice_date", "<=", f"{year}-12-31"],
+        ["product_id", "!=", False]
+    ]
+    if company_id:
+        domain.append(["company_id", "=", company_id])
+
+    return odoo_call(
+        "account.move.line", "search_read",
+        domain,
+        ["product_id", "price_subtotal", "quantity", "company_id", "date"],
+        limit=50000,
+        include_archived=True
+    )
+
+@st.cache_data(ttl=300)
+def get_pos_product_sales_with_dates(year, company_id=None):
+    """Haal POS verkopen op met datum info voor trend-analyse"""
+    domain = [
+        ["state", "in", ["paid", "done", "invoiced"]],
+        ["date_order", ">=", f"{year}-01-01"],
+        ["date_order", "<=", f"{year}-12-31 23:59:59"]
+    ]
+    if company_id:
+        domain.append(["company_id", "=", company_id])
+
+    orders = odoo_call(
+        "pos.order", "search_read",
+        domain,
+        ["id", "name", "date_order", "amount_total"],
+        limit=50000,
+        include_archived=True
+    )
+
+    if not orders:
+        return []
+
+    # Map order_id -> date
+    order_dates = {}
+    for o in orders:
+        date_str = o.get("date_order", "")
+        order_dates[o["id"]] = date_str[:10] if date_str else ""
+
+    order_ids = [o["id"] for o in orders]
+
+    lines = odoo_call(
+        "pos.order.line", "search_read",
+        [["order_id", "in", order_ids]],
+        ["product_id", "price_subtotal_incl", "price_subtotal", "qty", "order_id"],
+        limit=100000,
+        include_archived=True
+    )
+
+    # Voeg datum toe aan elke regel
+    for line in lines:
+        order_ref = line.get("order_id")
+        order_id = order_ref[0] if isinstance(order_ref, list) else order_ref
+        line["date"] = order_dates.get(order_id, "")
+
     return lines
 
 @st.cache_data(ttl=300)
@@ -4045,7 +4122,118 @@ def main():
                     st.metric("📅 Aantal dagen", f"{len(df_daily)}")
             else:
                 st.info("Geen dagdata beschikbaar voor geselecteerde periode")
-    
+
+        # =====================================================================
+        # OMZET WEEK-OP-WEEK: JAARVERGELIJKING
+        # =====================================================================
+        st.markdown("---")
+        st.subheader("📅 Omzet Week-op-Week: Vergelijking met Vorig Jaar" + (" (excl. IC)" if exclude_intercompany else ""))
+
+        prev_year = selected_year - 1
+        with st.spinner(f"Weekdata {selected_year} en {prev_year} laden..."):
+            weekly_current = get_weekly_revenue(selected_year, company_id, exclude_intercompany)
+            weekly_prev = get_weekly_revenue(prev_year, company_id, exclude_intercompany)
+
+        if weekly_current or weekly_prev:
+            # Bouw DataFrames geïndexeerd op weeknummer
+            df_cur = pd.DataFrame(weekly_current) if weekly_current else pd.DataFrame(columns=["week_num", "omzet"])
+            df_prev = pd.DataFrame(weekly_prev) if weekly_prev else pd.DataFrame(columns=["week_num", "omzet"])
+
+            # Aggregeer per weeknummer (voor het geval er duplicaten zijn)
+            if not df_cur.empty:
+                df_cur = df_cur.groupby("week_num", as_index=False)["omzet"].sum()
+            if not df_prev.empty:
+                df_prev = df_prev.groupby("week_num", as_index=False)["omzet"].sum()
+
+            # Maak een volledig weeknummer bereik (1-53)
+            all_weeks = sorted(set(
+                list(df_cur["week_num"].unique() if not df_cur.empty else []) +
+                list(df_prev["week_num"].unique() if not df_prev.empty else [])
+            ))
+
+            # Merge op weeknummer
+            df_yoy = pd.DataFrame({"Week": all_weeks})
+            if not df_cur.empty:
+                df_yoy = df_yoy.merge(
+                    df_cur.rename(columns={"omzet": f"Omzet {selected_year}"}),
+                    left_on="Week", right_on="week_num", how="left"
+                ).drop(columns=["week_num"], errors="ignore")
+            else:
+                df_yoy[f"Omzet {selected_year}"] = 0
+
+            if not df_prev.empty:
+                df_yoy = df_yoy.merge(
+                    df_prev.rename(columns={"omzet": f"Omzet {prev_year}"}),
+                    left_on="Week", right_on="week_num", how="left"
+                ).drop(columns=["week_num"], errors="ignore")
+            else:
+                df_yoy[f"Omzet {prev_year}"] = 0
+
+            df_yoy = df_yoy.fillna(0)
+
+            fig_yoy = go.Figure()
+
+            # Vorig jaar als lichtere achtergrond
+            fig_yoy.add_trace(go.Bar(
+                x=df_yoy["Week"],
+                y=df_yoy[f"Omzet {prev_year}"],
+                name=str(prev_year),
+                marker_color="#87CEEB",
+                opacity=0.6,
+                hovertemplate=f"<b>Week %{{x}}</b><br>{prev_year}: €%{{y:,.0f}}<extra></extra>"
+            ))
+
+            # Huidig jaar als donkere balk
+            fig_yoy.add_trace(go.Bar(
+                x=df_yoy["Week"],
+                y=df_yoy[f"Omzet {selected_year}"],
+                name=str(selected_year),
+                marker_color="#1e3a5f",
+                hovertemplate=f"<b>Week %{{x}}</b><br>{selected_year}: €%{{y:,.0f}}<extra></extra>"
+            ))
+
+            fig_yoy.update_layout(
+                barmode="group",
+                height=450,
+                xaxis=dict(
+                    title="Weeknummer",
+                    dtick=2,
+                    tickformat="d"
+                ),
+                yaxis=dict(
+                    title="Omzet (€)",
+                    tickformat=",.0f",
+                    gridcolor="#e0e0e0"
+                ),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                hovermode="x unified",
+                plot_bgcolor="white"
+            )
+
+            st.plotly_chart(fig_yoy, use_container_width=True)
+
+            # YoY statistieken
+            total_cur = df_yoy[f"Omzet {selected_year}"].sum()
+            total_prev = df_yoy[f"Omzet {prev_year}"].sum()
+            yoy_change = ((total_cur - total_prev) / total_prev * 100) if total_prev > 0 else 0
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(f"Totaal {selected_year}", f"€{total_cur:,.0f}")
+            with col2:
+                st.metric(f"Totaal {prev_year}", f"€{total_prev:,.0f}")
+            with col3:
+                st.metric("Verschil YoY", f"{yoy_change:+.1f}%",
+                         delta=f"€{total_cur - total_prev:+,.0f}")
+        else:
+            st.info("Geen weekdata beschikbaar voor de jaarvergelijking")
+
     # =========================================================================
     # TAB 2: BANK
     # =========================================================================
@@ -4253,7 +4441,7 @@ def main():
         st.header("🏆 Productanalyse")
         
         # Subtabs voor producten
-        prod_subtabs = st.tabs(["📦 Productcategorieën", "🏅 Top Producten", "🎨 Verf vs Behang"])
+        prod_subtabs = st.tabs(["📦 Productcategorieën", "🏅 Top Producten", "🎨 Verf vs Behang", "📊 Categorie Trend"])
         
         # Subtab 1: Productcategorieën
         with prod_subtabs[0]:
@@ -4441,7 +4629,165 @@ def main():
             else:
                 st.info("ℹ️ De Verf vs Behang analyse is alleen beschikbaar voor LAB Projects. "
                        "Selecteer 'LAB Projects' of 'Alle bedrijven' in de sidebar.")
-    
+
+        # Subtab 4: Categorie Trend (WoW + Cumulatief)
+        with prod_subtabs[3]:
+            st.subheader(f"📊 Omzet per Categorie - Week Trend {selected_year}")
+
+            is_conceptstore = company_id == 1
+
+            with st.spinner("Productdata met datums laden..."):
+                if is_conceptstore:
+                    cat_trend_sales = get_pos_product_sales_with_dates(selected_year, company_id)
+                else:
+                    cat_trend_sales = get_product_sales_with_dates(selected_year, company_id)
+
+            if cat_trend_sales:
+                # Verzamel product IDs en haal categorieën op
+                cat_trend_product_ids = tuple(set(
+                    p.get("product_id", [None])[0] for p in cat_trend_sales if p.get("product_id")
+                ))
+                cat_trend_cats = {}
+                if cat_trend_product_ids:
+                    cat_trend_cats = get_product_categories_for_ids(cat_trend_product_ids)
+
+                # Bouw lijst van unieke categorieën
+                category_names = set()
+                for p in cat_trend_sales:
+                    prod = p.get("product_id")
+                    if prod:
+                        cat = cat_trend_cats.get(prod[0], [None, "Onbekend"])
+                        category_names.add(cat[1] if cat else "Onbekend")
+
+                category_names = sorted(category_names)
+
+                if category_names:
+                    selected_category = st.selectbox(
+                        "Selecteer productcategorie",
+                        category_names,
+                        key="cat_trend_filter"
+                    )
+
+                    # Filter sales op geselecteerde categorie en groepeer per week
+                    from datetime import datetime as dt_cls
+                    weekly_cat = {}
+                    qty_field = "qty" if is_conceptstore else "quantity"
+
+                    for p in cat_trend_sales:
+                        prod = p.get("product_id")
+                        if not prod:
+                            continue
+                        cat = cat_trend_cats.get(prod[0], [None, "Onbekend"])
+                        cat_name = cat[1] if cat else "Onbekend"
+                        if cat_name != selected_category:
+                            continue
+
+                        date_str = p.get("date", "")
+                        if not date_str:
+                            continue
+
+                        try:
+                            d = dt_cls.strptime(date_str[:10], "%Y-%m-%d")
+                            iso_cal = d.isocalendar()
+                            week_num = iso_cal[1]
+                            # Maandag van deze week als datum
+                            week_start = dt_cls.strptime(f"{iso_cal[0]}-W{week_num:02d}-1", "%G-W%V-%u")
+                            week_key = week_start.strftime("%Y-%m-%d")
+                        except (ValueError, IndexError):
+                            continue
+
+                        if week_key not in weekly_cat:
+                            weekly_cat[week_key] = {"week_num": week_num, "omzet": 0, "aantal": 0}
+                        weekly_cat[week_key]["omzet"] += p.get("price_subtotal", 0)
+                        weekly_cat[week_key]["aantal"] += p.get(qty_field, 0)
+
+                    if weekly_cat:
+                        df_cat_trend = pd.DataFrame([
+                            {"date": k, "week_num": v["week_num"], "omzet": v["omzet"], "aantal": v["aantal"]}
+                            for k, v in sorted(weekly_cat.items())
+                        ])
+
+                        # Cumulatieve omzet berekenen
+                        df_cat_trend["cumulatief"] = df_cat_trend["omzet"].cumsum()
+
+                        # Grafiek 1: Week-op-Week omzet
+                        st.markdown("#### Week-op-Week Omzet")
+                        fig_cat_wow = go.Figure()
+
+                        fig_cat_wow.add_trace(go.Bar(
+                            x=df_cat_trend["date"],
+                            y=df_cat_trend["omzet"],
+                            name="Weekomzet",
+                            marker_color="#1e3a5f",
+                            hovertemplate="<b>Week %{customdata}</b><br>Omzet: €%{y:,.0f}<extra></extra>",
+                            customdata=df_cat_trend["week_num"]
+                        ))
+
+                        # Trendlijn (4-weeks voortschrijdend gemiddelde)
+                        fig_cat_wow.add_trace(go.Scatter(
+                            x=df_cat_trend["date"],
+                            y=df_cat_trend["omzet"].rolling(window=4, min_periods=1).mean(),
+                            name="4-weeks gemiddelde",
+                            line=dict(color="#FF6B6B", width=2, dash="dash"),
+                            hovertemplate="Gemiddelde: €%{y:,.0f}<extra></extra>"
+                        ))
+
+                        fig_cat_wow.update_layout(
+                            height=400,
+                            xaxis=dict(title="", type="date", tickformat="Week %W<br>%b", dtick="M1"),
+                            yaxis=dict(title="Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            hovermode="x unified",
+                            plot_bgcolor="white"
+                        )
+
+                        st.plotly_chart(fig_cat_wow, use_container_width=True)
+
+                        # Grafiek 2: Cumulatieve omzet
+                        st.markdown("#### Cumulatieve Omzet")
+                        fig_cat_cum = go.Figure()
+
+                        fig_cat_cum.add_trace(go.Scatter(
+                            x=df_cat_trend["date"],
+                            y=df_cat_trend["cumulatief"],
+                            name="Cumulatieve omzet",
+                            fill="tozeroy",
+                            line=dict(color="#1e3a5f", width=2),
+                            fillcolor="rgba(30, 58, 95, 0.15)",
+                            hovertemplate="<b>Week %{customdata}</b><br>Cumulatief: €%{y:,.0f}<extra></extra>",
+                            customdata=df_cat_trend["week_num"]
+                        ))
+
+                        fig_cat_cum.update_layout(
+                            height=400,
+                            xaxis=dict(title="", type="date", tickformat="Week %W<br>%b", dtick="M1"),
+                            yaxis=dict(title="Cumulatieve Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            hovermode="x unified",
+                            plot_bgcolor="white"
+                        )
+
+                        st.plotly_chart(fig_cat_cum, use_container_width=True)
+
+                        # Statistieken
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Totaal omzet", f"€{df_cat_trend['omzet'].sum():,.0f}")
+                        with col2:
+                            st.metric("Gemiddeld/week", f"€{df_cat_trend['omzet'].mean():,.0f}")
+                        with col3:
+                            if not df_cat_trend.empty:
+                                best = df_cat_trend.loc[df_cat_trend['omzet'].idxmax()]
+                                st.metric("Beste week", f"€{best['omzet']:,.0f}", f"Week {int(best['week_num'])}")
+                        with col4:
+                            st.metric("Aantal weken", f"{len(df_cat_trend)}")
+                    else:
+                        st.info(f"Geen weekdata beschikbaar voor categorie '{selected_category}'")
+                else:
+                    st.info("Geen productcategorieën gevonden")
+            else:
+                st.info("Geen productverkopen gevonden voor deze selectie")
+
     # =========================================================================
     # TAB 5: KLANTENKAART (nieuw!)
     # =========================================================================
