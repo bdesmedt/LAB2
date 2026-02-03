@@ -4746,182 +4746,137 @@ def main():
 
                     if weekly_cat or weekly_cat_prev:
                         df_cur = pd.DataFrame([
-                            {"date": k, "week_num": v["week_num"], "omzet": v["omzet"], "aantal": v["aantal"]}
+                            {"week_num": v["week_num"], "omzet": v["omzet"], "aantal": v["aantal"]}
                             for k, v in sorted(weekly_cat.items())
-                        ]) if weekly_cat else pd.DataFrame(columns=["date", "week_num", "omzet", "aantal"])
+                        ]) if weekly_cat else pd.DataFrame(columns=["week_num", "omzet", "aantal"])
 
                         df_prev = pd.DataFrame([
-                            {"date": k, "week_num": v["week_num"], "omzet": v["omzet"], "aantal": v["aantal"]}
+                            {"week_num": v["week_num"], "omzet": v["omzet"], "aantal": v["aantal"]}
                             for k, v in sorted(weekly_cat_prev.items())
-                        ]) if weekly_cat_prev else pd.DataFrame(columns=["date", "week_num", "omzet", "aantal"])
+                        ]) if weekly_cat_prev else pd.DataFrame(columns=["week_num", "omzet", "aantal"])
 
-                        # ---- Grafiek 1: Week-op-Week omzet (huidig jaar) ----
-                        st.markdown("#### Week-op-Week Omzet")
-
+                        # Aggregeer per weeknummer
                         if not df_cur.empty:
-                            # Cumulatieve omzet berekenen
-                            df_cur["cumulatief"] = df_cur["omzet"].cumsum()
-
-                            fig_cat_wow = go.Figure()
-
-                            fig_cat_wow.add_trace(go.Bar(
-                                x=df_cur["date"],
-                                y=df_cur["omzet"],
-                                name="Weekomzet",
-                                marker_color="#1e3a5f",
-                                hovertemplate="<b>Week %{customdata}</b><br>Omzet: €%{y:,.0f}<extra></extra>",
-                                customdata=df_cur["week_num"]
-                            ))
-
-                            fig_cat_wow.add_trace(go.Scatter(
-                                x=df_cur["date"],
-                                y=df_cur["omzet"].rolling(window=4, min_periods=1).mean(),
-                                name="4-weeks gemiddelde",
-                                line=dict(color="#FF6B6B", width=2, dash="dash"),
-                                hovertemplate="Gemiddelde: €%{y:,.0f}<extra></extra>"
-                            ))
-
-                            fig_cat_wow.update_layout(
-                                height=400,
-                                xaxis=dict(title="", type="date", tickformat="Week %W<br>%b", dtick="M1"),
-                                yaxis=dict(title="Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                hovermode="x unified",
-                                plot_bgcolor="white"
-                            )
-
-                            st.plotly_chart(fig_cat_wow, use_container_width=True)
-                        else:
-                            st.info(f"Geen weekdata voor {selected_year}")
-
-                        # ---- Grafiek 2: Cumulatieve omzet ----
-                        st.markdown("#### Cumulatieve Omzet")
-
-                        if not df_cur.empty:
-                            fig_cat_cum = go.Figure()
-
-                            fig_cat_cum.add_trace(go.Scatter(
-                                x=df_cur["date"],
-                                y=df_cur["cumulatief"],
-                                name="Cumulatieve omzet",
-                                fill="tozeroy",
-                                line=dict(color="#1e3a5f", width=2),
-                                fillcolor="rgba(30, 58, 95, 0.15)",
-                                hovertemplate="<b>Week %{customdata}</b><br>Cumulatief: €%{y:,.0f}<extra></extra>",
-                                customdata=df_cur["week_num"]
-                            ))
-
-                            fig_cat_cum.update_layout(
-                                height=400,
-                                xaxis=dict(title="", type="date", tickformat="Week %W<br>%b", dtick="M1"),
-                                yaxis=dict(title="Cumulatieve Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                hovermode="x unified",
-                                plot_bgcolor="white"
-                            )
-
-                            st.plotly_chart(fig_cat_cum, use_container_width=True)
-
-                        # ---- Grafiek 3: YoY Vergelijking per weeknummer ----
-                        st.markdown("---")
-                        st.markdown(f"#### Vergelijking {selected_year} vs {prev_year}")
-
-                        # Aggregeer per weeknummer voor vergelijking
-                        if not df_cur.empty:
-                            cur_by_wk = df_cur.groupby("week_num", as_index=False)["omzet"].sum()
-                        else:
-                            cur_by_wk = pd.DataFrame(columns=["week_num", "omzet"])
+                            df_cur = df_cur.groupby("week_num", as_index=False)["omzet"].sum()
                         if not df_prev.empty:
-                            prev_by_wk = df_prev.groupby("week_num", as_index=False)["omzet"].sum()
-                        else:
-                            prev_by_wk = pd.DataFrame(columns=["week_num", "omzet"])
+                            df_prev = df_prev.groupby("week_num", as_index=False)["omzet"].sum()
 
+                        # Merge beide jaren op weeknummer
                         all_weeks = sorted(set(
-                            list(cur_by_wk["week_num"].unique() if not cur_by_wk.empty else []) +
-                            list(prev_by_wk["week_num"].unique() if not prev_by_wk.empty else [])
+                            list(df_cur["week_num"].unique() if not df_cur.empty else []) +
+                            list(df_prev["week_num"].unique() if not df_prev.empty else [])
+                        ))
+                        df_merged = pd.DataFrame({"Week": all_weeks})
+
+                        if not df_cur.empty:
+                            df_merged = df_merged.merge(
+                                df_cur.rename(columns={"omzet": f"Omzet {selected_year}"}),
+                                left_on="Week", right_on="week_num", how="left"
+                            ).drop(columns=["week_num"], errors="ignore")
+                        else:
+                            df_merged[f"Omzet {selected_year}"] = 0
+
+                        if not df_prev.empty:
+                            df_merged = df_merged.merge(
+                                df_prev.rename(columns={"omzet": f"Omzet {prev_year}"}),
+                                left_on="Week", right_on="week_num", how="left"
+                            ).drop(columns=["week_num"], errors="ignore")
+                        else:
+                            df_merged[f"Omzet {prev_year}"] = 0
+
+                        df_merged = df_merged.fillna(0)
+
+                        # Cumulatief per jaar
+                        df_merged[f"Cumulatief {selected_year}"] = df_merged[f"Omzet {selected_year}"].cumsum()
+                        df_merged[f"Cumulatief {prev_year}"] = df_merged[f"Omzet {prev_year}"].cumsum()
+
+                        # ---- Grafiek 1: Week-op-Week vergelijking ----
+                        st.markdown(f"#### Week-op-Week: {selected_year} vs {prev_year}")
+
+                        fig_wow = go.Figure()
+
+                        fig_wow.add_trace(go.Bar(
+                            x=df_merged["Week"],
+                            y=df_merged[f"Omzet {prev_year}"],
+                            name=str(prev_year),
+                            marker_color="#87CEEB",
+                            opacity=0.6,
+                            hovertemplate=f"<b>Week %{{x}}</b><br>{prev_year}: €%{{y:,.0f}}<extra></extra>"
                         ))
 
-                        if all_weeks:
-                            df_yoy_cat = pd.DataFrame({"Week": all_weeks})
+                        fig_wow.add_trace(go.Bar(
+                            x=df_merged["Week"],
+                            y=df_merged[f"Omzet {selected_year}"],
+                            name=str(selected_year),
+                            marker_color="#1e3a5f",
+                            hovertemplate=f"<b>Week %{{x}}</b><br>{selected_year}: €%{{y:,.0f}}<extra></extra>"
+                        ))
 
-                            if not cur_by_wk.empty:
-                                df_yoy_cat = df_yoy_cat.merge(
-                                    cur_by_wk.rename(columns={"omzet": f"Omzet {selected_year}"}),
-                                    left_on="Week", right_on="week_num", how="left"
-                                ).drop(columns=["week_num"], errors="ignore")
-                            else:
-                                df_yoy_cat[f"Omzet {selected_year}"] = 0
+                        fig_wow.update_layout(
+                            barmode="group",
+                            height=450,
+                            xaxis=dict(title="Weeknummer", dtick=2, tickformat="d"),
+                            yaxis=dict(title="Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            hovermode="x unified",
+                            plot_bgcolor="white"
+                        )
 
-                            if not prev_by_wk.empty:
-                                df_yoy_cat = df_yoy_cat.merge(
-                                    prev_by_wk.rename(columns={"omzet": f"Omzet {prev_year}"}),
-                                    left_on="Week", right_on="week_num", how="left"
-                                ).drop(columns=["week_num"], errors="ignore")
-                            else:
-                                df_yoy_cat[f"Omzet {prev_year}"] = 0
+                        st.plotly_chart(fig_wow, use_container_width=True)
 
-                            df_yoy_cat = df_yoy_cat.fillna(0)
+                        # ---- Grafiek 2: Cumulatieve vergelijking ----
+                        st.markdown(f"#### Cumulatief: {selected_year} vs {prev_year}")
 
-                            fig_yoy_cat = go.Figure()
+                        fig_cum = go.Figure()
 
-                            fig_yoy_cat.add_trace(go.Bar(
-                                x=df_yoy_cat["Week"],
-                                y=df_yoy_cat[f"Omzet {prev_year}"],
-                                name=str(prev_year),
-                                marker_color="#87CEEB",
-                                opacity=0.6,
-                                hovertemplate=f"<b>Week %{{x}}</b><br>{prev_year}: €%{{y:,.0f}}<extra></extra>"
-                            ))
+                        fig_cum.add_trace(go.Scatter(
+                            x=df_merged["Week"],
+                            y=df_merged[f"Cumulatief {prev_year}"],
+                            name=str(prev_year),
+                            line=dict(color="#87CEEB", width=2, dash="dash"),
+                            hovertemplate=f"<b>Week %{{x}}</b><br>{prev_year}: €%{{y:,.0f}}<extra></extra>"
+                        ))
 
-                            fig_yoy_cat.add_trace(go.Bar(
-                                x=df_yoy_cat["Week"],
-                                y=df_yoy_cat[f"Omzet {selected_year}"],
-                                name=str(selected_year),
-                                marker_color="#1e3a5f",
-                                hovertemplate=f"<b>Week %{{x}}</b><br>{selected_year}: €%{{y:,.0f}}<extra></extra>"
-                            ))
+                        fig_cum.add_trace(go.Scatter(
+                            x=df_merged["Week"],
+                            y=df_merged[f"Cumulatief {selected_year}"],
+                            name=str(selected_year),
+                            fill="tonexty",
+                            line=dict(color="#1e3a5f", width=2),
+                            fillcolor="rgba(30, 58, 95, 0.10)",
+                            hovertemplate=f"<b>Week %{{x}}</b><br>{selected_year}: €%{{y:,.0f}}<extra></extra>"
+                        ))
 
-                            fig_yoy_cat.update_layout(
-                                barmode="group",
-                                height=450,
-                                xaxis=dict(title="Weeknummer", dtick=2, tickformat="d"),
-                                yaxis=dict(title="Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                hovermode="x unified",
-                                plot_bgcolor="white"
-                            )
+                        fig_cum.update_layout(
+                            height=450,
+                            xaxis=dict(title="Weeknummer", dtick=2, tickformat="d"),
+                            yaxis=dict(title="Cumulatieve Omzet (€)", tickformat=",.0f", gridcolor="#e0e0e0"),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            hovermode="x unified",
+                            plot_bgcolor="white"
+                        )
 
-                            st.plotly_chart(fig_yoy_cat, use_container_width=True)
+                        st.plotly_chart(fig_cum, use_container_width=True)
 
-                            # YoY statistieken
-                            total_cur_cat = df_yoy_cat[f"Omzet {selected_year}"].sum()
-                            total_prev_cat = df_yoy_cat[f"Omzet {prev_year}"].sum()
-                            yoy_cat_change = ((total_cur_cat - total_prev_cat) / total_prev_cat * 100) if total_prev_cat > 0 else 0
+                        # ---- YoY Statistieken ----
+                        st.markdown("---")
+                        total_cur_cat = df_merged[f"Omzet {selected_year}"].sum()
+                        total_prev_cat = df_merged[f"Omzet {prev_year}"].sum()
+                        yoy_cat_change = ((total_cur_cat - total_prev_cat) / total_prev_cat * 100) if total_prev_cat > 0 else 0
+                        avg_cur = df_merged.loc[df_merged[f"Omzet {selected_year}"] > 0, f"Omzet {selected_year}"].mean() if not df_merged.empty else 0
+                        avg_prev = df_merged.loc[df_merged[f"Omzet {prev_year}"] > 0, f"Omzet {prev_year}"].mean() if not df_merged.empty else 0
 
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric(f"Totaal {selected_year}", f"€{total_cur_cat:,.0f}")
-                            with col2:
-                                st.metric(f"Totaal {prev_year}", f"€{total_prev_cat:,.0f}")
-                            with col3:
-                                st.metric("Verschil YoY", f"{yoy_cat_change:+.1f}%",
-                                         delta=f"€{total_cur_cat - total_prev_cat:+,.0f}")
-                        else:
-                            st.info("Geen weekdata beschikbaar voor de jaarvergelijking")
-
-                        # Overzicht statistieken huidig jaar
-                        if not df_cur.empty:
-                            st.markdown("---")
-                            col1, col2, col3, col4 = st.columns(4)
-                            with col1:
-                                st.metric(f"Totaal {selected_year}", f"€{df_cur['omzet'].sum():,.0f}")
-                            with col2:
-                                st.metric("Gemiddeld/week", f"€{df_cur['omzet'].mean():,.0f}")
-                            with col3:
-                                best = df_cur.loc[df_cur['omzet'].idxmax()]
-                                st.metric("Beste week", f"€{best['omzet']:,.0f}", f"Week {int(best['week_num'])}")
-                            with col4:
-                                st.metric("Aantal weken", f"{len(df_cur)}")
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric(f"Totaal {selected_year}", f"€{total_cur_cat:,.0f}")
+                        with col2:
+                            st.metric(f"Totaal {prev_year}", f"€{total_prev_cat:,.0f}")
+                        with col3:
+                            st.metric("Verschil YoY", f"{yoy_cat_change:+.1f}%",
+                                     delta=f"€{total_cur_cat - total_prev_cat:+,.0f}")
+                        with col4:
+                            st.metric("Gem./week", f"€{avg_cur:,.0f}",
+                                     delta=f"€{avg_cur - avg_prev:+,.0f} vs {prev_year}")
                     else:
                         st.info(f"Geen weekdata beschikbaar voor categorie '{selected_category}'")
                 else:
