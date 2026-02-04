@@ -73,7 +73,7 @@ import subprocess
 import sys
 
 def install_packages():
-    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium']
+    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'openpyxl']
     for package in packages:
         try:
             __import__(package.replace('-', '_'))
@@ -9815,15 +9815,148 @@ Gegenereerd door LAB Groep Financial Dashboard
                 hide_index=True
             )
             
-            # Download optie
-            csv = df_detail.to_csv(index=False)
-            st.download_button(
-                "📥 Download als CSV",
-                csv,
-                f"budget_forecast_{selected_group.replace(' ', '_')}.csv",
-                "text/csv",
-                key="budget_download_csv"
-            )
+            # Download opties
+            col_csv, col_excel = st.columns(2)
+            
+            with col_csv:
+                csv = df_detail.to_csv(index=False)
+                st.download_button(
+                    "📥 Download als CSV",
+                    csv,
+                    f"budget_forecast_{selected_group.replace(' ', '_')}.csv",
+                    "text/csv",
+                    key="budget_download_csv"
+                )
+            
+            with col_excel:
+                # Excel export met alle data
+                try:
+                    from io import BytesIO
+                    
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        # Sheet 1: Samenvatting KPIs
+                        summary_export = pd.DataFrame({
+                            "Metric": ["Omzet", "Kostprijs Verkopen", "Bruto Marge", "Bruto Marge %", 
+                                      "Personeelskosten", "Huisvestingskosten", "Kantoorkosten",
+                                      "Verkoop & Marketing", "Overige Kosten", "Totale Kosten", "Netto Resultaat", "Netto Marge %"],
+                            "2025 Actual": [
+                                ACTUALS_2025["Omzet"]["Totaal"],
+                                ACTUALS_2025["Kostprijs Verkopen"]["Totaal"],
+                                ACTUALS_2025["Omzet"]["Totaal"] - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"],
+                                (ACTUALS_2025["Omzet"]["Totaal"] - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"]) / ACTUALS_2025["Omzet"]["Totaal"] * 100,
+                                ACTUALS_2025["Personeelskosten"]["Totaal"],
+                                ACTUALS_2025["Huisvestingskosten"]["Totaal"],
+                                ACTUALS_2025["Kantoorkosten"]["Totaal"],
+                                ACTUALS_2025["Verkoop & Marketing"]["Totaal"],
+                                ACTUALS_2025["Overige Kosten"]["Totaal"],
+                                sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet"),
+                                ACTUALS_2025["Omzet"]["Totaal"] - sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet"),
+                                (ACTUALS_2025["Omzet"]["Totaal"] - sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet")) / ACTUALS_2025["Omzet"]["Totaal"] * 100
+                            ],
+                            "2026 Forecast": [
+                                forecast_2026["Omzet"]["Totaal"],
+                                forecast_2026["Kostprijs Verkopen"]["Totaal"],
+                                forecast_2026["Omzet"]["Totaal"] - forecast_2026["Kostprijs Verkopen"]["Totaal"],
+                                (forecast_2026["Omzet"]["Totaal"] - forecast_2026["Kostprijs Verkopen"]["Totaal"]) / forecast_2026["Omzet"]["Totaal"] * 100,
+                                forecast_2026["Personeelskosten"]["Totaal"],
+                                forecast_2026["Huisvestingskosten"]["Totaal"],
+                                forecast_2026["Kantoorkosten"]["Totaal"],
+                                forecast_2026["Verkoop & Marketing"]["Totaal"],
+                                forecast_2026["Overige Kosten"]["Totaal"],
+                                sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet"),
+                                forecast_2026["Omzet"]["Totaal"] - sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet"),
+                                (forecast_2026["Omzet"]["Totaal"] - sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet")) / forecast_2026["Omzet"]["Totaal"] * 100
+                            ],
+                            "Verschil": [
+                                forecast_2026["Omzet"]["Totaal"] - ACTUALS_2025["Omzet"]["Totaal"],
+                                forecast_2026["Kostprijs Verkopen"]["Totaal"] - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"],
+                                (forecast_2026["Omzet"]["Totaal"] - forecast_2026["Kostprijs Verkopen"]["Totaal"]) - (ACTUALS_2025["Omzet"]["Totaal"] - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"]),
+                                "",
+                                forecast_2026["Personeelskosten"]["Totaal"] - ACTUALS_2025["Personeelskosten"]["Totaal"],
+                                forecast_2026["Huisvestingskosten"]["Totaal"] - ACTUALS_2025["Huisvestingskosten"]["Totaal"],
+                                forecast_2026["Kantoorkosten"]["Totaal"] - ACTUALS_2025["Kantoorkosten"]["Totaal"],
+                                forecast_2026["Verkoop & Marketing"]["Totaal"] - ACTUALS_2025["Verkoop & Marketing"]["Totaal"],
+                                forecast_2026["Overige Kosten"]["Totaal"] - ACTUALS_2025["Overige Kosten"]["Totaal"],
+                                sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet") - sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet"),
+                                (forecast_2026["Omzet"]["Totaal"] - sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet")) - (ACTUALS_2025["Omzet"]["Totaal"] - sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet")),
+                                ""
+                            ],
+                            "Groei %": [
+                                (forecast_2026["Omzet"]["Totaal"] / ACTUALS_2025["Omzet"]["Totaal"] - 1) * 100,
+                                (forecast_2026["Kostprijs Verkopen"]["Totaal"] / ACTUALS_2025["Kostprijs Verkopen"]["Totaal"] - 1) * 100,
+                                ((forecast_2026["Omzet"]["Totaal"] - forecast_2026["Kostprijs Verkopen"]["Totaal"]) / (ACTUALS_2025["Omzet"]["Totaal"] - ACTUALS_2025["Kostprijs Verkopen"]["Totaal"]) - 1) * 100,
+                                "",
+                                (forecast_2026["Personeelskosten"]["Totaal"] / ACTUALS_2025["Personeelskosten"]["Totaal"] - 1) * 100,
+                                (forecast_2026["Huisvestingskosten"]["Totaal"] / ACTUALS_2025["Huisvestingskosten"]["Totaal"] - 1) * 100,
+                                (forecast_2026["Kantoorkosten"]["Totaal"] / ACTUALS_2025["Kantoorkosten"]["Totaal"] - 1) * 100,
+                                (forecast_2026["Verkoop & Marketing"]["Totaal"] / ACTUALS_2025["Verkoop & Marketing"]["Totaal"] - 1) * 100,
+                                (forecast_2026["Overige Kosten"]["Totaal"] / ACTUALS_2025["Overige Kosten"]["Totaal"] - 1) * 100,
+                                (sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet") / sum(ACTUALS_2025[g]["Totaal"] for g in ACTUALS_2025 if g != "Omzet") - 1) * 100,
+                                "",
+                                ""
+                            ]
+                        })
+                        summary_export.to_excel(writer, sheet_name="Samenvatting", index=False)
+                        
+                        # Sheet 2: Maanddetail per groep
+                        all_monthly_data = []
+                        for group in ACTUALS_2025.keys():
+                            for m in MAANDEN:
+                                all_monthly_data.append({
+                                    "Groep": group,
+                                    "Maand": m,
+                                    "2025 Actual": ACTUALS_2025[group][m],
+                                    "2026 Forecast": forecast_2026[group][m],
+                                    "Verschil": forecast_2026[group][m] - ACTUALS_2025[group][m],
+                                    "Groei %": (forecast_2026[group][m] / ACTUALS_2025[group][m] - 1) * 100 if ACTUALS_2025[group][m] else 0
+                                })
+                        df_monthly = pd.DataFrame(all_monthly_data)
+                        df_monthly.to_excel(writer, sheet_name="Maanddetail", index=False)
+                        
+                        # Sheet 3: Parameters
+                        params_data = []
+                        for group, pct in growth_rates.items():
+                            params_data.append({
+                                "Rekeninggroep": group,
+                                "Groei %": pct,
+                                "2025 Totaal": ACTUALS_2025[group]["Totaal"],
+                                "2026 Forecast": forecast_2026[group]["Totaal"]
+                            })
+                        df_params = pd.DataFrame(params_data)
+                        df_params.to_excel(writer, sheet_name="Parameters", index=False)
+                        
+                        # Sheet 4: Scenario's
+                        omzet_fc = forecast_2026["Omzet"]["Totaal"]
+                        kosten_fc = sum(forecast_2026[g]["Totaal"] for g in forecast_2026 if g != "Omzet")
+                        netto_fc = omzet_fc - kosten_fc
+                        
+                        scenarios = pd.DataFrame({
+                            "Scenario": ["Pessimistisch", "Basis", "Optimistisch"],
+                            "Omzet Aanpassing": ["-5%", "0%", "+10%"],
+                            "Kosten Aanpassing": ["+2%", "0%", "+3%"],
+                            "Omzet": [omzet_fc * 0.95, omzet_fc, omzet_fc * 1.10],
+                            "Kosten": [kosten_fc * 1.02, kosten_fc, kosten_fc * 1.03],
+                            "Netto Resultaat": [omzet_fc * 0.95 - kosten_fc * 1.02, netto_fc, omzet_fc * 1.10 - kosten_fc * 1.03]
+                        })
+                        scenarios.to_excel(writer, sheet_name="Scenarios", index=False)
+                        
+                        # Sheet 5: Geselecteerde groep detail
+                        df_detail.to_excel(writer, sheet_name=f"Detail {selected_group[:20]}", index=False)
+                    
+                    excel_data = output.getvalue()
+                    
+                    st.download_button(
+                        "📊 Download Excel (alle data)",
+                        excel_data,
+                        f"LAB_Budget_Forecast_2026_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="budget_download_excel"
+                    )
+                except ImportError:
+                    st.warning("openpyxl niet geïnstalleerd - Excel export niet beschikbaar")
+                except Exception as e:
+                    st.error(f"Excel export fout: {e}")
         
         # ----- SUBTAB 5: VARIANTIE & SCENARIO -----
         with budget_tabs[4]:
