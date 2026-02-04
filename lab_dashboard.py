@@ -1,6 +1,5 @@
 """
 LAB Groep Financial Dashboard v18
-=================================
 Wijzigingen t.o.v. v17:
 - 🔐 Directors Mode toegevoegd
   * Wachtwoord-beveiligde toegang tot externe LAB entiteiten
@@ -7991,7 +7990,6 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                 # Summary report as text
                 report_text = f"""
 MAANDAFSLUITING RAPPORT
-========================
 Rapport datum: {datetime.now().strftime("%Y-%m-%d %H:%M")}
 Periode: {period_label}
 Vergelijking met: {prev_period_label}
