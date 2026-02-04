@@ -1,17 +1,19 @@
 """
-LAB Groep Financial Dashboard v18
+LAB Groep Financial Dashboard v17
 =================================
-Wijzigingen t.o.v. v17:
-- 🔐 Directors Mode toegevoegd
-  * Wachtwoord-beveiligde toegang tot externe LAB entiteiten
-  * 3 nieuwe entiteiten: LAB Colour the World, MT Paints, Juloni Beheer
-  * Aparte Odoo instanties met eigen API configuratie
-  * Dynamische entiteitsselectie (basis vs uitgebreid)
-- 🏢 Multi-instance support
-  * Ondersteuning voor meerdere Odoo databases
-  * Externe API keys via Streamlit secrets
-
 Wijzigingen t.o.v. v16:
+- 📊 Uitgebreide variantie analyse in Budget 2026 tab
+  * Variantie per rubriek (Omzet, Kostprijs, Personeelskosten, etc.)
+  * Maandelijkse breakdown per categorie met totaalrijen
+  * Samenvatting tabel met alle rubrieken + netto resultaat
+  * Session state caching voor 2026 actuals (voorkomt herhaald laden)
+  * Handmatige refresh knop voor 2026 actuals
+- ⚡ Performance verbetering
+  * Budget parameters in st.form (sliders triggeren geen full rerun meer)
+  * 2026 actuals gecached in session_state
+- 🐛 Fix: Nederlandse maandnamen correct gemapt (maart -> Mrt)
+
+Wijzigingen t.o.v. v15:
 - 🎯 NIEUW: Budget 2026 tab
   * Automatisch geladen 2025 actuals per rekeninggroep
   * Interactieve groeiparameters via sliders (sidebar)
@@ -24,11 +26,59 @@ Wijzigingen t.o.v. v16:
 
 Wijzigingen t.o.v. v14:
 - 📅 Omzet Week-op-Week jaarvergelijking in Overzicht tab
+  - Grouped bar chart: huidig jaar vs vorig jaar per weeknummer
+  - YoY statistieken (totaal, verschil, percentage)
 - 📊 Categorie Trend subtab in Producten tab
+  - Productcategorie filter (selectbox)
+  - Week-op-week omzet grafiek per geselecteerde categorie
+  - Cumulatieve omzet grafiek per geselecteerde categorie
+  - Ondersteuning voor zowel factuur- als POS-data (Conceptstore)
 
-Eerder: Financial Forecast, BTW Analyse, Maandafsluiting, AI Chatbot, etc.
+Wijzigingen t.o.v. v13:
+- 🔮 Financial Forecast module toegevoegd
+  - Handmatige forecast invoer met omzet, COGS, en operationele kosten
+  - 3 scenario templates: Conservatief, Gematigd, Agressief
+  - Aanpasbare aannames (klantacquisitie, churn, inflatie, seizoensfactoren)
+  - Eenmalige events (inkomsten/uitgaven) toevoegen
+  - Forecast resultaten met grafieken en KPIs
+  - Vergelijking met actuele data uit Odoo
+  - Opslaan en laden van forecasts (JSON)
+  - Export naar CSV en Excel
+  - CASHFLOW_HOOK: Voorbereid voor integratie met cashflow prognose
+
+Wijzigingen t.o.v. v12:
+- 🧾 BTW Analyse module toegevoegd aan Maandafsluiting
+  - Checkbox voor maandelijkse vs kwartaal BTW aangifte
+  - Automatische periode berekening (Q1-Q4 of per maand)
+  - BTW overzicht met voorbelasting, af te dragen, en netto positie
+  - Vergelijking met vorige periode (maand of kwartaal)
+  - Detail tabel per BTW rekening
+  - 🤖 AI Analyse knop: laat AI afwijkingen analyseren en verklaren
+  - Waarschuwing bij grote BTW afwijkingen (>25%)
+
+Wijzigingen in v12:
+- 📋 Maandafsluiting (Financial Close) tab toegevoegd
+  - Wachtwoord-beveiligde toegang voor gevoelige financiële afsluitingen
+  - Periode-selectie (maand/jaar/entiteit)
+  - Financiële kerncijfers met vergelijking t.o.v. vorige maand
+  - Validatie controles (balans, ongeboekte entries, oude debiteuren)
+  - 6-maanden trend analyse met grafieken
+  - Aandachtspunten highlighting
+  - Export functionaliteit (JSON, CSV, TXT rapport)
+  - Graceful degradation: dashboard werkt zonder wachtwoord configuratie
+
+Eerdere features (v11):
+- 💬 AI Chatbot tab (OpenAI GPT-4)
+- ✅ Nederlandse benamingen voor alle rekeningen/categorieën (nl_NL context)
+- ✅ Balans tab met Kwadrant format (ACTIVA | PASSIVA)
+- ✅ Intercompany filter werkt nu ook op week/dag omzet
+- ✅ Aparte tab met banksaldi per rekening per entiteit
+- ✅ Factuur drill-down met PDF/Odoo link
+- ✅ Kostendetail per categorie
+- ✅ Cashflow prognose
+- ✅ LAB Projects: Verf vs Behang analyse
+- ✅ Klantenkaart voor LAB Projects
 """
-
 
 # Fallback package installer voor Streamlit Cloud
 import subprocess
@@ -88,116 +138,6 @@ COMPANIES = {
     2: "LAB Shops",
     3: "LAB Projects"
 }
-
-# =============================================================================
-# DIRECTORS MODE - EXTENDED ENTITIES
-# =============================================================================
-
-EXTENDED_ODOO_INSTANCES = {
-    "lab_colour_the_world": {
-        "name": "LAB Colour the World",
-        "url": "https://labcolourtheworld.odoo.com/jsonrpc",
-        "db": "labcolourtheworld",
-        "uid": 2,
-        "company_id": 100,
-    },
-    "mt_paints": {
-        "name": "MT Paints",
-        "url": "https://mtpaints.odoo.com/jsonrpc",
-        "db": "mtpaints",
-        "uid": 2,
-        "company_id": 101,
-    },
-    "juloni_beheer": {
-        "name": "Juloni Beheer",
-        "url": "https://julonibeheer.odoo.com/jsonrpc",
-        "db": "julonibeheer",
-        "uid": 2,
-        "company_id": 102,
-    }
-}
-
-EXTENDED_COMPANIES = {
-    100: "LAB Colour the World",
-    101: "MT Paints",
-    102: "Juloni Beheer",
-}
-
-def get_directors_password():
-    """Get Directors password from secrets."""
-    try:
-        return st.secrets.get("DIRECTORS_PASSWORD", "")
-    except:
-        import os
-        return os.environ.get("DIRECTORS_PASSWORD", "")
-
-def get_extended_api_key(instance_key):
-    """Get API key for extended Odoo instance."""
-    secret_key = f"ODOO_API_KEY_{instance_key.upper()}"
-    try:
-        return st.secrets.get(secret_key, "")
-    except:
-        import os
-        return os.environ.get(secret_key, "")
-
-def verify_directors_password(input_password):
-    """Verify directors password."""
-    configured = get_directors_password()
-    if not configured:
-        return False, "no_password_configured"
-    return (input_password == configured, None if input_password == configured else "invalid_password")
-
-def is_directors_mode_active():
-    """Check if directors mode is active."""
-    return st.session_state.get("directors_authenticated", False)
-
-def get_instance_for_company(company_id):
-    """Get Odoo instance config for company_id."""
-    for key, config in EXTENDED_ODOO_INSTANCES.items():
-        if config["company_id"] == company_id:
-            return key, config
-    return None, None
-
-def get_active_companies():
-    """Get dict of active companies (includes extended if directors mode)."""
-    companies = COMPANIES.copy()
-    if is_directors_mode_active():
-        companies.update(EXTENDED_COMPANIES)
-    return companies
-
-def odoo_call_extended(instance_key, model, method, domain, fields, limit=None, timeout=120):
-    """Odoo JSON-RPC call for extended instances."""
-    if instance_key not in EXTENDED_ODOO_INSTANCES:
-        return []
-    
-    config = EXTENDED_ODOO_INSTANCES[instance_key]
-    api_key = get_extended_api_key(instance_key)
-    
-    if not api_key:
-        st.warning(f"API key niet geconfigureerd voor {config['name']}")
-        return []
-    
-    args = [config["db"], config["uid"], api_key, model, method, [domain]]
-    kwargs = {"fields": fields, "context": {"lang": "nl_NL"}}
-    if limit:
-        kwargs["limit"] = limit
-    args.append(kwargs)
-    
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "call",
-        "params": {"service": "object", "method": "execute_kw", "args": args},
-        "id": 1
-    }
-    
-    try:
-        response = requests.post(config["url"], json=payload, timeout=timeout)
-        result = response.json()
-        if "error" in result:
-            return []
-        return result.get("result", [])
-    except:
-        return []
 
 # =============================================================================
 # FINANCIAL CLOSE PASSWORD FUNCTIONS
@@ -270,6 +210,25 @@ CATEGORY_TRANSLATIONS = {
     "83": "Omzet",
     "84": "Omzet",
     "85": "Omzet"
+}
+
+# Nederlandse maandnamen naar korte afkortingen (voor Odoo read_group output)
+DUTCH_MONTH_MAP = {
+    "januari": "Jan", "februari": "Feb", "maart": "Mrt",
+    "april": "Apr", "mei": "Mei", "juni": "Jun",
+    "juli": "Jul", "augustus": "Aug", "september": "Sep",
+    "oktober": "Okt", "november": "Nov", "december": "Dec"
+}
+
+# Mapping van budget categorieën naar rekeningcode bereiken
+BUDGET_CATEGORY_ACCOUNTS = {
+    "Omzet": [("800000", "900000")],
+    "Kostprijs Verkopen": [("700000", "800000")],
+    "Personeelskosten": [("400000", "410000")],
+    "Huisvestingskosten": [("410000", "420000")],
+    "Kantoorkosten": [("430000", "440000")],
+    "Verkoop & Marketing": [("440000", "450000")],
+    "Overige Kosten": [("420000", "430000"), ("450000", "500000"), ("600000", "700000")]
 }
 
 # Uitgebreide rekening vertalingen
@@ -869,6 +828,43 @@ def get_cost_aggregated(year, company_id=None):
         monthly[month] += r.get("balance", 0)
     
     return [{"date:month": k, "balance": v} for k, v in monthly.items()]
+
+@st.cache_data(ttl=3600)
+def get_2026_actuals_by_category(company_id=None):
+    """Haal 2026 actuals op per budgetcategorie en maand voor variantie analyse.
+
+    Returns dict: {category_name: {month_abbrev: amount, ...}, ...}
+    Bedragen zijn positief voor zowel omzet als kosten.
+    """
+    results = {}
+
+    for category, ranges in BUDGET_CATEGORY_ACCOUNTS.items():
+        monthly = {}
+        for code_from, code_to in ranges:
+            domain = [
+                ("account_id.code", ">=", code_from),
+                ("account_id.code", "<", code_to),
+                ("date", ">=", "2026-01-01"),
+                ("date", "<=", "2026-12-31"),
+                ("parent_state", "=", "posted")
+            ]
+            if company_id:
+                domain.append(("company_id", "=", company_id))
+
+            data = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
+            for r in data:
+                month_str = r.get("date:month", "")
+                balance = r.get("balance", 0)
+                # Omzet is negatief in Odoo, kosten positief
+                if category == "Omzet":
+                    balance = -balance
+                if month_str:
+                    month_word = month_str.split()[0].lower()
+                    month_key = DUTCH_MONTH_MAP.get(month_word, month_str.split()[0][:3].capitalize())
+                    monthly[month_key] = monthly.get(month_key, 0) + balance
+        results[category] = monthly
+
+    return results
 
 @st.cache_data(ttl=3600)
 def get_intercompany_revenue(year, company_id=None):
@@ -3817,7 +3813,7 @@ def validate_forecast(forecast):
 
 def main():
     st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v18 - Directors Mode")
+    st.caption("Real-time data uit Odoo | v14 - Met Financial Forecast & Maandafsluiting")
     
     # Sidebar
     st.sidebar.header("🔧 Filters")
@@ -3866,38 +3862,13 @@ def main():
     years = list(range(current_year, 2022, -1))
     selected_year = st.sidebar.selectbox("📅 Jaar", years, index=0)
     
-    # Directors Mode Login
-    if get_directors_password():
-        st.sidebar.markdown("### 🔐 Directors Mode")
-        if not is_directors_mode_active():
-            with st.sidebar.expander("Directors Login", expanded=False):
-                pwd = st.text_input("Wachtwoord", type="password", key="dir_pwd")
-                if st.button("Inloggen", key="dir_login"):
-                    valid, err = verify_directors_password(pwd)
-                    if valid:
-                        st.session_state.directors_authenticated = True
-                        st.rerun()
-                    else:
-                        st.error("Ongeldig wachtwoord")
-        else:
-            st.sidebar.success("✅ Directors Mode")
-            if st.sidebar.button("Uitloggen", key="dir_logout"):
-                st.session_state.directors_authenticated = False
-                st.rerun()
-        st.sidebar.markdown("---")
-    
-    # Entiteit selectie (dynamisch)
-    active_companies = get_active_companies()
-    entity_options = ["Alle bedrijven"] + list(active_companies.values())
+    # Entiteit selectie
+    entity_options = ["Alle bedrijven"] + list(COMPANIES.values())
     selected_entity = st.sidebar.selectbox("🏢 Entiteit", entity_options)
     
     company_id = None
-    is_extended = False
-    instance_key = None
     if selected_entity != "Alle bedrijven":
-        company_id = [k for k, v in active_companies.items() if v == selected_entity][0]
-        instance_key, _ = get_instance_for_company(company_id)
-        is_extended = instance_key is not None
+        company_id = [k for k, v in COMPANIES.items() if v == selected_entity][0]
     
     # Intercompany filter (beschikbaar voor alle entiteiten)
     # Gebruik session_state om de waarde te behouden bij jaar/entiteit wijzigingen
@@ -3928,49 +3899,6 @@ def main():
     # TAB 1: OVERZICHT
     # =========================================================================
     with tabs[0]:
-        # Extended entity handler
-        if is_extended and instance_key:
-            st.subheader(f"📊 {selected_entity}")
-            with st.spinner("Data laden..."):
-                # Revenue
-                rev = odoo_call_extended(instance_key, "account.move.line", "search_read",
-                    [("date", ">=", f"{selected_year}-01-01"), ("date", "<=", f"{selected_year}-12-31"),
-                     ("account_id.code", "=like", "8%"), ("parent_state", "=", "posted")],
-                    ["balance", "date"])
-                revenue = -sum(r.get("balance", 0) for r in rev) if rev else 0
-                
-                # Costs
-                costs_4 = odoo_call_extended(instance_key, "account.move.line", "search_read",
-                    [("date", ">=", f"{selected_year}-01-01"), ("date", "<=", f"{selected_year}-12-31"),
-                     ("account_id.code", "=like", "4%"), ("parent_state", "=", "posted")],
-                    ["balance"])
-                costs_7 = odoo_call_extended(instance_key, "account.move.line", "search_read",
-                    [("date", ">=", f"{selected_year}-01-01"), ("date", "<=", f"{selected_year}-12-31"),
-                     ("account_id.code", "=like", "7%"), ("parent_state", "=", "posted")],
-                    ["balance"])
-                costs = sum(c.get("balance", 0) for c in (costs_4 or [])) + sum(c.get("balance", 0) for c in (costs_7 or []))
-                
-                result = revenue - costs
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("💰 Omzet", f"€{revenue:,.0f}")
-                c2.metric("📉 Kosten", f"€{costs:,.0f}")
-                c3.metric("📊 Resultaat", f"€{result:,.0f}")
-                
-                # Monthly chart
-                if rev:
-                    import pandas as pd
-                    df = pd.DataFrame(rev)
-                    df["date"] = pd.to_datetime(df["date"])
-                    df["month"] = df["date"].dt.month
-                    df["omzet"] = -df["balance"]
-                    monthly = df.groupby("month")["omzet"].sum().reset_index()
-                    months = {1:"Jan",2:"Feb",3:"Mrt",4:"Apr",5:"Mei",6:"Jun",7:"Jul",8:"Aug",9:"Sep",10:"Okt",11:"Nov",12:"Dec"}
-                    monthly["maand"] = monthly["month"].map(months)
-                    fig = px.bar(monthly, x="maand", y="omzet", title=f"Maandelijkse Omzet {selected_year}")
-                    st.plotly_chart(fig, use_container_width=True)
-            st.stop()
-        
         st.header("📊 Financieel Overzicht")
         
         # KPIs
@@ -4061,8 +3989,8 @@ def main():
                 return month_str
         
         # Bouw monthly data van geaggregeerde resultaten
-        monthly = {}  # Initialize outside if-block to prevent UnboundLocalError
         if revenue_agg:
+            monthly = {}
             
             # Omzet per maand
             for r in revenue_agg:
@@ -4097,16 +4025,12 @@ def main():
                     if month in monthly:
                         monthly[month]["kosten"] -= c.get("balance", 0)
             
-        # Create df_monthly from monthly data (works even if monthly is empty)
-        if monthly:
             df_monthly = pd.DataFrame([
                 {"Maand": k, "Omzet": v["omzet"], "Kosten": v["kosten"]}
                 for k, v in sorted(monthly.items())
             ])
-        else:
-            df_monthly = pd.DataFrame(columns=["Maand", "Omzet", "Kosten"])
-        
-        if not df_monthly.empty:
+            
+            if not df_monthly.empty:
                 fig = go.Figure()
                 fig.add_trace(go.Bar(name="Omzet", x=df_monthly["Maand"], y=df_monthly["Omzet"],
                                     marker_color="#1e3a5f"))
@@ -9653,11 +9577,12 @@ Gegenereerd door LAB Groep Financial Dashboard
         MAANDEN = ["Jan", "Feb", "Mrt", "Apr", "Mei", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dec"]
         
         # =====================================================================
-        # SIDEBAR: BUDGET PARAMETERS
+        # SIDEBAR: BUDGET PARAMETERS (in form voor performance)
         # =====================================================================
         st.sidebar.markdown("---")
         st.sidebar.markdown("### 🎯 Budget Parameters 2026")
-        
+        st.sidebar.caption("Pas parameters aan en klik 'Toepassen'")
+
         # Initialize session state for growth rates
         if "budget_growth_rates" not in st.session_state:
             st.session_state.budget_growth_rates = {
@@ -9669,31 +9594,38 @@ Gegenereerd door LAB Groep Financial Dashboard
                 "Verkoop & Marketing": 5.0,
                 "Overige Kosten": 1.0
             }
-        
-        growth_rates = {}
-        for group in ACTUALS_2025.keys():
-            default = st.session_state.budget_growth_rates.get(group, 5.0)
-            growth_rates[group] = st.sidebar.slider(
-                f"{group}",
-                min_value=-20.0,
-                max_value=30.0,
-                value=default,
-                step=0.5,
-                format="%.1f%%",
-                key=f"budget_growth_{group}"
-            )
-        
-        # Update session state
-        st.session_state.budget_growth_rates = growth_rates
-        
-        # Reset button
-        if st.sidebar.button("🔄 Reset naar standaard"):
+
+        with st.sidebar.form("budget_parameters_form"):
+            growth_rates_form = {}
+            for group in ACTUALS_2025.keys():
+                default = st.session_state.budget_growth_rates.get(group, 5.0)
+                growth_rates_form[group] = st.slider(
+                    f"{group}",
+                    min_value=-20.0,
+                    max_value=30.0,
+                    value=default,
+                    step=0.5,
+                    format="%.1f%%",
+                    key=f"budget_growth_{group}"
+                )
+
+            form_col1, form_col2 = st.columns(2)
+            with form_col1:
+                submitted = st.form_submit_button("✅ Toepassen", use_container_width=True)
+            with form_col2:
+                reset = st.form_submit_button("🔄 Reset", use_container_width=True)
+
+        if submitted:
+            st.session_state.budget_growth_rates = growth_rates_form
+        elif reset:
             st.session_state.budget_growth_rates = {
                 "Omzet": 5.0, "Kostprijs Verkopen": 5.0, "Personeelskosten": 3.0,
-                "Huisvestingskosten": 2.0, "Kantoorkosten": 2.0, 
+                "Huisvestingskosten": 2.0, "Kantoorkosten": 2.0,
                 "Verkoop & Marketing": 5.0, "Overige Kosten": 1.0
             }
             st.rerun()
+
+        growth_rates = st.session_state.budget_growth_rates
         
         # =====================================================================
         # BEREKEN FORECAST
@@ -10105,70 +10037,171 @@ Gegenereerd door LAB Groep Financial Dashboard
         # ----- SUBTAB 5: VARIANTIE & SCENARIO -----
         with budget_tabs[4]:
             st.subheader("🎯 Variantie Analyse & Scenario Planning")
-            
+
             # Variantie sectie
             st.markdown("### 📊 Variantie: Forecast vs Actual 2026")
-            
+
             current_year = datetime.now().year
             current_month = datetime.now().month
-            
+
             if current_year >= 2026:
                 st.info("💡 Zodra 2026 data beschikbaar is, wordt hier automatisch de variantie getoond.")
-                
-                # Poging om 2026 actuals op te halen
-                try:
-                    with st.spinner("2026 actuals ophalen uit Odoo..."):
-                        revenue_2026_api = get_revenue_aggregated(2026, None)
-                        
-                        if revenue_2026_api and sum(r.get("balance", 0) for r in revenue_2026_api) != 0:
-                            st.success("✅ 2026 omzetdata gevonden!")
-                            
-                            # Toon variantie tabel
-                            variance_data = []
-                            actuals_by_month = {}
-                            
-                            for r in revenue_2026_api:
-                                month_str = r.get("date:month", "")
-                                balance = -r.get("balance", 0)
-                                # Parse maandnaam (verwacht format "januari 2026" of vergelijkbaar)
-                                if month_str:
-                                    month_key = month_str.split()[0][:3].capitalize()
-                                    actuals_by_month[month_key] = actuals_by_month.get(month_key, 0) + balance
-                            
-                            for m in MAANDEN[:current_month]:
-                                fc = forecast_2026["Omzet"][m]
-                                act = actuals_by_month.get(m, 0)
-                                if act > 0:
-                                    var = act - fc
-                                    pct = (act / fc - 1) * 100 if fc else 0
+
+                # Gebruik session_state om 2026 actuals te cachen (voorkom herhaald laden)
+                if "actuals_2026_cache" not in st.session_state:
+                    st.session_state.actuals_2026_cache = None
+
+                col_refresh, col_spacer = st.columns([1, 3])
+                with col_refresh:
+                    refresh_actuals = st.button("🔄 Ververs 2026 actuals", key="refresh_2026_actuals")
+
+                if st.session_state.actuals_2026_cache is None or refresh_actuals:
+                    try:
+                        with st.spinner("2026 actuals ophalen per categorie uit Odoo..."):
+                            actuals_2026_data = get_2026_actuals_by_category(None)
+                            st.session_state.actuals_2026_cache = actuals_2026_data
+                    except Exception as e:
+                        st.warning(f"Kon 2026 data niet ophalen: {e}")
+                        actuals_2026_data = {}
+
+                actuals_2026_data = st.session_state.actuals_2026_cache or {}
+
+                # Controleer of er data is
+                has_data = any(
+                    sum(months.values()) != 0
+                    for months in actuals_2026_data.values()
+                )
+
+                if has_data:
+                    st.success("✅ 2026 data gevonden!")
+
+                    # --- Per rubriek variantie tabellen ---
+                    for category in ACTUALS_2025.keys():
+                        cat_actuals = actuals_2026_data.get(category, {})
+                        cat_has_data = any(cat_actuals.get(m, 0) != 0 for m in MAANDEN[:current_month])
+
+                        if not cat_has_data:
+                            continue
+
+                        is_cost = category != "Omzet"
+                        st.markdown(f"#### {'📉' if is_cost else '📊'} {category}")
+
+                        variance_rows = []
+                        total_fc = 0
+                        total_act = 0
+
+                        for m in MAANDEN[:current_month]:
+                            fc = forecast_2026[category][m]
+                            act = cat_actuals.get(m, 0)
+                            if act != 0:
+                                var = act - fc
+                                pct = (act / fc - 1) * 100 if fc else 0
+                                # Voor kosten: positieve variantie = slecht (meer kosten)
+                                # Voor omzet: negatieve variantie = slecht (minder omzet)
+                                if is_cost:
+                                    status = "🟢" if pct <= 5 else ("🟡" if pct <= 10 else "🔴")
+                                else:
                                     status = "🟢" if abs(pct) <= 5 else ("🟡" if abs(pct) <= 10 else "🔴")
-                                    variance_data.append({
-                                        "Maand": m,
-                                        "Forecast": fc,
-                                        "Actual": act,
-                                        "Variantie": var,
-                                        "% Var": pct,
-                                        "Status": status
-                                    })
-                            
-                            if variance_data:
-                                df_var = pd.DataFrame(variance_data)
-                                st.dataframe(
-                                    df_var.style.format({
-                                        "Forecast": "€{:,.0f}",
-                                        "Actual": "€{:,.0f}",
-                                        "Variantie": "€{:+,.0f}",
-                                        "% Var": "{:+.1f}%"
-                                    }),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                        else:
-                            st.warning("Nog geen 2026 omzet data in Odoo.")
-                except Exception as e:
-                    st.warning(f"Kon 2026 data niet ophalen: {e}")
+                                variance_rows.append({
+                                    "Maand": m,
+                                    "Forecast": fc,
+                                    "Actual": act,
+                                    "Variantie": var,
+                                    "% Var": pct,
+                                    "Status": status
+                                })
+                                total_fc += fc
+                                total_act += act
+
+                        if variance_rows:
+                            # Voeg totaalrij toe
+                            total_var = total_act - total_fc
+                            total_pct = (total_act / total_fc - 1) * 100 if total_fc else 0
+                            if is_cost:
+                                total_status = "🟢" if total_pct <= 5 else ("🟡" if total_pct <= 10 else "🔴")
+                            else:
+                                total_status = "🟢" if abs(total_pct) <= 5 else ("🟡" if abs(total_pct) <= 10 else "🔴")
+                            variance_rows.append({
+                                "Maand": "TOTAAL",
+                                "Forecast": total_fc,
+                                "Actual": total_act,
+                                "Variantie": total_var,
+                                "% Var": total_pct,
+                                "Status": total_status
+                            })
+
+                            df_var = pd.DataFrame(variance_rows)
+                            st.dataframe(
+                                df_var.style.format({
+                                    "Forecast": "€{:,.0f}",
+                                    "Actual": "€{:,.0f}",
+                                    "Variantie": "€{:+,.0f}",
+                                    "% Var": "{:+.1f}%"
+                                }),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+
+                    # --- Samenvatting alle rubrieken ---
+                    st.markdown("---")
+                    st.markdown("#### 📋 Samenvatting Variantie per Rubriek")
+                    summary_rows = []
+                    for category in ACTUALS_2025.keys():
+                        cat_actuals = actuals_2026_data.get(category, {})
+                        total_fc = sum(forecast_2026[category][m] for m in MAANDEN[:current_month])
+                        total_act = sum(cat_actuals.get(m, 0) for m in MAANDEN[:current_month])
+                        if total_act != 0:
+                            total_var = total_act - total_fc
+                            total_pct = (total_act / total_fc - 1) * 100 if total_fc else 0
+                            is_cost = category != "Omzet"
+                            if is_cost:
+                                status = "🟢" if total_pct <= 5 else ("🟡" if total_pct <= 10 else "🔴")
+                            else:
+                                status = "🟢" if abs(total_pct) <= 5 else ("🟡" if abs(total_pct) <= 10 else "🔴")
+                            summary_rows.append({
+                                "Rubriek": category,
+                                "Forecast YTD": total_fc,
+                                "Actual YTD": total_act,
+                                "Variantie": total_var,
+                                "% Var": total_pct,
+                                "Status": status
+                            })
+
+                    if summary_rows:
+                        # Netto resultaat rij
+                        omzet_row = next((r for r in summary_rows if r["Rubriek"] == "Omzet"), None)
+                        kosten_fc = sum(r["Forecast YTD"] for r in summary_rows if r["Rubriek"] != "Omzet")
+                        kosten_act = sum(r["Actual YTD"] for r in summary_rows if r["Rubriek"] != "Omzet")
+                        if omzet_row:
+                            netto_fc = omzet_row["Forecast YTD"] - kosten_fc
+                            netto_act = omzet_row["Actual YTD"] - kosten_act
+                            netto_var = netto_act - netto_fc
+                            netto_pct = (netto_act / netto_fc - 1) * 100 if netto_fc else 0
+                            netto_status = "🟢" if abs(netto_pct) <= 5 else ("🟡" if abs(netto_pct) <= 10 else "🔴")
+                            summary_rows.append({
+                                "Rubriek": "Netto Resultaat",
+                                "Forecast YTD": netto_fc,
+                                "Actual YTD": netto_act,
+                                "Variantie": netto_var,
+                                "% Var": netto_pct,
+                                "Status": netto_status
+                            })
+
+                        df_summary_var = pd.DataFrame(summary_rows)
+                        st.dataframe(
+                            df_summary_var.style.format({
+                                "Forecast YTD": "€{:,.0f}",
+                                "Actual YTD": "€{:,.0f}",
+                                "Variantie": "€{:+,.0f}",
+                                "% Var": "{:+.1f}%"
+                            }),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                else:
+                    st.warning("Nog geen 2026 data in Odoo.")
             else:
-                st.info(f"📅 Variantie analyse wordt beschikbaar vanaf januari 2026.")
+                st.info("📅 Variantie analyse wordt beschikbaar vanaf januari 2026.")
             
             # Scenario analyse sectie
             st.markdown("---")
