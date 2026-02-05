@@ -103,6 +103,7 @@ import json
 from datetime import datetime, timedelta
 from functools import lru_cache
 import base64
+import calendar
 
 # =============================================================================
 # CONFIGURATIE
@@ -763,70 +764,100 @@ def odoo_read_group(model, domain, fields, groupby, timeout=120):
         return []
 
 @st.cache_data(ttl=3600)  # 1 uur cache
-def get_revenue_aggregated(year, company_id=None):
-    """Server-side geaggregeerde omzetdata - geen limiet!"""
+def get_revenue_aggregated(year, company_id=None, month=None):
+    """Server-side geaggregeerde omzetdata - geen limiet!
+
+    Args:
+        year: Het jaar om te filteren
+        company_id: Optioneel bedrijf ID om te filteren
+        month: Optionele maand (1-12) om te filteren. None of 0 = alle maanden
+    """
+    # Bepaal datumbereik
+    if month and month > 0:
+        last_day = calendar.monthrange(year, month)[1]
+        date_from = f"{year}-{month:02d}-01"
+        date_to = f"{year}-{month:02d}-{last_day:02d}"
+    else:
+        date_from = f"{year}-01-01"
+        date_to = f"{year}-12-31"
+
     domain = [
         ("account_id.code", ">=", "800000"),
         ("account_id.code", "<", "900000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted")
     ]
     if company_id:
         domain.append(("company_id", "=", company_id))
-    
+
     # Groepeer per maand
     result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
     return result
 
 @st.cache_data(ttl=3600)  # 1 uur cache
-def get_cost_aggregated(year, company_id=None):
-    """Server-side geaggregeerde kostendata - geen limiet!"""
+def get_cost_aggregated(year, company_id=None, month=None):
+    """Server-side geaggregeerde kostendata - geen limiet!
+
+    Args:
+        year: Het jaar om te filteren
+        company_id: Optioneel bedrijf ID om te filteren
+        month: Optionele maand (1-12) om te filteren. None of 0 = alle maanden
+    """
+    # Bepaal datumbereik
+    if month and month > 0:
+        last_day = calendar.monthrange(year, month)[1]
+        date_from = f"{year}-{month:02d}-01"
+        date_to = f"{year}-{month:02d}-{last_day:02d}"
+    else:
+        date_from = f"{year}-01-01"
+        date_to = f"{year}-12-31"
+
     # Query voor 4* rekeningen
     domain_4 = [
         ("account_id.code", ">=", "400000"),
         ("account_id.code", "<", "500000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted")
     ]
     if company_id:
         domain_4.append(("company_id", "=", company_id))
-    
+
     # Query voor 6* rekeningen
     domain_6 = [
         ("account_id.code", ">=", "600000"),
         ("account_id.code", "<", "700000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted")
     ]
     if company_id:
         domain_6.append(("company_id", "=", company_id))
-    
+
     # Query voor 7* rekeningen (kostprijs verkopen)
     domain_7 = [
         ("account_id.code", ">=", "700000"),
         ("account_id.code", "<", "800000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted")
     ]
     if company_id:
         domain_7.append(("company_id", "=", company_id))
-    
+
     result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
     result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
     result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
-    
+
     # Combineer resultaten per maand
     monthly = {}
     for r in result_4 + result_6 + result_7:
-        month = r.get("date:month", "Unknown")
-        if month not in monthly:
-            monthly[month] = 0
-        monthly[month] += r.get("balance", 0)
-    
+        month_key = r.get("date:month", "Unknown")
+        if month_key not in monthly:
+            monthly[month_key] = 0
+        monthly[month_key] += r.get("balance", 0)
+
     return [{"date:month": k, "balance": v} for k, v in monthly.items()]
 
 @st.cache_data(ttl=3600)
@@ -867,72 +898,102 @@ def get_2026_actuals_by_category(company_id=None):
     return results
 
 @st.cache_data(ttl=3600)
-def get_intercompany_revenue(year, company_id=None):
-    """Haal alleen intercompany omzet op voor IC filtering"""
+def get_intercompany_revenue(year, company_id=None, month=None):
+    """Haal alleen intercompany omzet op voor IC filtering
+
+    Args:
+        year: Het jaar om te filteren
+        company_id: Optioneel bedrijf ID om te filteren
+        month: Optionele maand (1-12) om te filteren. None of 0 = alle maanden
+    """
+    # Bepaal datumbereik
+    if month and month > 0:
+        last_day = calendar.monthrange(year, month)[1]
+        date_from = f"{year}-{month:02d}-01"
+        date_to = f"{year}-{month:02d}-{last_day:02d}"
+    else:
+        date_from = f"{year}-01-01"
+        date_to = f"{year}-12-31"
+
     domain = [
         ("account_id.code", ">=", "800000"),
         ("account_id.code", "<", "900000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted"),
         ("partner_id", "in", INTERCOMPANY_PARTNERS)
     ]
     if company_id:
         domain.append(("company_id", "=", company_id))
-    
+
     result = odoo_read_group("account.move.line", domain, ["balance:sum"], ["date:month"])
     return result
 
 @st.cache_data(ttl=3600)
-def get_intercompany_costs(year, company_id=None):
-    """Haal alleen intercompany kosten op voor IC filtering"""
+def get_intercompany_costs(year, company_id=None, month=None):
+    """Haal alleen intercompany kosten op voor IC filtering
+
+    Args:
+        year: Het jaar om te filteren
+        company_id: Optioneel bedrijf ID om te filteren
+        month: Optionele maand (1-12) om te filteren. None of 0 = alle maanden
+    """
+    # Bepaal datumbereik
+    if month and month > 0:
+        last_day = calendar.monthrange(year, month)[1]
+        date_from = f"{year}-{month:02d}-01"
+        date_to = f"{year}-{month:02d}-{last_day:02d}"
+    else:
+        date_from = f"{year}-01-01"
+        date_to = f"{year}-12-31"
+
     # 4* rekeningen
     domain_4 = [
         ("account_id.code", ">=", "400000"),
         ("account_id.code", "<", "500000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted"),
         ("partner_id", "in", INTERCOMPANY_PARTNERS)
     ]
     if company_id:
         domain_4.append(("company_id", "=", company_id))
-    
+
     # 6* rekeningen
     domain_6 = [
         ("account_id.code", ">=", "600000"),
         ("account_id.code", "<", "700000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted"),
         ("partner_id", "in", INTERCOMPANY_PARTNERS)
     ]
     if company_id:
         domain_6.append(("company_id", "=", company_id))
-    
+
     # 7* rekeningen
     domain_7 = [
         ("account_id.code", ">=", "700000"),
         ("account_id.code", "<", "800000"),
-        ("date", ">=", f"{year}-01-01"),
-        ("date", "<=", f"{year}-12-31"),
+        ("date", ">=", date_from),
+        ("date", "<=", date_to),
         ("parent_state", "=", "posted"),
         ("partner_id", "in", INTERCOMPANY_PARTNERS)
     ]
     if company_id:
         domain_7.append(("company_id", "=", company_id))
-    
+
     result_4 = odoo_read_group("account.move.line", domain_4, ["balance:sum"], ["date:month"])
     result_6 = odoo_read_group("account.move.line", domain_6, ["balance:sum"], ["date:month"])
     result_7 = odoo_read_group("account.move.line", domain_7, ["balance:sum"], ["date:month"])
-    
+
     monthly = {}
     for r in result_4 + result_6 + result_7:
-        month = r.get("date:month", "Unknown")
-        if month not in monthly:
-            monthly[month] = 0
-        monthly[month] += r.get("balance", 0)
-    
+        month_key = r.get("date:month", "Unknown")
+        if month_key not in monthly:
+            monthly[month_key] = 0
+        monthly[month_key] += r.get("balance", 0)
+
     return [{"date:month": k, "balance": v} for k, v in monthly.items()]
 
 @st.cache_data(ttl=3600)
@@ -3861,7 +3922,16 @@ def main():
     current_year = datetime.now().year
     years = list(range(current_year, 2022, -1))
     selected_year = st.sidebar.selectbox("📅 Jaar", years, index=0)
-    
+
+    # Maand selectie
+    month_options = [0] + list(range(1, 13))  # 0 = Alle maanden
+    selected_month = st.sidebar.selectbox(
+        "📆 Maand",
+        month_options,
+        format_func=lambda x: "Alle maanden" if x == 0 else DUTCH_MONTHS.get(x, f"Maand {x}"),
+        index=0
+    )
+
     # Entiteit selectie
     entity_options = ["Alle bedrijven"] + list(COMPANIES.values())
     selected_entity = st.sidebar.selectbox("🏢 Entiteit", entity_options)
@@ -3904,23 +3974,26 @@ def main():
         # KPIs
         col1, col2, col3, col4 = st.columns(4)
         
+        # Bepaal maand parameter (0 of None = alle maanden)
+        month_filter = selected_month if selected_month > 0 else None
+
         with st.spinner("Data laden via server-side aggregatie..."):
             # Gebruik read_group voor snelle server-side aggregatie (geen record limiet!)
-            revenue_agg = get_revenue_aggregated(selected_year, company_id)
-            cost_agg = get_cost_aggregated(selected_year, company_id)
+            revenue_agg = get_revenue_aggregated(selected_year, company_id, month_filter)
+            cost_agg = get_cost_aggregated(selected_year, company_id, month_filter)
             bank_data = get_bank_balances()
             receivables, payables = get_receivables_payables(company_id)
-        
+
         # Bereken totalen uit geaggregeerde data
         total_revenue_raw = -sum(r.get("balance", 0) for r in revenue_agg)
         total_costs_raw = sum(c.get("balance", 0) for c in cost_agg)
-        
+
         # Filter intercompany indien geselecteerd
         if exclude_intercompany:
             # Haal IC-bedragen apart op en trek af
             with st.spinner("Intercompany filtering..."):
-                ic_revenue = get_intercompany_revenue(selected_year, company_id)
-                ic_costs = get_intercompany_costs(selected_year, company_id)
+                ic_revenue = get_intercompany_revenue(selected_year, company_id, month_filter)
+                ic_costs = get_intercompany_costs(selected_year, company_id, month_filter)
             ic_revenue_total = -sum(r.get("balance", 0) for r in ic_revenue)
             ic_costs_total = sum(c.get("balance", 0) for c in ic_costs)
             total_revenue = total_revenue_raw - ic_revenue_total
@@ -3939,10 +4012,15 @@ def main():
             bank_total = sum(b.get("current_statement_balance", 0) for b in bank_data)
         
         ic_suffix = " (excl. IC)" if exclude_intercompany else ""
+        # Bepaal periode label (YTD of specifieke maand)
+        if selected_month > 0:
+            period_label = DUTCH_MONTHS.get(selected_month, f"Maand {selected_month}")
+        else:
+            period_label = "YTD"
         with col1:
-            st.metric(f"💰 Omzet YTD{ic_suffix}", f"€{total_revenue:,.0f}")
+            st.metric(f"💰 Omzet {period_label}{ic_suffix}", f"€{total_revenue:,.0f}")
         with col2:
-            st.metric(f"📉 Kosten YTD{ic_suffix}", f"€{total_costs:,.0f}")
+            st.metric(f"📉 Kosten {period_label}{ic_suffix}", f"€{total_costs:,.0f}")
         with col3:
             st.metric("📊 Resultaat", f"€{result:,.0f}", 
                      delta=f"{result/total_revenue*100:.1f}%" if total_revenue else "0%")
@@ -3963,7 +4041,10 @@ def main():
         
         # Omzet vs Kosten grafiek
         st.markdown("---")
-        chart_title = "📈 Omzet vs Kosten per maand" + (" (excl. IC)" if exclude_intercompany else "")
+        if selected_month > 0:
+            chart_title = f"📈 Omzet vs Kosten {DUTCH_MONTHS.get(selected_month, '')} {selected_year}" + (" (excl. IC)" if exclude_intercompany else "")
+        else:
+            chart_title = "📈 Omzet vs Kosten per maand" + (" (excl. IC)" if exclude_intercompany else "")
         st.subheader(chart_title)
         
         # Helper functie om maandnaam naar sorteerbare datum te converteren
