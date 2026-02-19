@@ -1,0 +1,463 @@
+{
+  "period": "2026-01",
+  "periodLabel": "Januari 2026",
+  "lastUpdated": "2026-02-19T17:00:00Z",
+  "group": {
+    "revenue": 899725,
+    "costOfGoods": -559738,
+    "grossProfit": 339987,
+    "grossMargin": 0.378,
+    "operatingExpenses": -364550,
+    "result": -24563,
+    "cash": 1056000,
+    "currentRatio": 1.98,
+    "quickRatio": 1.42,
+    "dso": 44,
+    "dpo": 76,
+    "previousRevenue": 842000,
+    "previousResult": -18200,
+    "previousCash": 980000,
+    "previousMargin": 0.362
+  },
+  "entities": [
+    {
+      "id": "lab_shops",
+      "name": "LAB Shops",
+      "shortName": "Shops",
+      "revenue": 603568,
+      "costOfGoods": -355898,
+      "grossProfit": 247670,
+      "grossMargin": 0.411,
+      "operatingExpenses": -238500,
+      "result": 9170,
+      "previousRevenue": 568000,
+      "previousMargin": 0.395,
+      "employees": 28,
+      "personnelCostRatio": 0.22,
+      "inventoryTurnover": 4.2,
+      "cash": 485000,
+      "categories": {
+        "verf": { "revenue": 421500, "margin": 0.44 },
+        "behang": { "revenue": 96700, "margin": 0.38 },
+        "woonaccessoires": { "revenue": 62200, "margin": 0.32 },
+        "overig": { "revenue": 23168, "margin": 0.28 }
+      },
+      "kpis": {
+        "Omzet": { "value": 603568, "trend": "\u2191" },
+        "Brutomarge%": { "value": 41.1, "trend": "\u2191" },
+        "EBITDA": { "value": 9170, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.22, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": 4.2, "trend": "\u2192" }
+      }
+    },
+    {
+      "id": "lab_conceptstore",
+      "name": "LAB Conceptstore",
+      "shortName": "Conceptstore",
+      "revenue": 164698,
+      "costOfGoods": -152345,
+      "grossProfit": 12353,
+      "grossMargin": 0.075,
+      "operatingExpenses": -85200,
+      "result": -72847,
+      "previousRevenue": 148000,
+      "previousMargin": 0.092,
+      "employees": 12,
+      "personnelCostRatio": 0.35,
+      "inventoryTurnover": 3.1,
+      "cash": 89000,
+      "alert": true,
+      "alertMessage": "Brutomarge ver onder target (7.5% vs 35% target)",
+      "categories": {
+        "verf": { "revenue": 68200, "margin": 0.12 },
+        "behang": { "revenue": 41800, "margin": 0.06 },
+        "woonaccessoires": { "revenue": 38700, "margin": 0.04 },
+        "overig": { "revenue": 15998, "margin": 0.02 }
+      },
+      "kpis": {
+        "Omzet": { "value": 164698, "trend": "\u2191" },
+        "Brutomarge%": { "value": 7.5, "trend": "\u2193" },
+        "EBITDA": { "value": -72847, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.35, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": 3.1, "trend": "\u2192" }
+      }
+    },
+    {
+      "id": "lab_projects",
+      "name": "LAB Projects",
+      "shortName": "Projects",
+      "revenue": 74151,
+      "costOfGoods": -44547,
+      "grossProfit": 29604,
+      "grossMargin": 0.399,
+      "operatingExpenses": -22800,
+      "result": 6804,
+      "previousRevenue": 82000,
+      "previousMargin": 0.41,
+      "employees": 4,
+      "personnelCostRatio": 0.18,
+      "inventoryTurnover": 6.8,
+      "cash": 145000,
+      "categories": {
+        "verf": { "revenue": 58200, "margin": 0.42 },
+        "behang": { "revenue": 8400, "margin": 0.35 },
+        "woonaccessoires": { "revenue": 4800, "margin": 0.3 },
+        "overig": { "revenue": 2751, "margin": 0.38 }
+      },
+      "kpis": {
+        "Omzet": { "value": 74151, "trend": "\u2193" },
+        "Brutomarge%": { "value": 39.9, "trend": "\u2193" },
+        "EBITDA": { "value": 6804, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.18, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": 6.8, "trend": "\u2192" }
+      }
+    },
+    {
+      "id": "juloni",
+      "name": "Juloni",
+      "shortName": "Juloni",
+      "revenue": 19658,
+      "costOfGoods": -9416,
+      "grossProfit": 10242,
+      "grossMargin": 0.521,
+      "operatingExpenses": -8200,
+      "result": 2042,
+      "previousRevenue": 17500,
+      "previousMargin": 0.49,
+      "employees": 2,
+      "personnelCostRatio": 0.25,
+      "inventoryTurnover": 5.5,
+      "cash": 62000,
+      "categories": {
+        "verf": { "revenue": 12400, "margin": 0.55 },
+        "behang": { "revenue": 3800, "margin": 0.48 },
+        "woonaccessoires": { "revenue": 2200, "margin": 0.42 },
+        "overig": { "revenue": 1258, "margin": 0.5 }
+      },
+      "kpis": {
+        "Omzet": { "value": 19658, "trend": "\u2191" },
+        "Brutomarge%": { "value": 52.1, "trend": "\u2191" },
+        "EBITDA": { "value": 2042, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.25, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": 5.5, "trend": "\u2192" }
+      }
+    },
+    {
+      "id": "mt_paints",
+      "name": "MT Paints",
+      "shortName": "MT Paints",
+      "revenue": 6921,
+      "costOfGoods": 0,
+      "grossProfit": 6921,
+      "grossMargin": 1,
+      "operatingExpenses": -5200,
+      "result": 1721,
+      "previousRevenue": 5800,
+      "previousMargin": 1,
+      "employees": 1,
+      "personnelCostRatio": 0.45,
+      "inventoryTurnover": null,
+      "cash": 38000,
+      "categories": {
+        "dienstverlening": { "revenue": 6921, "margin": 1 }
+      },
+      "kpis": {
+        "Omzet": { "value": 6921, "trend": "\u2191" },
+        "Brutomarge%": { "value": 100, "trend": "\u2192" },
+        "EBITDA": { "value": 1721, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.45, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": null, "trend": "\u2192" }
+      }
+    },
+    {
+      "id": "lab_ctw",
+      "name": "LAB CTW",
+      "shortName": "CTW",
+      "revenue": 30729,
+      "costOfGoods": -14196,
+      "grossProfit": 16533,
+      "grossMargin": 0.538,
+      "operatingExpenses": -12650,
+      "result": 3883,
+      "previousRevenue": 26500,
+      "previousMargin": 0.52,
+      "employees": 3,
+      "personnelCostRatio": 0.24,
+      "inventoryTurnover": 7.2,
+      "cash": 72000,
+      "categories": {
+        "verf": { "revenue": 22100, "margin": 0.56 },
+        "behang": { "revenue": 4200, "margin": 0.5 },
+        "woonaccessoires": { "revenue": 2800, "margin": 0.44 },
+        "overig": { "revenue": 1629, "margin": 0.52 }
+      },
+      "kpis": {
+        "Omzet": { "value": 30729, "trend": "\u2191" },
+        "Brutomarge%": { "value": 53.8, "trend": "\u2191" },
+        "EBITDA": { "value": 3883, "trend": "\u2192" },
+        "DSO": { "value": 44, "trend": "\u2192" },
+        "DPO": { "value": 76, "trend": "\u2191" },
+        "Current Ratio": { "value": 1.98, "trend": "\u2192" },
+        "Personeelskosten%": { "value": 0.24, "trend": "\u2192" },
+        "Voorraadrotatie": { "value": 7.2, "trend": "\u2192" }
+      }
+    }
+  ],
+  "dailyRevenue": [
+    { "date": "2026-01-01", "amount": 18500, "entity": "group" },
+    { "date": "2026-01-02", "amount": 32400, "entity": "group" },
+    { "date": "2026-01-03", "amount": 35200, "entity": "group" },
+    { "date": "2026-01-04", "amount": 28100, "entity": "group" },
+    { "date": "2026-01-05", "amount": 31800, "entity": "group" },
+    { "date": "2026-01-06", "amount": 29400, "entity": "group" },
+    { "date": "2026-01-07", "amount": 26700, "entity": "group" },
+    { "date": "2026-01-08", "amount": 33500, "entity": "group" },
+    { "date": "2026-01-09", "amount": 35800, "entity": "group" },
+    { "date": "2026-01-10", "amount": 37200, "entity": "group" },
+    { "date": "2026-01-11", "amount": 29800, "entity": "group" },
+    { "date": "2026-01-12", "amount": 32100, "entity": "group" },
+    { "date": "2026-01-13", "amount": 28900, "entity": "group" },
+    { "date": "2026-01-14", "amount": 25400, "entity": "group" },
+    { "date": "2026-01-15", "amount": 34600, "entity": "group" },
+    { "date": "2026-01-16", "amount": 36400, "entity": "group" },
+    { "date": "2026-01-17", "amount": 38100, "entity": "group" },
+    { "date": "2026-01-18", "amount": 30500, "entity": "group" },
+    { "date": "2026-01-19", "amount": 33200, "entity": "group" },
+    { "date": "2026-01-20", "amount": 29700, "entity": "group" },
+    { "date": "2026-01-21", "amount": 24800, "entity": "group" },
+    { "date": "2026-01-22", "amount": 31600, "entity": "group" },
+    { "date": "2026-01-23", "amount": 34900, "entity": "group" },
+    { "date": "2026-01-24", "amount": 36800, "entity": "group" },
+    { "date": "2026-01-25", "amount": 28300, "entity": "group" },
+    { "date": "2026-01-26", "amount": 30400, "entity": "group" },
+    { "date": "2026-01-27", "amount": 27600, "entity": "group" },
+    { "date": "2026-01-28", "amount": 23900, "entity": "group" },
+    { "date": "2026-01-29", "amount": 29200, "entity": "group" },
+    { "date": "2026-01-30", "amount": 31500, "entity": "group" },
+    { "date": "2026-01-31", "amount": 22325, "entity": "group" }
+  ],
+  "posData": {
+    "entity": "LAB Conceptstore",
+    "totalRevenue": 164698,
+    "transactionCount": 2847,
+    "averageTransaction": 57.85,
+    "dailySales": [
+      { "date": "2026-01-01", "revenue": 3200, "transactions": 52 },
+      { "date": "2026-01-02", "revenue": 5800, "transactions": 98 },
+      { "date": "2026-01-03", "revenue": 6200, "transactions": 105 },
+      { "date": "2026-01-04", "revenue": 4900, "transactions": 82 },
+      { "date": "2026-01-05", "revenue": 5600, "transactions": 94 },
+      { "date": "2026-01-06", "revenue": 5100, "transactions": 86 },
+      { "date": "2026-01-07", "revenue": 4200, "transactions": 71 },
+      { "date": "2026-01-08", "revenue": 5900, "transactions": 100 },
+      { "date": "2026-01-09", "revenue": 6100, "transactions": 103 },
+      { "date": "2026-01-10", "revenue": 6500, "transactions": 110 },
+      { "date": "2026-01-11", "revenue": 5200, "transactions": 88 },
+      { "date": "2026-01-12", "revenue": 5700, "transactions": 96 },
+      { "date": "2026-01-13", "revenue": 5000, "transactions": 84 },
+      { "date": "2026-01-14", "revenue": 4300, "transactions": 72 },
+      { "date": "2026-01-15", "revenue": 6000, "transactions": 101 },
+      { "date": "2026-01-16", "revenue": 6300, "transactions": 106 },
+      { "date": "2026-01-17", "revenue": 6600, "transactions": 112 },
+      { "date": "2026-01-18", "revenue": 5300, "transactions": 89 },
+      { "date": "2026-01-19", "revenue": 5800, "transactions": 98 },
+      { "date": "2026-01-20", "revenue": 5100, "transactions": 86 },
+      { "date": "2026-01-21", "revenue": 4100, "transactions": 69 },
+      { "date": "2026-01-22", "revenue": 5500, "transactions": 93 },
+      { "date": "2026-01-23", "revenue": 6000, "transactions": 101 },
+      { "date": "2026-01-24", "revenue": 6400, "transactions": 108 },
+      { "date": "2026-01-25", "revenue": 4900, "transactions": 83 },
+      { "date": "2026-01-26", "revenue": 5300, "transactions": 89 },
+      { "date": "2026-01-27", "revenue": 4700, "transactions": 79 },
+      { "date": "2026-01-28", "revenue": 3900, "transactions": 66 },
+      { "date": "2026-01-29", "revenue": 5100, "transactions": 86 },
+      { "date": "2026-01-30", "revenue": 5500, "transactions": 93 },
+      { "date": "2026-01-31", "revenue": 3398, "transactions": 57 }
+    ],
+    "peakHours": [
+      { "hour": "10:00", "avgTransactions": 12 },
+      { "hour": "11:00", "avgTransactions": 18 },
+      { "hour": "12:00", "avgTransactions": 15 },
+      { "hour": "13:00", "avgTransactions": 14 },
+      { "hour": "14:00", "avgTransactions": 16 },
+      { "hour": "15:00", "avgTransactions": 13 },
+      { "hour": "16:00", "avgTransactions": 10 },
+      { "hour": "17:00", "avgTransactions": 6 }
+    ],
+    "weeklyBreakdown": [
+      { "week": 1, "revenue": 35200, "transactions": 588 },
+      { "week": 2, "revenue": 39500, "transactions": 665 },
+      { "week": 3, "revenue": 41100, "transactions": 692 },
+      { "week": 4, "revenue": 38200, "transactions": 641 },
+      { "week": 5, "revenue": 10698, "transactions": 261 }
+    ],
+    "categoryBreakdown": [
+      { "category": "Verf", "percentage": 0.42, "revenue": 69173 },
+      { "category": "Behang", "percentage": 0.25, "revenue": 41175 },
+      { "category": "Woonaccessoires", "percentage": 0.23, "revenue": 37881 },
+      { "category": "Overig", "percentage": 0.1, "revenue": 16470 }
+    ],
+    "weekdayAvg": 5542,
+    "weekendAvg": 5050
+  },
+  "cashflow": {
+    "openingBalance": 980000,
+    "inflows": {
+      "customerPayments": 785000,
+      "otherIncome": 42000,
+      "total": 827000
+    },
+    "outflows": {
+      "supplierPayments": -425000,
+      "salaries": -198000,
+      "rent": -52000,
+      "taxes": -38000,
+      "other": -38000,
+      "total": -751000
+    },
+    "closingBalance": 1056000,
+    "bankAccounts": [
+      { "name": "ING Hoofdrekening", "balance": 485000, "entity": "LAB Shops" },
+      { "name": "ING Conceptstore", "balance": 189000, "entity": "LAB Conceptstore" },
+      { "name": "ING Projects", "balance": 145000, "entity": "LAB Projects" },
+      { "name": "ING Juloni", "balance": 62000, "entity": "Juloni" },
+      { "name": "ING MT Paints", "balance": 38000, "entity": "MT Paints" },
+      { "name": "Rabobank CTW", "balance": 72000, "entity": "LAB CTW" },
+      { "name": "Spaarrekening", "balance": 65000, "entity": "Group" }
+    ],
+    "workingCapital": {
+      "currentAssets": 1850000,
+      "currentLiabilities": 935000,
+      "workingCapital": 915000
+    },
+    "forecast": [
+      { "date": "2026-02-01", "projected": 1056000 },
+      { "date": "2026-02-05", "projected": 1020000 },
+      { "date": "2026-02-10", "projected": 985000 },
+      { "date": "2026-02-15", "projected": 1045000 },
+      { "date": "2026-02-20", "projected": 1010000 },
+      { "date": "2026-02-25", "projected": 975000 },
+      { "date": "2026-02-28", "projected": 1035000 }
+    ]
+  },
+  "receivables": {
+    "total": 412000,
+    "aging": {
+      "current": 245000,
+      "days30": 98000,
+      "days60": 42000,
+      "days90plus": 27000
+    },
+    "topDebtors": [
+      { "name": "Bouwbedrijf De Vries", "amount": 48500, "daysOverdue": 45 },
+      { "name": "Interieur Studio Amsterdam", "amount": 35200, "daysOverdue": 32 },
+      { "name": "Schildersbedrijf Jansen", "amount": 28900, "daysOverdue": 67 },
+      { "name": "Hotel Krasnapolsky", "amount": 24600, "daysOverdue": 21 },
+      { "name": "Architectenbureau Rem", "amount": 19800, "daysOverdue": 88 }
+    ]
+  },
+  "payables": {
+    "total": 338000,
+    "aging": {
+      "current": 198000,
+      "days30": 82000,
+      "days60": 38000,
+      "days90plus": 20000
+    },
+    "conceptInvoices": {
+      "count": 112,
+      "totalAmount": 171000
+    },
+    "topCreditors": [
+      { "name": "Verfgroothandel BV", "amount": 78500, "dueDate": "2026-02-15" },
+      { "name": "Behangleverancier NL", "amount": 45200, "dueDate": "2026-02-20" },
+      { "name": "Transportbedrijf Snel", "amount": 28900, "dueDate": "2026-02-10" },
+      { "name": "Huisvestingsmaatschappij", "amount": 22000, "dueDate": "2026-02-01" },
+      { "name": "ICT Solutions BV", "amount": 18400, "dueDate": "2026-02-25" }
+    ],
+    "intercompany": [
+      { "from": "LAB Shops", "to": "LAB Conceptstore", "amount": 45200 },
+      { "from": "LAB Shops", "to": "LAB Projects", "amount": 32800 },
+      { "from": "LAB CTW", "to": "LAB Shops", "amount": 18500 },
+      { "from": "Juloni", "to": "LAB Shops", "amount": 8900 },
+      { "from": "MT Paints", "to": "LAB Shops", "amount": 5200 }
+    ]
+  },
+  "alerts": [
+    {
+      "id": 1,
+      "type": "danger",
+      "title": "Conceptstore Marge Kritiek",
+      "message": "LAB Conceptstore brutomarge is 7.5% \u2014 ver onder het target van 35%. Actie vereist.",
+      "entity": "LAB Conceptstore",
+      "action": "Bekijk Omzet & Marge"
+    },
+    {
+      "id": 2,
+      "type": "warning",
+      "title": "112 Concept Facturen",
+      "message": "Er staan 112 conceptfacturen open ter waarde van \u20ac171.000. Verwerk deze zo snel mogelijk.",
+      "entity": "Group",
+      "action": "Bekijk Openstaande Posten"
+    },
+    {
+      "id": 3,
+      "type": "warning",
+      "title": "Hoge Debiteurenstand 90+",
+      "message": "\u20ac27.000 aan vorderingen is ouder dan 90 dagen. Escaleer incassoprocedure.",
+      "entity": "Group",
+      "action": "Bekijk Debiteuren"
+    },
+    {
+      "id": 4,
+      "type": "success",
+      "title": "Cashpositie Verbeterd",
+      "message": "Cashpositie is gestegen van \u20ac980K naar \u20ac1.056K (+7.8%). Liquiditeit is gezond.",
+      "entity": "Group",
+      "action": "Bekijk Cash & Liquiditeit"
+    },
+    {
+      "id": 5,
+      "type": "warning",
+      "title": "Groepsresultaat Negatief",
+      "message": "Het groepsresultaat is -\u20ac24.563. Vooral door de Conceptstore verliezen.",
+      "entity": "Group",
+      "action": "Bekijk KPI Scorecard"
+    }
+  ],
+  "kpiTargets": {
+    "grossMargin": 0.35,
+    "currentRatio": 1.5,
+    "dso": 30,
+    "dpo": 60,
+    "personnelCostRatio": 0.3,
+    "inventoryTurnover": 4
+  },
+  "categories": [
+    { "name": "Verf", "value": 540000 },
+    { "name": "Behang", "value": 180000 },
+    { "name": "Woonaccessoires", "value": 120000 },
+    { "name": "Overig", "value": 59725 }
+  ],
+  "intercompany": [
+    { "from": "LAB Shops", "to": "LAB Conceptstore", "amount": 45000, "type": "Doorbelasting" },
+    { "from": "LAB CTW", "to": "LAB Shops", "amount": 28000, "type": "Licentie" },
+    { "from": "MT Paints", "to": "LAB Projects", "amount": 12500, "type": "Dienstverlening" },
+    { "from": "Juloni", "to": "LAB CTW", "amount": 8700, "type": "Inkoop" }
+  ]
+}
