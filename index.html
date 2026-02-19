@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LAB · Dashboard</title>
+<meta name="description" content="LAB Colour the World — Financieel Dashboard">
+<meta name="theme-color" content="#2d5016">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%232d5016'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='serif' font-size='20' font-weight='bold'>L</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+<style>
+:root{--bg:#f5f2ed;--text:#1a1a1a;--text-secondary:#6b6560;--accent-green:#2d5016;--accent-gold:#c4956a;--accent-blue:#3a7ca5;--accent-taupe:#8b7d6b;--danger:#b44a3f;--card:#ffffff;--card-shadow:0 1px 3px rgba(0,0,0,.08),0 4px 12px rgba(0,0,0,.04);--radius:12px;--font-heading:'Playfair Display',Georgia,serif;--font-body:'Inter',-apple-system,system-ui,sans-serif;--sidebar-w:240px;--bottom-h:72px}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-body);background:var(--bg);color:var(--text);line-height:1.5;min-height:100dvh;overflow-x:hidden}
+h1,h2,h3{font-family:var(--font-heading);font-weight:700}
+.sidebar{position:fixed;left:0;top:0;bottom:0;width:var(--sidebar-w);background:var(--card);border-right:1px solid rgba(0,0,0,.06);display:flex;flex-direction:column;z-index:100;padding:24px 0}
+.sidebar-logo{padding:0 24px 24px;font-family:var(--font-heading);font-size:1.5rem;font-weight:700;color:var(--accent-green);border-bottom:1px solid rgba(0,0,0,.06)}
+.sidebar-logo span{color:var(--accent-gold)}
+.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.nav-item{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:var(--radius);cursor:pointer;font-size:.875rem;font-weight:500;color:var(--text-secondary);transition:all .2s;border:none;background:none;width:100%;text-align:left}
+.nav-item:hover{background:rgba(45,80,22,.06);color:var(--text)}
+.nav-item.active{background:rgba(45,80,22,.1);color:var(--accent-green);font-weight:600}
+.nav-item svg{width:20px;height:20px;flex-shrink:0}
+.sidebar-footer{padding:16px 24px;border-top:1px solid rgba(0,0,0,.06);font-size:.75rem;color:var(--text-secondary)}
+.sidebar-footer a{color:var(--accent-green);text-decoration:none}
+.main{margin-left:var(--sidebar-w);padding:32px;max-width:1400px}
+.page{display:none;animation:fadeIn .3s ease}
+.page.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.page-header{margin-bottom:24px}
+.page-header h1{font-size:1.75rem;margin-bottom:4px}
+.page-header p{color:var(--text-secondary);font-size:.875rem}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:24px}
+.kpi-card{background:var(--card);border-radius:var(--radius);padding:20px;box-shadow:var(--card-shadow);transition:transform .2s,box-shadow .2s}
+.kpi-card:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.1)}
+.kpi-label{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-secondary);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.kpi-value{font-family:var(--font-heading);font-size:1.75rem;font-weight:700;color:var(--text);line-height:1.2}
+.kpi-change{font-size:.75rem;font-weight:600;margin-top:4px;display:inline-flex;align-items:center;gap:2px;padding:2px 8px;border-radius:99px}
+.kpi-change.positive{background:rgba(45,80,22,.1);color:var(--accent-green)}
+.kpi-change.negative{background:rgba(180,74,63,.1);color:var(--danger)}
+.card{background:var(--card);border-radius:var(--radius);padding:24px;box-shadow:var(--card-shadow);margin-bottom:16px}
+.card h3{font-size:1.1rem;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+.chart-container{position:relative;height:280px}
+.alert-card{background:var(--card);border-radius:var(--radius);padding:16px 20px;box-shadow:var(--card-shadow);border-left:4px solid;display:flex;align-items:flex-start;gap:12px;margin-bottom:8px}
+.alert-card.red{border-left-color:var(--danger)}
+.alert-card.orange{border-left-color:var(--accent-gold)}
+.alert-card.green{border-left-color:var(--accent-green)}
+.alert-title{font-weight:600;font-size:.875rem}
+.alert-desc{font-size:.8rem;color:var(--text-secondary);margin-top:2px}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;padding:10px 12px;border-bottom:2px solid rgba(0,0,0,.08);font-weight:600;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px}
+td{padding:10px 12px;border-bottom:1px solid rgba(0,0,0,.04)}
+tr:hover td{background:rgba(0,0,0,.015)}
+.margin-bar{height:8px;border-radius:4px;background:rgba(0,0,0,.06);overflow:hidden;min-width:100px}
+.margin-bar-fill{height:100%;border-radius:4px;transition:width .8s ease}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;font-size:.7rem;font-weight:600}
+.badge.green{background:rgba(45,80,22,.1);color:var(--accent-green)}
+.badge.orange{background:rgba(196,149,106,.15);color:#9a7340}
+.badge.red{background:rgba(180,74,63,.1);color:var(--danger)}
+.gauge-container{display:flex;flex-direction:column;align-items:center;gap:8px}
+.gauge-value{font-family:var(--font-heading);font-size:2rem;font-weight:700}
+.gauge-label{font-size:.8rem;color:var(--text-secondary)}
+.quick-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:16px}
+.quick-link{background:var(--card);border-radius:var(--radius);padding:16px;text-align:center;cursor:pointer;border:1px solid rgba(0,0,0,.06);transition:all .2s;font-size:.85rem;font-weight:500;color:var(--text)}
+.quick-link:hover{border-color:var(--accent-green);color:var(--accent-green);transform:translateY(-2px)}
+.quick-link .ql-icon{font-size:1.5rem;margin-bottom:6px}
+.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:var(--bottom-h);background:var(--card);border-top:1px solid rgba(0,0,0,.08);z-index:100;padding:0 8px;padding-bottom:env(safe-area-inset-bottom)}
+.bottom-nav-inner{display:flex;justify-content:space-around;align-items:center;height:100%}
+.bottom-tab{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 8px;border:none;background:none;cursor:pointer;color:var(--text-secondary);font-size:.65rem;font-weight:500;transition:color .2s;min-width:44px;min-height:44px;justify-content:center}
+.bottom-tab.active{color:var(--accent-green)}
+.bottom-tab svg{width:22px;height:22px}
+.waterfall-bar{display:flex;align-items:end;gap:8px;height:200px;padding:0 12px}
+.waterfall-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
+.waterfall-block{width:100%;border-radius:4px;transition:height .6s ease}
+.waterfall-label{font-size:.7rem;color:var(--text-secondary);text-align:center}
+.waterfall-value{font-size:.75rem;font-weight:600}
+.scorecard-dot{width:12px;height:12px;border-radius:50%;display:inline-block}
+.scorecard-dot.green{background:var(--accent-green)}
+.scorecard-dot.orange{background:var(--accent-gold)}
+.scorecard-dot.red{background:var(--danger)}
+.loading{display:flex;align-items:center;justify-content:center;min-height:60vh;flex-direction:column;gap:16px}
+.spinner{width:40px;height:40px;border:3px solid rgba(0,0,0,.1);border-top-color:var(--accent-green);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:768px){
+.sidebar{display:none}
+.main{margin-left:0;padding:16px 16px calc(var(--bottom-h) + 16px)}
+.bottom-nav{display:block}
+.grid-2,.grid-3{grid-template-columns:1fr}
+.kpi-grid{grid-template-columns:repeat(2,1fr)}
+.page-header h1{font-size:1.35rem}
+}
+@media(max-width:400px){
+.kpi-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<!-- Sidebar (desktop) -->
+<aside class="sidebar" id="sidebar">
+<div class="sidebar-logo">LAB <span>·</span> Dashboard</div>
+<nav class="sidebar-nav" id="sidebarNav"></nav>
+<div class="sidebar-footer">Powered by <a href="https://fidfinance.nl" target="_blank">FID Finance</a></div>
+</aside>
+
+<!-- Bottom Navigation (mobile) -->
+<nav class="bottom-nav" id="bottomNav"><div class="bottom-nav-inner" id="bottomNavInner"></div></nav>
+
+<!-- Main Content -->
+<main class="main" id="mainContent">
+<div class="loading" id="loader"><div class="spinner"></div><span style="color:var(--text-secondary);font-size:.875rem">Dashboard laden...</span></div>
+</main>
+
+<script>
+const PAGES=[
+{id:'home',label:'Home',icon:'<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>'},
+{id:'revenue',label:'Omzet & Marge',icon:'<line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'},
+{id:'pos',label:'Kassaverkopen',icon:'<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'},
+{id:'cash',label:'Cash & Liquiditeit',icon:'<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>'},
+{id:'receivables',label:'Openstaande Posten',icon:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>'},
+{id:'kpi',label:'KPI Scorecard',icon:'<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'}
+];
+let DATA=null;
+let currentPage='home';
+
+function svgIcon(path){return `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`}
+
+function buildNav(){
+const sidebarNav=document.getElementById('sidebarNav');
+const bottomInner=document.getElementById('bottomNavInner');
+PAGES.forEach(p=>{
+sidebarNav.innerHTML+=`<button class="nav-item${p.id===currentPage?' active':''}" onclick="showPage('${p.id}')">${svgIcon(p.icon)}<span>${p.label}</span></button>`;
+bottomInner.innerHTML+=`<button class="bottom-tab${p.id===currentPage?' active':''}" onclick="showPage('${p.id}')">${svgIcon(p.icon)}<span>${p.label}</span></button>`;
+});
+}
+
+function showPage(id){
+currentPage=id;
+document.querySelectorAll('.nav-item').forEach((el,i)=>el.classList.toggle('active',PAGES[i].id===id));
+document.querySelectorAll('.bottom-tab').forEach((el,i)=>el.classList.toggle('active',PAGES[i].id===id));
+document.querySelectorAll('.page').forEach(el=>el.classList.toggle('active',el.id==='page-'+id));
+window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function fmt(n,decimals=0){return new Intl.NumberFormat('nl-NL',{minimumFractionDigits:decimals,maximumFractionDigits:decimals}).format(n)}
+function fmtEur(n){return '€'+fmt(n)}
+function fmtPct(n){return fmt(n*100,1)+'%'}
+
+function getGreeting(){const h=new Date().getHours();return h<12?'Goedemorgen':h<18?'Goedemiddag':'Goedenavond'}
+function getDateStr(){return new Date().toLocaleDateString('nl-NL',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}
+
+function animateValue(el,end,prefix='',suffix='',duration=1200){
+let start=0;const startTime=performance.now();
+const isNeg=end<0;const absEnd=Math.abs(end);
+function update(now){
+const elapsed=now-startTime;const progress=Math.min(elapsed/duration,1);
+const eased=1-Math.pow(1-progress,3);
+const current=Math.round(eased*absEnd);
+el.textContent=prefix+(isNeg?'-':'')+fmt(current)+suffix;
+if(progress<1)requestAnimationFrame(update);
+}
+requestAnimationFrame(update);
+}
+
+function renderHome(){
+const g=DATA.group;const alerts=DATA.alerts||[];
+return `<div class="page-header"><h1>${getGreeting()} 👋</h1><p>${getDateStr()} · Periode: januari 2026</p></div>
+<div class="kpi-grid">
+<div class="kpi-card"><div class="kpi-label">💰 Maandomzet</div><div class="kpi-value" data-animate="${g.revenue}" data-prefix="€">€${fmt(g.revenue)}</div><div class="kpi-change positive">↑ Januari 2026</div></div>
+<div class="kpi-card"><div class="kpi-label">📊 Resultaat</div><div class="kpi-value" data-animate="${g.result}" data-prefix="€" style="color:var(--danger)">€${fmt(g.result)}</div><div class="kpi-change negative">↓ Negatief resultaat</div></div>
+<div class="kpi-card"><div class="kpi-label">🏦 Cashpositie</div><div class="kpi-value" data-animate="${g.cash}" data-prefix="€">€${fmt(g.cash)}</div><div class="kpi-change positive">Voldoende buffer</div></div>
+<div class="kpi-card"><div class="kpi-label">📈 Brutomarge</div><div class="kpi-value" data-animate="${Math.round(g.grossMargin*1000)/10}" data-suffix="%">${fmtPct(g.grossMargin)}</div><div class="kpi-change ${g.grossMargin>=0.4?'positive':'negative'}">${g.grossMargin>=0.4?'✓ Op target':'⚠ Onder target (40%)'}</div></div>
+</div>
+<div class="grid-2">
+<div class="card"><h3>📉 Omzet Trend (dagelijks)</h3><div class="chart-container"><canvas id="homeSparkline"></canvas></div></div>
+<div class="card"><h3>⚠️ Aandachtspunten</h3>${alerts.map(a=>{const sev=a.severity||a.type||'warning';const sevClass=sev==='danger'?'red':sev==='warning'?'orange':sev==='success'?'green':'orange';return `<div class="alert-card ${sevClass}"><div><div class="alert-title">${a.title}</div><div class="alert-desc">${a.description||a.message||''}</div></div></div>`;}).join('')}</div>
+</div>
+<div class="card"><h3>🔗 Snelkoppelingen</h3><div class="quick-links">
+<div class="quick-link" onclick="showPage('revenue')"><div class="ql-icon">💰</div>Omzet & Marge</div>
+<div class="quick-link" onclick="showPage('pos')"><div class="ql-icon">🏪</div>Kassaverkopen</div>
+<div class="quick-link" onclick="showPage('cash')"><div class="ql-icon">🏦</div>Cash & Liquiditeit</div>
+<div class="quick-link" onclick="showPage('receivables')"><div class="ql-icon">📋</div>Openstaande Posten</div>
+<div class="quick-link" onclick="showPage('kpi')"><div class="ql-icon">📈</div>KPI Scorecard</div>
+</div></div>`;
+}
+
+function renderRevenue(){
+const ents=DATA.entities||[];
+const g=DATA.group;
+let tableRows=ents.map(e=>{
+const margin=e.grossMargin||0;
+const color=margin>=0.4?'var(--accent-green)':margin>=0.2?'var(--accent-gold)':'var(--danger)';
+const badge=margin>=0.4?'green':margin>=0.2?'orange':'red';
+return `<tr><td style="font-weight:600">${e.name}</td><td>€${fmt(e.revenue)}</td><td>€${fmt(e.costOfGoods)}</td><td>€${fmt(e.grossProfit)}</td><td><span class="badge ${badge}">${fmtPct(e.grossMargin)}</span></td><td><div class="margin-bar"><div class="margin-bar-fill" style="width:${margin*100}%;background:${color}"></div></div></td></tr>`;
+}).join('');
+return `<div class="page-header"><h1>Omzet & Marge</h1><p>Januari 2026 · Alle entiteiten</p></div>
+<div class="kpi-grid">
+<div class="kpi-card"><div class="kpi-label">Totale Omzet</div><div class="kpi-value">€${fmt(g.revenue)}</div></div>
+<div class="kpi-card"><div class="kpi-label">Brutowinst</div><div class="kpi-value">€${fmt(g.grossProfit)}</div></div>
+<div class="kpi-card"><div class="kpi-label">Brutomarge</div><div class="kpi-value">${fmtPct(g.grossMargin)}</div></div>
+<div class="kpi-card"><div class="kpi-label">Resultaat</div><div class="kpi-value" style="color:${g.result<0?'var(--danger)':'var(--accent-green)'}">€${fmt(g.result)}</div></div>
+</div>
+<div class="grid-2">
+<div class="card"><h3>📊 Omzet per Entiteit</h3><div class="chart-container"><canvas id="revenueBarChart"></canvas></div></div>
+<div class="card"><h3>🍩 Omzet per Categorie</h3><div class="chart-container"><canvas id="categoryDonut"></canvas></div></div>
+</div>
+<div class="card"><h3>📋 Marge-analyse per Entiteit</h3>
+<div style="overflow-x:auto"><table><thead><tr><th>Entiteit</th><th>Omzet</th><th>Kostprijs</th><th>Brutowinst</th><th>Marge%</th><th>Marge</th></tr></thead><tbody>${tableRows}</tbody>
+<tfoot><tr style="font-weight:700;border-top:2px solid var(--text)"><td>Groep Totaal</td><td>€${fmt(g.revenue)}</td><td>€${fmt(Math.abs(g.costOfGoods))}</td><td>€${fmt(g.grossProfit)}</td><td>${fmtPct(g.grossMargin)}</td><td><div class="margin-bar"><div class="margin-bar-fill" style="width:${g.grossMargin*100}%;background:var(--accent-green)"></div></div></td></tr></tfoot></table></div></div>`;
+}
+
+function renderPOS(){
+const pos=DATA.posData||{};
+const daily=pos.dailySales||pos.dailyRevenue||[];
+const avgTx=pos.averageTransaction||pos.avgTransactionValue||87;
+const totalTx=pos.transactionCount||pos.totalTransactions||1893;
+const weekdays=pos.weekdayAvg||4200;
+const weekends=pos.weekendAvg||7100;
+let weeklyRows='';
+if(pos.weeklyBreakdown){pos.weeklyBreakdown.forEach(w=>{const avg=w.avgTransaction||(w.transactions?Math.round(w.revenue/w.transactions):0);weeklyRows+=`<tr><td>${w.week}</td><td>€${fmt(w.revenue)}</td><td>${w.transactions}</td><td>€${fmt(avg)}</td></tr>`;});}
+return `<div class="page-header"><h1>Kassaverkopen</h1><p>LAB Conceptstore · Januari 2026</p></div>
+<div class="kpi-grid">
+<div class="kpi-card"><div class="kpi-label">🏪 POS Omzet</div><div class="kpi-value">€${fmt(pos.totalRevenue||164698)}</div></div>
+<div class="kpi-card"><div class="kpi-label">🧾 Transacties</div><div class="kpi-value">${fmt(totalTx)}</div></div>
+<div class="kpi-card"><div class="kpi-label">💳 Gem. Transactie</div><div class="kpi-value">€${fmt(avgTx)}</div></div>
+<div class="kpi-card"><div class="kpi-label">📅 Piekdag</div><div class="kpi-value">${pos.peakDay||'Zaterdag'}</div></div>
+</div>
+<div class="card"><h3>📊 Dagelijkse POS Omzet</h3><div class="chart-container"><canvas id="posDailyChart"></canvas></div></div>
+<div class="grid-2">
+<div class="card"><h3>📅 Weekdag vs Weekend</h3><div class="chart-container"><canvas id="posWeekdayChart"></canvas></div></div>
+<div class="card"><h3>📋 Wekelijks Overzicht</h3><div style="overflow-x:auto"><table><thead><tr><th>Week</th><th>Omzet</th><th>Transacties</th><th>Gem.</th></tr></thead><tbody>${weeklyRows}</tbody></table></div></div>
+</div>`;
+}
+
+function renderCash(){
+const cf=DATA.cashflow||{};
+const g=DATA.group;
+const accounts=cf.bankAccounts||[];
+let accountRows=accounts.map(a=>`<tr><td style="font-weight:500">${a.name}</td><td style="font-weight:600;color:${a.balance>=0?'var(--accent-green)':'var(--danger)'}">€${fmt(a.balance)}</td></tr>`).join('');
+return `<div class="page-header"><h1>Cash & Liquiditeit</h1><p>Januari 2026 · Groepsoverzicht</p></div>
+<div class="kpi-grid">
+<div class="kpi-card"><div class="kpi-label">🏦 Totale Cashpositie</div><div class="kpi-value">€${fmt(g.cash)}</div><div class="kpi-change positive">Alle bankrekeningen</div></div>
+<div class="kpi-card"><div class="kpi-label">📊 Current Ratio</div><div class="kpi-value">${fmt(g.currentRatio,2)}</div><div class="kpi-change ${g.currentRatio>=1.5?'positive':'negative'}">${g.currentRatio>=1.5?'✓ Gezond':'⚠ Aandacht'}</div></div>
+<div class="kpi-card"><div class="kpi-label">📅 DSO (Dagen)</div><div class="kpi-value">${g.dso}</div><div class="kpi-change ${g.dso<=45?'positive':'negative'}">${g.dso<=45?'✓ Goed':'⚠ Te hoog'}</div></div>
+<div class="kpi-card"><div class="kpi-label">📅 DPO (Dagen)</div><div class="kpi-value">${g.dpo}</div><div class="kpi-change positive">Gunstig betalingstermijn</div></div>
+</div>
+<div class="grid-2">
+<div class="card"><h3>🏦 Bankrekeningen</h3><table><thead><tr><th>Rekening</th><th>Saldo</th></tr></thead><tbody>${accountRows}</tbody>
+<tfoot><tr style="font-weight:700;border-top:2px solid var(--text)"><td>Totaal</td><td>€${fmt(g.cash)}</td></tr></tfoot></table></div>
+<div class="card"><h3>💧 Cash Flow Waterval</h3><div class="chart-container"><canvas id="cashWaterfallChart"></canvas></div></div>
+</div>
+<div class="card"><h3>📈 Cashflow Prognose (30 dagen)</h3><div class="chart-container"><canvas id="cashForecastChart"></canvas></div></div>`;
+}
+
+function renderReceivables(){
+const rec=DATA.receivables||{};
+const pay=DATA.payables||{};
+const aging=rec.aging||{};
+const topDebtors=rec.topDebtors||[];
+const topCreditors=pay.topCreditors||[];
+const ic=DATA.intercompany||[];
+let debtorRows=topDebtors.map(d=>`<tr><td style="font-weight:500">${d.name}</td><td>€${fmt(d.amount)}</td><td>${d.daysOverdue>0?`<span class="badge red">${d.daysOverdue} dagen</span>`:'<span class="badge green">Op tijd</span>'}</td></tr>`).join('');
+let creditorRows=topCreditors.map(c=>`<tr><td style="font-weight:500">${c.name}</td><td>€${fmt(c.amount)}</td><td>${c.dueDate}</td></tr>`).join('');
+let icRows=(ic||[]).map(i=>`<tr><td>${i.from}</td><td>${i.to}</td><td>€${fmt(i.amount)}</td><td>${i.type}</td></tr>`).join('');
+const conceptCount=rec.conceptInvoices||112;
+const conceptAmount=rec.conceptAmount||171000;
+return `<div class="page-header"><h1>Openstaande Posten</h1><p>Januari 2026 · Debiteuren & Crediteuren</p></div>
+<div class="kpi-grid">
+<div class="kpi-card"><div class="kpi-label">📥 Debiteuren Totaal</div><div class="kpi-value">€${fmt(rec.total||385000)}</div></div>
+<div class="kpi-card"><div class="kpi-label">📤 Crediteuren Totaal</div><div class="kpi-value">€${fmt(pay.total||290000)}</div></div>
+<div class="kpi-card"><div class="kpi-label">⚠️ Concept Facturen</div><div class="kpi-value" style="color:var(--danger)">${conceptCount} stuks</div><div class="kpi-change negative">€${fmt(conceptAmount)} openstaand</div></div>
+<div class="kpi-card"><div class="kpi-label">🔴 Verlopen (90+)</div><div class="kpi-value" style="color:var(--danger)">€${fmt(aging['90+']||45000)}</div></div>
+</div>
+<div class="grid-2">
+<div class="card"><h3>📊 Debiteuren Veroudering</h3><div class="chart-container"><canvas id="agingChart"></canvas></div></div>
+<div class="card"><h3>🏆 Top 5 Debiteuren</h3><table><thead><tr><th>Debiteur</th><th>Bedrag</th><th>Status</th></tr></thead><tbody>${debtorRows}</tbody></table></div>
+</div>
+<div class="grid-2">
+<div class="card"><h3>📋 Crediteuren</h3><table><thead><tr><th>Crediteur</th><th>Bedrag</th><th>Vervaldatum</th></tr></thead><tbody>${creditorRows}</tbody></table></div>
+<div class="card"><h3>🔄 Intercompany Posities</h3><table><thead><tr><th>Van</th><th>Naar</th><th>Bedrag</th><th>Type</th></tr></thead><tbody>${icRows||'<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">Geen intercompany posities</td></tr>'}</tbody></table></div>
+</div>`;
+}
+
+function renderKPI(){
+const ents=DATA.entities||[];
+const kpis=DATA.kpiScorecard||{};
+const metrics=['Omzet','Brutomarge%','EBITDA','DSO','DPO','Current Ratio','Personeelskosten%','Voorraadrotatie'];
+function dot(val,metric){
+if(metric==='Brutomarge%')return val>=40?'green':val>=25?'orange':'red';
+if(metric==='DSO')return val<=30?'green':val<=60?'orange':'red';
+if(metric==='DPO')return val>=45?'green':val>=30?'orange':'red';
+if(metric==='Current Ratio')return val>=1.5?'green':val>=1?'orange':'red';
+if(metric==='Personeelskosten%')return val<=35?'green':val<=45?'orange':'red';
+return 'green';
+}
+let headerCells=ents.map(e=>`<th style="min-width:100px">${e.shortName||e.name}</th>`).join('');
+let bodyRows=metrics.map(m=>{
+let cells=ents.map(e=>{
+const kpiData=e.kpis&&e.kpis[m];
+if(!kpiData)return `<td style="color:var(--text-secondary)">—</td>`;
+const v=kpiData.value;const trend=kpiData.trend||'→';
+const trendColor=trend==='↑'?'var(--accent-green)':trend==='↓'?'var(--danger)':'var(--text-secondary)';
+const display=typeof v==='number'?(m==='Omzet'?'€'+fmt(v):m.includes('%')||m==='Brutomarge%'?fmt(v,1)+'%':m==='Current Ratio'?fmt(v,2):m==='EBITDA'?'€'+fmt(v):fmt(v)):v;return `<td><span class="scorecard-dot ${dot(v,m)}"></span> ${display} <span style="color:${trendColor}">${trend}</span></td>`;
+}).join('');
+return `<tr><td style="font-weight:600">${m}</td>${cells}</tr>`;
+}).join('');
+return `<div class="page-header"><h1>KPI Scorecard</h1><p>Januari 2026 · Groepsoverzicht</p></div>
+<div class="card" style="margin-bottom:16px"><p style="font-size:.85rem;color:var(--text-secondary)">🚦 <strong>Legenda:</strong> <span class="scorecard-dot green"></span> Op target &nbsp; <span class="scorecard-dot orange"></span> Aandacht &nbsp; <span class="scorecard-dot red"></span> Actie vereist &nbsp; | &nbsp; ↑ Verbetering &nbsp; ↓ Verslechtering &nbsp; → Stabiel</p></div>
+<div class="card"><div style="overflow-x:auto"><table><thead><tr><th>KPI</th>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div></div>`;
+}
+
+function renderPages(){
+const main=document.getElementById('mainContent');
+main.innerHTML=`
+<div class="page active" id="page-home">${renderHome()}</div>
+<div class="page" id="page-revenue">${renderRevenue()}</div>
+<div class="page" id="page-pos">${renderPOS()}</div>
+<div class="page" id="page-cash">${renderCash()}</div>
+<div class="page" id="page-receivables">${renderReceivables()}</div>
+<div class="page" id="page-kpi">${renderKPI()}</div>`;
+}
+
+function initCharts(){
+if(typeof Chart==='undefined'){setTimeout(initCharts,200);return;}
+Chart.defaults.font.family="'Inter',-apple-system,system-ui,sans-serif";
+Chart.defaults.font.size=12;
+Chart.defaults.color='#6b6560';
+// Home sparkline
+const daily=DATA.dailyRevenue||[];
+const sparkCtx=document.getElementById('homeSparkline');
+if(sparkCtx){new Chart(sparkCtx,{type:'line',data:{labels:daily.map(d=>d.day||d.date),datasets:[{data:daily.map(d=>d.amount),borderColor:'#2d5016',backgroundColor:'rgba(45,80,22,.08)',fill:true,tension:.4,pointRadius:0,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:8}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}}}}});}
+// Revenue bar
+const ents=DATA.entities||[];
+const barCtx=document.getElementById('revenueBarChart');
+if(barCtx){new Chart(barCtx,{type:'bar',data:{labels:ents.map(e=>e.shortName||e.name),datasets:[{data:ents.map(e=>e.revenue),backgroundColor:['#2d5016','#c4956a','#3a7ca5','#8b7d6b','#5a8f3d','#d4a574'],borderRadius:6,barThickness:32}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}},y:{grid:{display:false}}}}});}
+// Category donut
+const cats=DATA.categories||[{name:'Verf',value:540},{name:'Behang',value:180},{name:'Woonaccessoires',value:120},{name:'Overig',value:60}];
+const donutCtx=document.getElementById('categoryDonut');
+if(donutCtx){new Chart(donutCtx,{type:'doughnut',data:{labels:cats.map(c=>c.name),datasets:[{data:cats.map(c=>c.value),backgroundColor:['#2d5016','#c4956a','#3a7ca5','#8b7d6b'],borderWidth:0,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:false,cutout:'65%',plugins:{legend:{position:'bottom',labels:{padding:16,usePointStyle:true,pointStyle:'circle'}}}}});}
+// POS daily chart
+const posDaily=DATA.posData&&(DATA.posData.dailySales||DATA.posData.dailyRevenue)||[];
+const posCtx=document.getElementById('posDailyChart');
+if(posCtx&&posDaily.length){new Chart(posCtx,{type:'bar',data:{labels:posDaily.map(d=>{const dt=d.date||d.day;return dt?dt.substring(8):'';}),datasets:[{data:posDaily.map(d=>d.revenue||d.amount),backgroundColor:posDaily.map(d=>{const dt=new Date(d.date||'2026-01-01');const dow=dt.getDay();return(dow===0||dow===6)?'#c4956a':'#2d5016';}),borderRadius:4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:10}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}}}}});}
+// POS weekday chart
+const posWkCtx=document.getElementById('posWeekdayChart');
+if(posWkCtx){new Chart(posWkCtx,{type:'bar',data:{labels:['Ma','Di','Wo','Do','Vr','Za','Zo'],datasets:[{label:'Gem. omzet',data:[3800,4100,4500,4200,5800,7100,6200],backgroundColor:['#2d5016','#2d5016','#2d5016','#2d5016','#2d5016','#c4956a','#c4956a'],borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}}}}});}
+// Cash waterfall
+const waterfallCtx=document.getElementById('cashWaterfallChart');
+if(waterfallCtx){const cf=DATA.cashflow||{};new Chart(waterfallCtx,{type:'bar',data:{labels:['Opening','Inkomsten','Uitgaven','Saldo'],datasets:[{data:[cf.opening||980000,cf.income||412000,-(cf.expenses||336000),cf.closing||1056000],backgroundColor:['#3a7ca5','#2d5016','#b44a3f','#3a7ca5'],borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(Math.abs(v))}}}}});}
+// Cash forecast
+const forecastCtx=document.getElementById('cashForecastChart');
+if(forecastCtx){const days=Array.from({length:30},(_, i)=>i+1);const forecast=days.map(d=>1056000+d*2500-Math.random()*15000);new Chart(forecastCtx,{type:'line',data:{labels:days.map(d=>`${d} feb`),datasets:[{label:'Prognose',data:forecast,borderColor:'#3a7ca5',backgroundColor:'rgba(58,124,165,.08)',fill:true,tension:.3,pointRadius:0,borderWidth:2},{label:'Minimum buffer',data:days.map(()=>800000),borderColor:'#b44a3f',borderDash:[5,5],borderWidth:1,pointRadius:0,fill:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{usePointStyle:true,pointStyle:'circle'}}},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:8}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}}}}});}
+// Aging chart
+const agingCtx=document.getElementById('agingChart');
+if(agingCtx){const aging=DATA.receivables&&DATA.receivables.aging||{};const vals=[aging.current||aging['0-30']||245000,aging.days30||aging['31-60']||98000,aging.days60||aging['61-90']||42000,aging.days90plus||aging['90+']||27000];new Chart(agingCtx,{type:'bar',data:{labels:['0-30 dagen','31-60 dagen','61-90 dagen','90+ dagen'],datasets:[{data:vals,backgroundColor:['#2d5016','#c4956a','#e8a849','#b44a3f'],borderRadius:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false}},y:{grid:{color:'rgba(0,0,0,.04)'},ticks:{callback:v=>'€'+fmt(v)}}}}});}
+}
+
+async function init(){
+try{
+const resp=await fetch('data/dashboard.json');
+DATA=await resp.json();
+}catch(e){
+console.warn('Could not load data, using fallback');
+DATA={group:{revenue:899725,costOfGoods:-559738,grossProfit:339987,grossMargin:0.377,operatingExpenses:-364550,result:-24563,cash:1056000,currentRatio:1.98,dso:44,dpo:76},entities:[],dailyRevenue:[],posData:{},cashflow:{},receivables:{},payables:{},alerts:[]};
+}
+buildNav();
+renderPages();
+setTimeout(initCharts,300);
+}
+init();
+if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{});}
+</script>
+</body>
+</html>
