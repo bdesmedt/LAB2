@@ -1682,42 +1682,48 @@ def get_analytic_accounts(plan_id=None):
     )
 
 @st.cache_data(ttl=300)
-def get_analytic_lines(year, analytic_account_id):
-    """Haal analytische boekingsregels op voor een specifieke rekening en jaar.
+def get_analytic_lines(analytic_account_id, year=None):
+    """Haal analytische boekingsregels op voor een specifieke rekening.
 
     Retourneert een lijst met regels uit account.analytic.line.
     Positief bedrag = opbrengst, negatief bedrag = kosten.
+    Zonder year-parameter worden ALLE periodes teruggegeven (projecten zijn niet jaargebonden).
     """
-    return odoo_call(
-        "account.analytic.line", "search_read",
-        [
-            ["account_id", "=", analytic_account_id],
+    domain = [["account_id", "=", analytic_account_id]]
+    if year:
+        domain += [
             ["date", ">=", f"{year}-01-01"],
             ["date", "<=", f"{year}-12-31"],
-        ],
+        ]
+    return odoo_call(
+        "account.analytic.line", "search_read",
+        domain,
         ["id", "date", "name", "amount", "partner_id", "company_id",
          "general_account_id", "move_line_id"],
         limit=10000
     )
 
 @st.cache_data(ttl=300)
-def get_analytic_invoices(year, analytic_account_id):
+def get_analytic_invoices(analytic_account_id, year=None):
     """Haal verkoopfacturen op die gekoppeld zijn aan een analytische rekening.
 
     Filtert account.move.line op analytic_distribution (Odoo 16/17 JSON-veld)
     en retourneert de bijbehorende factuurkoppen.
+    Zonder year-parameter worden ALLE facturen teruggegeven.
     """
-    # analytic_distribution is een JSON-veld: {"<account_id>": percentage, ...}
-    # 'ilike' op het account ID (als string) werkt als subquery-filter.
-    lines = odoo_call(
-        "account.move.line", "search_read",
-        [
-            ["move_id.move_type", "in", ["out_invoice", "out_refund"]],
-            ["move_id.state", "=", "posted"],
+    inv_domain = [
+        ["move_id.move_type", "in", ["out_invoice", "out_refund"]],
+        ["move_id.state", "=", "posted"],
+        ["analytic_distribution", "ilike", str(analytic_account_id)],
+    ]
+    if year:
+        inv_domain += [
             ["move_id.invoice_date", ">=", f"{year}-01-01"],
             ["move_id.invoice_date", "<=", f"{year}-12-31"],
-            ["analytic_distribution", "ilike", str(analytic_account_id)],
-        ],
+        ]
+    lines = odoo_call(
+        "account.move.line", "search_read",
+        inv_domain,
         ["move_id"],
         limit=5000,
         include_archived=True
@@ -1735,6 +1741,65 @@ def get_analytic_invoices(year, analytic_account_id):
         limit=len(move_ids) + 100,
         include_archived=True
     ) or []
+
+@st.cache_data(ttl=300)
+def get_all_analytic_summaries(plan_id):
+    """Haal financiële samenvatting op voor ALLE analytische rekeningen onder een plan.
+
+    Gebruikt twee server-side read_groups (opbrengsten en kosten) in plaats van
+    per-project queries, om het aantal API-calls minimaal te houden.
+    Geen jaarfilter – toont de totale projectstand over alle periodes.
+    """
+    accounts = get_analytic_accounts(plan_id)
+    if not accounts:
+        return []
+
+    account_ids = [a["id"] for a in accounts]
+
+    # Server-side aggregatie: opbrengsten (amount > 0) per account
+    rev_groups = odoo_read_group(
+        "account.analytic.line",
+        [["account_id", "in", account_ids], ["amount", ">", 0]],
+        ["amount:sum"],
+        ["account_id"]
+    )
+    # Server-side aggregatie: kosten (amount < 0) per account
+    cost_groups = odoo_read_group(
+        "account.analytic.line",
+        [["account_id", "in", account_ids], ["amount", "<", 0]],
+        ["amount:sum"],
+        ["account_id"]
+    )
+
+    rev_map = {
+        r["account_id"][0]: r.get("amount", 0) or 0
+        for r in rev_groups if r.get("account_id")
+    }
+    cost_map = {
+        c["account_id"][0]: abs(c.get("amount", 0) or 0)
+        for c in cost_groups if c.get("account_id")
+    }
+
+    summaries = []
+    for acc in accounts:
+        acc_id = acc["id"]
+        code = acc.get("code") or ""
+        name = acc.get("name", "")
+        label = f"{code} – {name}".strip("– ") if code else name
+        opbrengst = rev_map.get(acc_id, 0)
+        kosten = cost_map.get(acc_id, 0)
+        resultaat = opbrengst - kosten
+        marge_pct = resultaat / opbrengst * 100 if opbrengst else None
+        summaries.append({
+            "id": acc_id,
+            "Project": label,
+            "Opbrengst": opbrengst,
+            "Kosten": kosten,
+            "Resultaat": resultaat,
+            "Marge %": marge_pct,
+        })
+
+    return sorted(summaries, key=lambda x: x.get("Resultaat", 0))
 
 @st.cache_data(ttl=300)
 def get_top_products(year, company_id=None, limit=20):
@@ -8866,8 +8931,8 @@ Gegenereerd door LAB Groep Financial Dashboard
     with tabs[11]:
         st.header("🏗️ LAB Projects – Analytische Projectanalyse")
         st.caption(
-            "Filter op analytisch plan en project (account.analytic.account) "
-            "om de financiële stand van een specifiek project te bekijken."
+            "Filter op analytisch plan en project (account.analytic.account). "
+            "Projecten zijn niet jaargebonden – alle boekingen worden meegenomen."
         )
 
         # --- Laad analytische plannen ---
@@ -8877,11 +8942,11 @@ Gegenereerd door LAB Groep Financial Dashboard
         if not analytic_plans:
             st.warning(
                 "⚠️ Geen analytische plannen gevonden in Odoo. "
-                "Controleer of het analytische boekhouding-module actief is "
+                "Controleer of de analytische boekhouding-module actief is "
                 "en of de gebruiker toegang heeft tot account.analytic.plan."
             )
         else:
-            # Plan selector
+            # Plan selector + project selector naast elkaar
             plan_options = {p["name"]: p["id"] for p in sorted(analytic_plans, key=lambda x: x["name"])}
             col_p, col_a = st.columns(2)
             with col_p:
@@ -8893,7 +8958,6 @@ Gegenereerd door LAB Groep Financial Dashboard
                 )
             selected_plan_id = plan_options[selected_plan_name]
 
-            # Laad accounts voor geselecteerd plan
             with st.spinner(f"Projecten ophalen voor plan '{selected_plan_name}'..."):
                 analytic_accounts = get_analytic_accounts(selected_plan_id)
 
@@ -8921,21 +8985,21 @@ Gegenereerd door LAB Groep Financial Dashboard
                 st.markdown("---")
 
                 # --- Subtabs ---
-                proj_subtabs = st.tabs(["📊 Overzicht", "📅 Maandtrend", "📄 Facturen"])
+                proj_subtabs = st.tabs(["📊 Overzicht", "📅 Verlooptijdlijn", "📄 Facturen", "🔍 Margerisico"])
 
                 # -----------------------------------------------------------------
-                # Subtab 1: Financieel Overzicht
+                # Subtab 1: Financieel Overzicht (geen jaarfilter)
                 # -----------------------------------------------------------------
                 with proj_subtabs[0]:
-                    st.subheader(f"📊 Financieel Overzicht – {selected_account_label} ({selected_year})")
+                    st.subheader(f"📊 Financieel Overzicht – {selected_account_label}")
+                    st.caption("Totale stand over alle periodes (niet jaargebonden).")
 
                     with st.spinner("Analytische boekingsregels ophalen..."):
-                        alines = get_analytic_lines(selected_year, selected_account_id)
+                        alines = get_analytic_lines(selected_account_id)
 
                     if not alines:
-                        st.info("Geen analytische boekingen gevonden voor dit project en jaar.")
+                        st.info("Geen analytische boekingen gevonden voor dit project.")
                     else:
-                        # Splits op teken: positief = opbrengst, negatief = kosten
                         revenue_lines = [l for l in alines if (l.get("amount") or 0) > 0]
                         cost_lines    = [l for l in alines if (l.get("amount") or 0) < 0]
 
@@ -8944,33 +9008,37 @@ Gegenereerd door LAB Groep Financial Dashboard
                         result        = total_revenue - total_costs
                         margin_pct    = result / total_revenue * 100 if total_revenue else 0
 
-                        # KPI-rij
+                        # Datumrange tonen
+                        dates = sorted(l["date"] for l in alines if l.get("date"))
+                        if dates:
+                            st.caption(f"📆 Eerste boeking: {dates[0]} · Laatste boeking: {dates[-1]}")
+
                         c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("💰 Omzet / Opbrengsten", f"€{total_revenue:,.0f}")
+                        c1.metric("💰 Opbrengsten", f"€{total_revenue:,.0f}")
                         c2.metric("📉 Kosten", f"€{total_costs:,.0f}")
                         c3.metric("📈 Resultaat", f"€{result:,.0f}",
-                                  delta=f"{margin_pct:.1f}% marge")
+                                  delta=f"{margin_pct:.1f}% marge",
+                                  delta_color="normal" if result >= 0 else "inverse")
                         c4.metric("📋 Boekingsregels", str(len(alines)))
 
                         st.markdown("---")
 
-                        # Waterval-achtige staaf: Opbrengst → Kosten → Resultaat
+                        # Staafdiagram: Opbrengst / Kosten / Resultaat
                         fig_kpi = go.Figure()
                         fig_kpi.add_trace(go.Bar(
-                            name="Opbrengsten",
                             x=["Opbrengsten", "Kosten", "Resultaat"],
                             y=[total_revenue, total_costs, result],
-                            marker_color=["#27ae60", "#c0392b",
-                                          "#27ae60" if result >= 0 else "#c0392b"]
+                            marker_color=["#1e3a5f", "#c0392b",
+                                          "#27ae60" if result >= 0 else "#c0392b"],
+                            showlegend=False
                         ))
                         fig_kpi.update_layout(
                             title=f"Financieel Overzicht – {selected_account_label}",
-                            height=350, showlegend=False,
-                            yaxis_title="Bedrag (€)"
+                            height=350, yaxis_title="Bedrag (€)"
                         )
                         st.plotly_chart(fig_kpi, use_container_width=True)
 
-                        # Top-10 boekingsregels (op bedrag)
+                        # Top-10 boekingsregels op absoluut bedrag
                         st.markdown("##### Top boekingsregels")
                         top_lines = sorted(alines, key=lambda x: abs(x.get("amount", 0)), reverse=True)[:10]
                         df_top = pd.DataFrame([
@@ -8988,26 +9056,26 @@ Gegenereerd door LAB Groep Financial Dashboard
                         )
 
                 # -----------------------------------------------------------------
-                # Subtab 2: Maandtrend
+                # Subtab 2: Verlooptijdlijn (chronologisch, alle periodes)
                 # -----------------------------------------------------------------
                 with proj_subtabs[1]:
-                    st.subheader(f"📅 Maandelijkse Trend – {selected_account_label} ({selected_year})")
+                    st.subheader(f"📅 Verloop over de tijd – {selected_account_label}")
+                    st.caption("Chronologisch overzicht van alle boekingen, geen jaargrens.")
 
-                    with st.spinner("Maanddata ophalen..."):
-                        alines_month = get_analytic_lines(selected_year, selected_account_id)
+                    with st.spinner("Boekingsregels ophalen..."):
+                        alines_tl = get_analytic_lines(selected_account_id)
 
-                    if not alines_month:
-                        st.info("Geen analytische boekingen gevonden voor dit project en jaar.")
+                    if not alines_tl:
+                        st.info("Geen analytische boekingen gevonden voor dit project.")
                     else:
-                        # Groepeer per maand
+                        # Groepeer per maand (alle jaren)
                         monthly: dict = {}
-                        for line in alines_month:
+                        for line in alines_tl:
                             date_str = line.get("date", "")
                             if not date_str:
                                 continue
-                            month_key = date_str[:7]  # "YYYY-MM"
-                            if month_key not in monthly:
-                                monthly[month_key] = {"opbrengst": 0.0, "kosten": 0.0}
+                            month_key = date_str[:7]
+                            monthly.setdefault(month_key, {"opbrengst": 0.0, "kosten": 0.0})
                             amount = line.get("amount", 0) or 0
                             if amount >= 0:
                                 monthly[month_key]["opbrengst"] += amount
@@ -9024,13 +9092,15 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 "Marge %": (
                                     (monthly[m]["opbrengst"] - monthly[m]["kosten"])
                                     / monthly[m]["opbrengst"] * 100
-                                    if monthly[m]["opbrengst"] else 0
+                                    if monthly[m]["opbrengst"] else None
                                 ),
                             }
                             for m in months_sorted
                         ])
 
-                        # Gecombineerd staaf + lijn diagram
+                        # Cumulatief resultaat als lijn
+                        df_monthly["Cumulatief Resultaat"] = df_monthly["Resultaat"].cumsum()
+
                         fig_trend = go.Figure()
                         fig_trend.add_trace(go.Bar(
                             name="Opbrengst", x=df_monthly["Maand"], y=df_monthly["Opbrengst"],
@@ -9041,64 +9111,104 @@ Gegenereerd door LAB Groep Financial Dashboard
                             marker_color="#c0392b", opacity=0.85
                         ))
                         fig_trend.add_trace(go.Scatter(
-                            name="Resultaat", x=df_monthly["Maand"], y=df_monthly["Resultaat"],
+                            name="Cumulatief Resultaat", x=df_monthly["Maand"],
+                            y=df_monthly["Cumulatief Resultaat"],
                             mode="lines+markers",
-                            line=dict(color="#27ae60", width=2)
+                            line=dict(color="#f39c12", width=2),
+                            yaxis="y2"
                         ))
                         fig_trend.update_layout(
-                            barmode="group", height=420,
-                            title=f"Opbrengst & Kosten per Maand – {selected_year}",
-                            xaxis_title="Maand", yaxis_title="Bedrag (€)"
+                            barmode="group", height=430,
+                            title="Opbrengst & Kosten per Maand (cumulatief resultaat op rechter-as)",
+                            xaxis_title="Maand", yaxis_title="Bedrag (€)",
+                            yaxis2=dict(title="Cumulatief (€)", overlaying="y", side="right",
+                                        showgrid=False)
                         )
                         st.plotly_chart(fig_trend, use_container_width=True)
 
                         # Marge % lijn
-                        fig_margin = px.line(
-                            df_monthly, x="Maand", y="Marge %",
-                            title="Marge % per Maand",
-                            markers=True, color_discrete_sequence=["#27ae60"]
-                        )
-                        if df_monthly["Marge %"].notna().any():
-                            avg_margin = df_monthly["Marge %"].mean()
-                            fig_margin.add_hline(
-                                y=avg_margin, line_dash="dash", line_color="gray",
-                                annotation_text=f"Gem. {avg_margin:.1f}%"
+                        df_margin = df_monthly.dropna(subset=["Marge %"])
+                        if not df_margin.empty:
+                            fig_margin = px.line(
+                                df_margin, x="Maand", y="Marge %",
+                                title="Marge % per Maand",
+                                markers=True, color_discrete_sequence=["#27ae60"]
                             )
-                        fig_margin.update_layout(height=280)
-                        st.plotly_chart(fig_margin, use_container_width=True)
+                            avg_m = df_margin["Marge %"].mean()
+                            fig_margin.add_hline(
+                                y=avg_m, line_dash="dash", line_color="gray",
+                                annotation_text=f"Gem. {avg_m:.1f}%"
+                            )
+                            fig_margin.add_hline(y=0, line_color="red", line_dash="dot")
+                            fig_margin.update_layout(height=280)
+                            st.plotly_chart(fig_margin, use_container_width=True)
 
-                        # Tabel
                         st.markdown("##### Maandoverzicht")
                         st.dataframe(
                             df_monthly.style.format({
                                 "Opbrengst": "€{:,.0f}",
                                 "Kosten": "€{:,.0f}",
                                 "Resultaat": "€{:,.0f}",
-                                "Marge %": "{:.1f}%",
+                                "Cumulatief Resultaat": "€{:,.0f}",
+                                "Marge %": lambda v: f"{v:.1f}%" if v is not None else "–",
                             }),
                             use_container_width=True, hide_index=True
                         )
 
                 # -----------------------------------------------------------------
-                # Subtab 3: Facturen
+                # Subtab 3: Facturen (met lokaal datumfilter)
                 # -----------------------------------------------------------------
                 with proj_subtabs[2]:
-                    st.subheader(f"📄 Facturen gekoppeld aan – {selected_account_label} ({selected_year})")
+                    st.subheader(f"📄 Facturen – {selected_account_label}")
                     st.caption(
-                        "Toont verkoopfacturen waarvan minimaal één regel "
-                        "een analytische verdeling bevat naar dit project."
+                        "Verkoopfacturen waarvan minimaal één regel analytisch is toegewezen "
+                        "aan dit project. Gebruik het datumfilter voor een deelperiode."
                     )
 
+                    # Lokaal datumfilter (optioneel)
+                    fc1, fc2, fc3 = st.columns([1, 1, 2])
+                    with fc1:
+                        inv_from = st.date_input("Vanaf", value=None, key="proj_inv_from",
+                                                  help="Leeg = alle periodes")
+                    with fc2:
+                        inv_to = st.date_input("Tot en met", value=None, key="proj_inv_to",
+                                                help="Leeg = alle periodes")
+
+                    # Bepaal optioneel jaar voor caching (alleen als volledig jaar geselecteerd)
+                    inv_year_filter = None
+                    if inv_from and inv_to and inv_from.year == inv_to.year and \
+                       inv_from.month == 1 and inv_to.month == 12:
+                        inv_year_filter = inv_from.year
+
                     with st.spinner("Facturen ophalen..."):
-                        proj_invoices = get_analytic_invoices(selected_year, selected_account_id)
+                        proj_invoices = get_analytic_invoices(selected_account_id, year=inv_year_filter)
+
+                    # Datumfilter in Python als geen volledig jaar
+                    if proj_invoices and (inv_from or inv_to):
+                        if inv_from:
+                            proj_invoices = [
+                                i for i in proj_invoices
+                                if i.get("invoice_date", "") >= str(inv_from)
+                            ]
+                        if inv_to:
+                            proj_invoices = [
+                                i for i in proj_invoices
+                                if i.get("invoice_date", "") <= str(inv_to)
+                            ]
 
                     if not proj_invoices:
                         st.info(
-                            "Geen facturen gevonden die gekoppeld zijn aan dit project voor "
-                            f"het jaar {selected_year}. Controleer of factuurregels een "
-                            "analytische verdeling hebben naar deze rekening."
+                            "Geen facturen gevonden voor dit project in de geselecteerde periode. "
+                            "Controleer of factuurregels een analytische verdeling hebben naar deze rekening."
                         )
                     else:
+                        PAYMENT_LABELS = {
+                            "not_paid": "❌ Niet betaald",
+                            "partial": "⚠️ Deels betaald",
+                            "paid": "✅ Betaald",
+                            "reversed": "↩️ Teruggedraaid",
+                            "in_payment": "🔄 In verwerking",
+                        }
                         df_inv = pd.DataFrame([
                             {
                                 "Factuurnr": i.get("name", ""),
@@ -9106,46 +9216,205 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 "Vervaldatum": i.get("invoice_date_due", ""),
                                 "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
                                 "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
-                                "Totaal excl. BTW": i.get("amount_untaxed", 0),
-                                "Totaal incl. BTW": i.get("amount_total", 0),
+                                "Excl. BTW": i.get("amount_untaxed", 0),
+                                "Incl. BTW": i.get("amount_total", 0),
                                 "Openstaand": i.get("amount_residual", 0),
-                                "Betaalstatus": {
-                                    "not_paid": "❌ Niet betaald",
-                                    "partial": "⚠️ Deels betaald",
-                                    "paid": "✅ Betaald",
-                                    "reversed": "↩️ Teruggedraaid",
-                                    "in_payment": "🔄 In verwerking",
-                                }.get(i.get("payment_state", ""), i.get("payment_state", "")),
+                                "Status": PAYMENT_LABELS.get(
+                                    i.get("payment_state", ""), i.get("payment_state", "")
+                                ),
                             }
                             for i in proj_invoices
-                        ])
-                        df_inv = df_inv.sort_values("Datum", ascending=False)
+                        ]).sort_values("Datum", ascending=False)
 
-                        # Samenvattende metrics
                         open_inv = df_inv[df_inv["Openstaand"] > 0.01]
                         m1, m2, m3, m4 = st.columns(4)
                         m1.metric("📄 Facturen", str(len(df_inv)))
-                        m2.metric("💰 Totaal omzet", f"€{df_inv['Totaal excl. BTW'].sum():,.0f}")
+                        m2.metric("💰 Totaal omzet", f"€{df_inv['Excl. BTW'].sum():,.0f}")
                         m3.metric("⏳ Openstaand", f"€{df_inv['Openstaand'].sum():,.0f}")
                         m4.metric("📬 Nog te ontvangen", str(len(open_inv)))
 
                         st.markdown("---")
                         st.dataframe(
                             df_inv.style.format({
-                                "Totaal excl. BTW": "€{:,.2f}",
-                                "Totaal incl. BTW": "€{:,.2f}",
+                                "Excl. BTW": "€{:,.2f}",
+                                "Incl. BTW": "€{:,.2f}",
                                 "Openstaand": "€{:,.2f}",
                             }),
                             use_container_width=True, hide_index=True
                         )
-
                         csv = df_inv.to_csv(index=False).encode("utf-8")
                         st.download_button(
                             "⬇️ Download CSV",
                             data=csv,
-                            file_name=f"lab_projects_{selected_account_id}_{selected_year}.csv",
+                            file_name=f"lab_projects_{selected_account_id}_facturen.csv",
                             mime="text/csv"
                         )
+
+                # -----------------------------------------------------------------
+                # Subtab 4: Margerisico – AI-analyse van verlieslatende projecten
+                # -----------------------------------------------------------------
+                with proj_subtabs[3]:
+                    st.subheader(f"🔍 Margerisico – alle projecten onder '{selected_plan_name}'")
+                    st.caption(
+                        "Overzicht van alle projecten in dit plan met hun totale financiële stand. "
+                        "Projecten met een negatief resultaat worden automatisch geanalyseerd door AI."
+                    )
+
+                    with st.spinner(f"Alle projecten ophalen voor plan '{selected_plan_name}'..."):
+                        all_summaries = get_all_analytic_summaries(selected_plan_id)
+
+                    if not all_summaries:
+                        st.info("Geen projectdata gevonden voor dit plan.")
+                    else:
+                        df_all = pd.DataFrame(all_summaries)
+
+                        # KPI-rij voor het hele plan
+                        totals_rev  = df_all["Opbrengst"].sum()
+                        totals_cost = df_all["Kosten"].sum()
+                        totals_res  = df_all["Resultaat"].sum()
+                        neg_count   = len(df_all[df_all["Resultaat"] < 0])
+
+                        pk1, pk2, pk3, pk4 = st.columns(4)
+                        pk1.metric("🏗️ Projecten", str(len(df_all)))
+                        pk2.metric("💰 Totaal Opbrengst", f"€{totals_rev:,.0f}")
+                        pk3.metric("📈 Totaal Resultaat", f"€{totals_res:,.0f}",
+                                   delta_color="normal" if totals_res >= 0 else "inverse",
+                                   delta=f"{'positief' if totals_res >= 0 else 'negatief'}")
+                        pk4.metric("🔴 Verlieslatend", str(neg_count),
+                                   delta=f"{neg_count/len(df_all)*100:.0f}% van totaal",
+                                   delta_color="inverse" if neg_count > 0 else "off")
+
+                        st.markdown("---")
+
+                        # Horizontaal staafdiagram: resultaat per project (gesorteerd)
+                        df_plot = df_all.copy().sort_values("Resultaat")
+                        colors = ["#c0392b" if r < 0 else "#1e3a5f" for r in df_plot["Resultaat"]]
+                        fig_all = go.Figure(go.Bar(
+                            x=df_plot["Resultaat"],
+                            y=df_plot["Project"],
+                            orientation="h",
+                            marker_color=colors,
+                            text=[f"€{v:,.0f}" for v in df_plot["Resultaat"]],
+                            textposition="outside"
+                        ))
+                        fig_all.add_vline(x=0, line_color="gray", line_dash="dash")
+                        fig_all.update_layout(
+                            title="Resultaat per Project (rood = verlies)",
+                            height=max(350, len(df_all) * 28),
+                            xaxis_title="Resultaat (€)", yaxis_title="",
+                            margin=dict(l=200)
+                        )
+                        st.plotly_chart(fig_all, use_container_width=True)
+
+                        # Tabel met kleurcodering
+                        def _color_result(val):
+                            if isinstance(val, (int, float)):
+                                return "color: #c0392b; font-weight: bold" if val < 0 else ""
+                            return ""
+
+                        st.markdown("##### Volledig Projectoverzicht")
+                        st.dataframe(
+                            df_all[["Project", "Opbrengst", "Kosten", "Resultaat", "Marge %"]]
+                            .style
+                            .format({
+                                "Opbrengst": "€{:,.0f}",
+                                "Kosten": "€{:,.0f}",
+                                "Resultaat": "€{:,.0f}",
+                                "Marge %": lambda v: f"{v:.1f}%" if v is not None else "–",
+                            })
+                            .applymap(_color_result, subset=["Resultaat", "Marge %"]),
+                            use_container_width=True, hide_index=True
+                        )
+
+                        st.markdown("---")
+                        st.markdown("### 🤖 AI-Analyse van Verlieslatende Projecten")
+
+                        neg_projects = [s for s in all_summaries if s.get("Resultaat", 0) < 0]
+
+                        if not neg_projects:
+                            st.success("✅ Geen verlieslatende projecten gevonden – alle projecten zijn winstgevend of break-even.")
+                        else:
+                            st.warning(
+                                f"⚠️ **{len(neg_projects)} project(en) met negatief resultaat** gevonden. "
+                                "Klik op de knop hieronder voor een AI-analyse."
+                            )
+
+                            if not get_openai_key():
+                                st.info("💡 Voer een OpenAI API key in via de sidebar (🤖 AI Chat) om de analyse te activeren.")
+                            else:
+                                if st.button("🔍 Start AI-analyse verlieslatende projecten",
+                                             key="proj_ai_analyse_btn",
+                                             type="primary"):
+                                    # Bouw context op voor de AI
+                                    project_lines = []
+                                    for s in sorted(neg_projects, key=lambda x: x["Resultaat"]):
+                                        marge_str = (
+                                            f"{s['Marge %']:.1f}%"
+                                            if s.get("Marge %") is not None else "geen omzet"
+                                        )
+                                        project_lines.append(
+                                            f"- **{s['Project']}**: "
+                                            f"Opbrengst €{s['Opbrengst']:,.0f} | "
+                                            f"Kosten €{s['Kosten']:,.0f} | "
+                                            f"Resultaat €{s['Resultaat']:,.0f} | "
+                                            f"Marge {marge_str}"
+                                        )
+                                    project_context = "\n".join(project_lines)
+
+                                    # Positieve projecten als referentie
+                                    pos_projects = [s for s in all_summaries if s.get("Resultaat", 0) >= 0]
+                                    if pos_projects:
+                                        avg_pos_margin = (
+                                            sum(s["Marge %"] for s in pos_projects if s.get("Marge %"))
+                                            / len([s for s in pos_projects if s.get("Marge %")])
+                                            if any(s.get("Marge %") for s in pos_projects) else None
+                                        )
+                                        benchmark_str = (
+                                            f"Ter referentie: de {len(pos_projects)} winstgevende projecten "
+                                            f"hebben een gemiddelde marge van {avg_pos_margin:.1f}%."
+                                            if avg_pos_margin else ""
+                                        )
+                                    else:
+                                        benchmark_str = ""
+
+                                    messages = [
+                                        {
+                                            "role": "system",
+                                            "content": (
+                                                "Je bent een ervaren financieel controller voor LAB Groep, "
+                                                "een bedrijf dat projecten uitvoert op het gebied van verf en behang. "
+                                                "Je analyseert projectmarges en geeft concrete, praktische aanbevelingen "
+                                                "in het Nederlands. Wees specifiek en actionable."
+                                            )
+                                        },
+                                        {
+                                            "role": "user",
+                                            "content": (
+                                                f"Analyseer de volgende {len(neg_projects)} verlieslatende projecten "
+                                                f"uit het analytische plan '{selected_plan_name}':\n\n"
+                                                f"{project_context}\n\n"
+                                                f"{benchmark_str}\n\n"
+                                                "Geef per project:\n"
+                                                "1. De meest waarschijnlijke oorzaak van het verlies\n"
+                                                "2. Concrete actie(s) om de marge te verbeteren of het verlies te beheersen\n"
+                                                "3. Urgentiescore: 🔴 Kritiek (>€5k verlies of marge <-20%) / "
+                                                "🟠 Hoog / 🟡 Gemiddeld\n\n"
+                                                "Sluit af met:\n"
+                                                "- Een **prioriteitenlijst** (welk project eerst aanpakken en waarom)\n"
+                                                "- **Structurele aanbevelingen** om margerisico bij toekomstige projecten te voorkomen"
+                                            )
+                                        }
+                                    ]
+
+                                    with st.spinner("AI analyseert de verlieslatende projecten..."):
+                                        ai_response, ai_error = call_openai(
+                                            messages, model="gpt-4o-mini"
+                                        )
+
+                                    if ai_error:
+                                        st.error(f"AI-fout: {ai_error}")
+                                    elif ai_response:
+                                        st.markdown(ai_response)
 
 
 
