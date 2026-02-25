@@ -9375,6 +9375,89 @@ Gegenereerd door LAB Groep Financial Dashboard
                         )
 
                         st.markdown("---")
+                        st.markdown("### 📄 Projectdetail – Facturen")
+                        st.caption("Kies een project om alle in- en uitgaande facturen te bekijken:")
+
+                        proj_name_to_id = {s["Project"]: s["id"] for s in all_summaries}
+                        proj_detail_name = st.selectbox(
+                            "Project",
+                            options=["– kies een project –"] + list(proj_name_to_id.keys()),
+                            key="marge_proj_detail_select"
+                        )
+
+                        if proj_detail_name != "– kies een project –":
+                            detail_account_id = proj_name_to_id[proj_detail_name]
+                            with st.spinner("Facturen ophalen..."):
+                                detail_invoices, detail_attribution = get_analytic_invoices(detail_account_id)
+
+                            if not detail_invoices:
+                                st.info(
+                                    "Geen facturen gevonden voor dit project. "
+                                    "Controleer of factuurregels een analytische verdeling hebben."
+                                )
+                            else:
+                                PAYMENT_LABELS_M = {
+                                    "not_paid": "❌ Niet betaald",
+                                    "partial": "⚠️ Deels betaald",
+                                    "paid": "✅ Betaald",
+                                    "reversed": "↩️ Teruggedraaid",
+                                    "in_payment": "🔄 In verwerking",
+                                }
+                                TYPE_LABELS_M = {
+                                    "out_invoice": "🧾 Verkoopfactuur",
+                                    "out_refund": "↩️ Verkoopcreditnota",
+                                    "in_invoice": "🛒 Inkoopfactuur",
+                                    "in_refund": "↩️ Inkoopcontractnota",
+                                }
+                                df_det = pd.DataFrame([
+                                    {
+                                        "Factuurnr": i.get("name", ""),
+                                        "Type": TYPE_LABELS_M.get(i.get("move_type", ""), i.get("move_type", "")),
+                                        "Datum": i.get("invoice_date", ""),
+                                        "Vervaldatum": i.get("invoice_date_due", ""),
+                                        "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
+                                        "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
+                                        "Proj. aandeel": abs(detail_attribution.get(i.get("id"), 0)),
+                                        "Totaal factuur": i.get("amount_untaxed", 0),
+                                        "Openstaand": i.get("amount_residual", 0),
+                                        "Status": PAYMENT_LABELS_M.get(
+                                            i.get("payment_state", ""), i.get("payment_state", "")
+                                        ),
+                                        "_move_type": i.get("move_type", ""),
+                                    }
+                                    for i in detail_invoices
+                                ]).sort_values("Datum", ascending=False)
+
+                                df_det_out = df_det[df_det["_move_type"].isin(["out_invoice", "out_refund"])]
+                                df_det_in  = df_det[df_det["_move_type"].isin(["in_invoice", "in_refund"])]
+                                det_omzet  = df_det_out["Proj. aandeel"].sum()
+                                det_kosten = df_det_in["Proj. aandeel"].sum()
+
+                                dm1, dm2, dm3, dm4 = st.columns(4)
+                                dm1.metric("📄 Facturen", str(len(df_det)))
+                                dm2.metric("💰 Proj. omzet", f"€{det_omzet:,.0f}")
+                                dm3.metric("🛒 Proj. inkoop", f"€{det_kosten:,.0f}")
+                                dm4.metric("⚖️ Resultaat", f"€{det_omzet - det_kosten:,.0f}")
+
+                                df_det = df_det.drop(columns=["_move_type"])
+                                st.dataframe(
+                                    df_det.style.format({
+                                        "Proj. aandeel": "€{:,.2f}",
+                                        "Totaal factuur": "€{:,.2f}",
+                                        "Openstaand": "€{:,.2f}",
+                                    }),
+                                    use_container_width=True, hide_index=True
+                                )
+                                csv_det = df_det.to_csv(index=False).encode("utf-8")
+                                st.download_button(
+                                    "⬇️ Download CSV",
+                                    data=csv_det,
+                                    file_name=f"lab_marge_{detail_account_id}_facturen.csv",
+                                    mime="text/csv",
+                                    key="marge_proj_csv"
+                                )
+
+                        st.markdown("---")
                         st.markdown("### 🤖 AI-Analyse van Verlieslatende Projecten")
 
                         neg_projects = [s for s in all_summaries if s.get("Resultaat", 0) < 0]
