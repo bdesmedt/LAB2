@@ -1653,6 +1653,89 @@ def get_verf_behang_analysis(year):
         "behang": {"omzet": behang_omzet, "materiaal": behang_materiaal}
     }
 
+# =============================================================================
+# ANALYTISCHE PROJECTFUNCTIES
+# =============================================================================
+
+@st.cache_data(ttl=3600)
+def get_analytic_plans():
+    """Haal analytische plannen op uit Odoo (account.analytic.plan)."""
+    return odoo_call(
+        "account.analytic.plan", "search_read",
+        [],
+        ["id", "name", "parent_id"],
+        limit=100
+    )
+
+@st.cache_data(ttl=3600)
+def get_analytic_accounts(plan_id=None):
+    """Haal analytische rekeningen (projecten) op, optioneel gefilterd op plan."""
+    domain = []
+    if plan_id:
+        domain.append(["plan_id", "=", plan_id])
+    return odoo_call(
+        "account.analytic.account", "search_read",
+        domain,
+        ["id", "name", "plan_id", "code", "partner_id"],
+        limit=2000,
+        include_archived=True
+    )
+
+@st.cache_data(ttl=300)
+def get_analytic_lines(year, analytic_account_id):
+    """Haal analytische boekingsregels op voor een specifieke rekening en jaar.
+
+    Retourneert een lijst met regels uit account.analytic.line.
+    Positief bedrag = opbrengst, negatief bedrag = kosten.
+    """
+    return odoo_call(
+        "account.analytic.line", "search_read",
+        [
+            ["account_id", "=", analytic_account_id],
+            ["date", ">=", f"{year}-01-01"],
+            ["date", "<=", f"{year}-12-31"],
+        ],
+        ["id", "date", "name", "amount", "partner_id", "company_id",
+         "general_account_id", "move_line_id"],
+        limit=10000
+    )
+
+@st.cache_data(ttl=300)
+def get_analytic_invoices(year, analytic_account_id):
+    """Haal verkoopfacturen op die gekoppeld zijn aan een analytische rekening.
+
+    Filtert account.move.line op analytic_distribution (Odoo 16/17 JSON-veld)
+    en retourneert de bijbehorende factuurkoppen.
+    """
+    # analytic_distribution is een JSON-veld: {"<account_id>": percentage, ...}
+    # 'ilike' op het account ID (als string) werkt als subquery-filter.
+    lines = odoo_call(
+        "account.move.line", "search_read",
+        [
+            ["move_id.move_type", "in", ["out_invoice", "out_refund"]],
+            ["move_id.state", "=", "posted"],
+            ["move_id.invoice_date", ">=", f"{year}-01-01"],
+            ["move_id.invoice_date", "<=", f"{year}-12-31"],
+            ["analytic_distribution", "ilike", str(analytic_account_id)],
+        ],
+        ["move_id"],
+        limit=5000,
+        include_archived=True
+    )
+    if not lines:
+        return []
+
+    move_ids = list({l["move_id"][0] for l in lines if l.get("move_id")})
+    return odoo_call(
+        "account.move", "search_read",
+        [["id", "in", move_ids]],
+        ["name", "partner_id", "invoice_date", "invoice_date_due",
+         "amount_untaxed", "amount_total", "amount_residual",
+         "move_type", "payment_state", "ref", "company_id"],
+        limit=len(move_ids) + 100,
+        include_archived=True
+    ) or []
+
 @st.cache_data(ttl=300)
 def get_top_products(year, company_id=None, limit=20):
     """Haal top producten op met omzet"""
@@ -3893,7 +3976,7 @@ def main():
     # ==========================================================================
     # TABS
     # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🎯 Budget 2026"])
+    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🎯 Budget 2026", "🏗️ LAB Projects"])
     
     # =========================================================================
     # TAB 1: OVERZICHT
@@ -8776,6 +8859,293 @@ Gegenereerd door LAB Groep Financial Dashboard
             
             df_summary = pd.DataFrame(summary_data)
             st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+    # =========================================================================
+    # TAB 12: LAB PROJECTS – ANALYTISCHE PROJECTANALYSE
+    # =========================================================================
+    with tabs[11]:
+        st.header("🏗️ LAB Projects – Analytische Projectanalyse")
+        st.caption(
+            "Filter op analytisch plan en project (account.analytic.account) "
+            "om de financiële stand van een specifiek project te bekijken."
+        )
+
+        # --- Laad analytische plannen ---
+        with st.spinner("Analytische plannen ophalen..."):
+            analytic_plans = get_analytic_plans()
+
+        if not analytic_plans:
+            st.warning(
+                "⚠️ Geen analytische plannen gevonden in Odoo. "
+                "Controleer of het analytische boekhouding-module actief is "
+                "en of de gebruiker toegang heeft tot account.analytic.plan."
+            )
+        else:
+            # Plan selector
+            plan_options = {p["name"]: p["id"] for p in sorted(analytic_plans, key=lambda x: x["name"])}
+            col_p, col_a = st.columns(2)
+            with col_p:
+                selected_plan_name = st.selectbox(
+                    "📋 Analytisch Plan",
+                    list(plan_options.keys()),
+                    key="proj_plan_select",
+                    help="Kies het analytische plan (bijv. 'Projecten', 'Afdelingen')"
+                )
+            selected_plan_id = plan_options[selected_plan_name]
+
+            # Laad accounts voor geselecteerd plan
+            with st.spinner(f"Projecten ophalen voor plan '{selected_plan_name}'..."):
+                analytic_accounts = get_analytic_accounts(selected_plan_id)
+
+            if not analytic_accounts:
+                st.info(f"Geen analytische rekeningen gevonden onder plan '{selected_plan_name}'.")
+            else:
+                def _account_label(a):
+                    code = a.get("code") or ""
+                    name = a.get("name", "")
+                    return f"{code} – {name}".strip("– ") if code else name
+
+                account_options = {
+                    _account_label(a): a["id"]
+                    for a in sorted(analytic_accounts, key=lambda x: x.get("name", ""))
+                }
+                with col_a:
+                    selected_account_label = st.selectbox(
+                        "🏗️ Project / Analytische Rekening",
+                        list(account_options.keys()),
+                        key="proj_account_select",
+                        help="Kies het specifieke project of de analytische rekening"
+                    )
+                selected_account_id = account_options[selected_account_label]
+
+                st.markdown("---")
+
+                # --- Subtabs ---
+                proj_subtabs = st.tabs(["📊 Overzicht", "📅 Maandtrend", "📄 Facturen"])
+
+                # -----------------------------------------------------------------
+                # Subtab 1: Financieel Overzicht
+                # -----------------------------------------------------------------
+                with proj_subtabs[0]:
+                    st.subheader(f"📊 Financieel Overzicht – {selected_account_label} ({selected_year})")
+
+                    with st.spinner("Analytische boekingsregels ophalen..."):
+                        alines = get_analytic_lines(selected_year, selected_account_id)
+
+                    if not alines:
+                        st.info("Geen analytische boekingen gevonden voor dit project en jaar.")
+                    else:
+                        # Splits op teken: positief = opbrengst, negatief = kosten
+                        revenue_lines = [l for l in alines if (l.get("amount") or 0) > 0]
+                        cost_lines    = [l for l in alines if (l.get("amount") or 0) < 0]
+
+                        total_revenue = sum(l.get("amount", 0) for l in revenue_lines)
+                        total_costs   = abs(sum(l.get("amount", 0) for l in cost_lines))
+                        result        = total_revenue - total_costs
+                        margin_pct    = result / total_revenue * 100 if total_revenue else 0
+
+                        # KPI-rij
+                        c1, c2, c3, c4 = st.columns(4)
+                        c1.metric("💰 Omzet / Opbrengsten", f"€{total_revenue:,.0f}")
+                        c2.metric("📉 Kosten", f"€{total_costs:,.0f}")
+                        c3.metric("📈 Resultaat", f"€{result:,.0f}",
+                                  delta=f"{margin_pct:.1f}% marge")
+                        c4.metric("📋 Boekingsregels", str(len(alines)))
+
+                        st.markdown("---")
+
+                        # Waterval-achtige staaf: Opbrengst → Kosten → Resultaat
+                        fig_kpi = go.Figure()
+                        fig_kpi.add_trace(go.Bar(
+                            name="Opbrengsten",
+                            x=["Opbrengsten", "Kosten", "Resultaat"],
+                            y=[total_revenue, total_costs, result],
+                            marker_color=["#27ae60", "#c0392b",
+                                          "#27ae60" if result >= 0 else "#c0392b"]
+                        ))
+                        fig_kpi.update_layout(
+                            title=f"Financieel Overzicht – {selected_account_label}",
+                            height=350, showlegend=False,
+                            yaxis_title="Bedrag (€)"
+                        )
+                        st.plotly_chart(fig_kpi, use_container_width=True)
+
+                        # Top-10 boekingsregels (op bedrag)
+                        st.markdown("##### Top boekingsregels")
+                        top_lines = sorted(alines, key=lambda x: abs(x.get("amount", 0)), reverse=True)[:10]
+                        df_top = pd.DataFrame([
+                            {
+                                "Datum": l.get("date", ""),
+                                "Omschrijving": l.get("name", ""),
+                                "Relatie": l["partner_id"][1] if l.get("partner_id") else "",
+                                "Bedrag": l.get("amount", 0),
+                            }
+                            for l in top_lines
+                        ])
+                        st.dataframe(
+                            df_top.style.format({"Bedrag": "€{:,.2f}"}),
+                            use_container_width=True, hide_index=True
+                        )
+
+                # -----------------------------------------------------------------
+                # Subtab 2: Maandtrend
+                # -----------------------------------------------------------------
+                with proj_subtabs[1]:
+                    st.subheader(f"📅 Maandelijkse Trend – {selected_account_label} ({selected_year})")
+
+                    with st.spinner("Maanddata ophalen..."):
+                        alines_month = get_analytic_lines(selected_year, selected_account_id)
+
+                    if not alines_month:
+                        st.info("Geen analytische boekingen gevonden voor dit project en jaar.")
+                    else:
+                        # Groepeer per maand
+                        monthly: dict = {}
+                        for line in alines_month:
+                            date_str = line.get("date", "")
+                            if not date_str:
+                                continue
+                            month_key = date_str[:7]  # "YYYY-MM"
+                            if month_key not in monthly:
+                                monthly[month_key] = {"opbrengst": 0.0, "kosten": 0.0}
+                            amount = line.get("amount", 0) or 0
+                            if amount >= 0:
+                                monthly[month_key]["opbrengst"] += amount
+                            else:
+                                monthly[month_key]["kosten"] += abs(amount)
+
+                        months_sorted = sorted(monthly.keys())
+                        df_monthly = pd.DataFrame([
+                            {
+                                "Maand": m,
+                                "Opbrengst": monthly[m]["opbrengst"],
+                                "Kosten": monthly[m]["kosten"],
+                                "Resultaat": monthly[m]["opbrengst"] - monthly[m]["kosten"],
+                                "Marge %": (
+                                    (monthly[m]["opbrengst"] - monthly[m]["kosten"])
+                                    / monthly[m]["opbrengst"] * 100
+                                    if monthly[m]["opbrengst"] else 0
+                                ),
+                            }
+                            for m in months_sorted
+                        ])
+
+                        # Gecombineerd staaf + lijn diagram
+                        fig_trend = go.Figure()
+                        fig_trend.add_trace(go.Bar(
+                            name="Opbrengst", x=df_monthly["Maand"], y=df_monthly["Opbrengst"],
+                            marker_color="#1e3a5f"
+                        ))
+                        fig_trend.add_trace(go.Bar(
+                            name="Kosten", x=df_monthly["Maand"], y=df_monthly["Kosten"],
+                            marker_color="#c0392b", opacity=0.85
+                        ))
+                        fig_trend.add_trace(go.Scatter(
+                            name="Resultaat", x=df_monthly["Maand"], y=df_monthly["Resultaat"],
+                            mode="lines+markers",
+                            line=dict(color="#27ae60", width=2)
+                        ))
+                        fig_trend.update_layout(
+                            barmode="group", height=420,
+                            title=f"Opbrengst & Kosten per Maand – {selected_year}",
+                            xaxis_title="Maand", yaxis_title="Bedrag (€)"
+                        )
+                        st.plotly_chart(fig_trend, use_container_width=True)
+
+                        # Marge % lijn
+                        fig_margin = px.line(
+                            df_monthly, x="Maand", y="Marge %",
+                            title="Marge % per Maand",
+                            markers=True, color_discrete_sequence=["#27ae60"]
+                        )
+                        if df_monthly["Marge %"].notna().any():
+                            avg_margin = df_monthly["Marge %"].mean()
+                            fig_margin.add_hline(
+                                y=avg_margin, line_dash="dash", line_color="gray",
+                                annotation_text=f"Gem. {avg_margin:.1f}%"
+                            )
+                        fig_margin.update_layout(height=280)
+                        st.plotly_chart(fig_margin, use_container_width=True)
+
+                        # Tabel
+                        st.markdown("##### Maandoverzicht")
+                        st.dataframe(
+                            df_monthly.style.format({
+                                "Opbrengst": "€{:,.0f}",
+                                "Kosten": "€{:,.0f}",
+                                "Resultaat": "€{:,.0f}",
+                                "Marge %": "{:.1f}%",
+                            }),
+                            use_container_width=True, hide_index=True
+                        )
+
+                # -----------------------------------------------------------------
+                # Subtab 3: Facturen
+                # -----------------------------------------------------------------
+                with proj_subtabs[2]:
+                    st.subheader(f"📄 Facturen gekoppeld aan – {selected_account_label} ({selected_year})")
+                    st.caption(
+                        "Toont verkoopfacturen waarvan minimaal één regel "
+                        "een analytische verdeling bevat naar dit project."
+                    )
+
+                    with st.spinner("Facturen ophalen..."):
+                        proj_invoices = get_analytic_invoices(selected_year, selected_account_id)
+
+                    if not proj_invoices:
+                        st.info(
+                            "Geen facturen gevonden die gekoppeld zijn aan dit project voor "
+                            f"het jaar {selected_year}. Controleer of factuurregels een "
+                            "analytische verdeling hebben naar deze rekening."
+                        )
+                    else:
+                        df_inv = pd.DataFrame([
+                            {
+                                "Factuurnr": i.get("name", ""),
+                                "Datum": i.get("invoice_date", ""),
+                                "Vervaldatum": i.get("invoice_date_due", ""),
+                                "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
+                                "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
+                                "Totaal excl. BTW": i.get("amount_untaxed", 0),
+                                "Totaal incl. BTW": i.get("amount_total", 0),
+                                "Openstaand": i.get("amount_residual", 0),
+                                "Betaalstatus": {
+                                    "not_paid": "❌ Niet betaald",
+                                    "partial": "⚠️ Deels betaald",
+                                    "paid": "✅ Betaald",
+                                    "reversed": "↩️ Teruggedraaid",
+                                    "in_payment": "🔄 In verwerking",
+                                }.get(i.get("payment_state", ""), i.get("payment_state", "")),
+                            }
+                            for i in proj_invoices
+                        ])
+                        df_inv = df_inv.sort_values("Datum", ascending=False)
+
+                        # Samenvattende metrics
+                        open_inv = df_inv[df_inv["Openstaand"] > 0.01]
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("📄 Facturen", str(len(df_inv)))
+                        m2.metric("💰 Totaal omzet", f"€{df_inv['Totaal excl. BTW'].sum():,.0f}")
+                        m3.metric("⏳ Openstaand", f"€{df_inv['Openstaand'].sum():,.0f}")
+                        m4.metric("📬 Nog te ontvangen", str(len(open_inv)))
+
+                        st.markdown("---")
+                        st.dataframe(
+                            df_inv.style.format({
+                                "Totaal excl. BTW": "€{:,.2f}",
+                                "Totaal incl. BTW": "€{:,.2f}",
+                                "Openstaand": "€{:,.2f}",
+                            }),
+                            use_container_width=True, hide_index=True
+                        )
+
+                        csv = df_inv.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "⬇️ Download CSV",
+                            data=csv,
+                            file_name=f"lab_projects_{selected_account_id}_{selected_year}.csv",
+                            mime="text/csv"
+                        )
 
 
 
