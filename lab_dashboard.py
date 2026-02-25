@@ -1707,12 +1707,12 @@ def get_analytic_lines(analytic_account_id, year=None):
 def get_analytic_invoices(analytic_account_id, year=None):
     """Haal verkoop- én inkoopfacturen op via account.analytic.line.move_line_id.
 
-    Gebruikt de directe move_line_id koppeling vanuit analytische regels in plaats
-    van JSON-string matching op analytic_distribution. Dit is betrouwbaarder in
-    Odoo 16/17 en vindt exact de facturen die bijdragen aan de analytische stand.
-    Zonder year-parameter worden ALLE facturen teruggegeven.
+    Retourneert een tuple: (lijst van account.move dicts, dict {move_id: proj_bedrag}).
+    proj_bedrag is het bedrag dat analytisch aan dit project is toegewezen (kan kleiner
+    zijn dan het factuurtotaal als de factuur meerdere projecten dekt).
+    Zonder year-parameter worden ALLE periodes teruggegeven.
     """
-    # Stap 1: haal analytische regels op voor dit project
+    # Stap 1: haal analytische regels op voor dit project (incl. amount voor attributie)
     aline_domain = [["account_id", "=", analytic_account_id]]
     if year:
         aline_domain += [
@@ -1722,43 +1722,56 @@ def get_analytic_invoices(analytic_account_id, year=None):
     alines = odoo_call(
         "account.analytic.line", "search_read",
         aline_domain,
-        ["move_line_id"],
+        ["move_line_id", "amount"],
         limit=10000
     )
     if not alines:
-        return []
+        return [], {}
 
-    # Stap 2: filter op regels met een gekoppelde boekingsregel
-    move_line_ids = list({a["move_line_id"][0] for a in alines if a.get("move_line_id")})
-    if not move_line_ids:
-        return []
+    # Stap 2: bouw move_line_id → totaal analytisch bedrag mapping
+    ml_to_amount = {}
+    for a in alines:
+        if a.get("move_line_id"):
+            ml_id = a["move_line_id"][0]
+            ml_to_amount[ml_id] = ml_to_amount.get(ml_id, 0) + (a.get("amount") or 0)
+    if not ml_to_amount:
+        return [], {}
 
-    # Stap 3: zoek account.move.line die bij een factuur horen
+    # Stap 3: filter op move lines die bij een factuur horen
     move_lines = odoo_call(
         "account.move.line", "search_read",
         [
-            ["id", "in", move_line_ids],
+            ["id", "in", list(ml_to_amount.keys())],
             ["move_id.move_type", "in", ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
             ["move_id.state", "=", "posted"],
         ],
-        ["move_id"],
-        limit=len(move_line_ids) + 100,
+        ["id", "move_id"],
+        limit=len(ml_to_amount) + 100,
         include_archived=True
     )
     if not move_lines:
-        return []
+        return [], {}
 
-    # Stap 4: haal de unieke factuurkoppen op
-    move_ids = list({l["move_id"][0] for l in move_lines if l.get("move_id")})
-    return odoo_call(
+    # Stap 4: bereken het project-aandeel per factuur (move_id)
+    move_attribution = {}  # {move_id: proj_bedrag}
+    for ml in move_lines:
+        if ml.get("move_id"):
+            move_id = ml["move_id"][0]
+            amount = ml_to_amount.get(ml["id"], 0)
+            move_attribution[move_id] = move_attribution.get(move_id, 0) + amount
+
+    # Stap 5: haal de factuurkoppen op
+    move_ids = list(move_attribution.keys())
+    invoices = odoo_call(
         "account.move", "search_read",
         [["id", "in", move_ids]],
-        ["name", "partner_id", "invoice_date", "invoice_date_due",
+        ["id", "name", "partner_id", "invoice_date", "invoice_date_due",
          "amount_untaxed", "amount_total", "amount_residual",
          "move_type", "payment_state", "ref", "company_id"],
         limit=len(move_ids) + 100,
         include_archived=True
     ) or []
+    return invoices, move_attribution
 
 @st.cache_data(ttl=300)
 def get_analytic_all_invoices(analytic_account_id):
@@ -9231,7 +9244,9 @@ Gegenereerd door LAB Groep Financial Dashboard
                         inv_year_filter = inv_from.year
 
                     with st.spinner("Facturen ophalen..."):
-                        proj_invoices = get_analytic_invoices(selected_account_id, year=inv_year_filter)
+                        proj_invoices, inv_attribution = get_analytic_invoices(
+                            selected_account_id, year=inv_year_filter
+                        )
 
                     # Datumfilter in Python als geen volledig jaar
                     if proj_invoices and (inv_from or inv_to):
@@ -9273,46 +9288,36 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 "Vervaldatum": i.get("invoice_date_due", ""),
                                 "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
                                 "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
-                                "Excl. BTW": i.get("amount_untaxed", 0),
-                                "Incl. BTW": i.get("amount_total", 0),
+                                "Proj. aandeel": abs(inv_attribution.get(i.get("id"), 0)),
+                                "Totaal factuur": i.get("amount_untaxed", 0),
                                 "Openstaand": i.get("amount_residual", 0),
                                 "Status": PAYMENT_LABELS.get(
                                     i.get("payment_state", ""), i.get("payment_state", "")
                                 ),
                                 "_move_type": i.get("move_type", ""),
+                                "_move_id": i.get("id"),
                             }
                             for i in proj_invoices
                         ]).sort_values("Datum", ascending=False)
 
                         df_out = df_inv[df_inv["_move_type"].isin(["out_invoice", "out_refund"])]
                         df_in  = df_inv[df_inv["_move_type"].isin(["in_invoice", "in_refund"])]
-                        nog_te_ontvangen = df_out[df_out["Openstaand"] > 0.01]
-                        nog_te_betalen   = df_in[df_in["Openstaand"] > 0.01]
+                        proj_omzet  = df_out["Proj. aandeel"].sum()
+                        proj_kosten = df_in["Proj. aandeel"].sum()
 
                         m1, m2, m3, m4 = st.columns(4)
                         m1.metric("📄 Facturen", str(len(df_inv)))
-                        m2.metric("💰 Omzet (excl. BTW)", f"€{df_out['Excl. BTW'].sum():,.0f}")
-                        m3.metric("🛒 Inkoop (excl. BTW)", f"€{df_in['Excl. BTW'].sum():,.0f}")
-                        m4.metric(
-                            "⚖️ Resultaat",
-                            f"€{df_out['Excl. BTW'].sum() - df_in['Excl. BTW'].sum():,.0f}"
-                        )
+                        m2.metric("💰 Proj. omzet", f"€{proj_omzet:,.0f}")
+                        m3.metric("🛒 Proj. inkoop", f"€{proj_kosten:,.0f}")
+                        m4.metric("⚖️ Resultaat", f"€{proj_omzet - proj_kosten:,.0f}")
 
-                        open_cols = st.columns(2)
-                        with open_cols[0]:
-                            st.caption(f"📬 Nog te ontvangen: **{len(nog_te_ontvangen)}** facturen "
-                                       f"(€{nog_te_ontvangen['Openstaand'].sum():,.0f})")
-                        with open_cols[1]:
-                            st.caption(f"📤 Nog te betalen: **{len(nog_te_betalen)}** facturen "
-                                       f"(€{nog_te_betalen['Openstaand'].sum():,.0f})")
-
-                        df_inv = df_inv.drop(columns=["_move_type"])
+                        df_inv = df_inv.drop(columns=["_move_type", "_move_id"])
 
                         st.markdown("---")
                         st.dataframe(
                             df_inv.style.format({
-                                "Excl. BTW": "€{:,.2f}",
-                                "Incl. BTW": "€{:,.2f}",
+                                "Proj. aandeel": "€{:,.2f}",
+                                "Totaal factuur": "€{:,.2f}",
                                 "Openstaand": "€{:,.2f}",
                             }),
                             use_container_width=True, hide_index=True
