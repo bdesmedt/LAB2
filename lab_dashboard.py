@@ -1705,14 +1705,14 @@ def get_analytic_lines(analytic_account_id, year=None):
 
 @st.cache_data(ttl=300)
 def get_analytic_invoices(analytic_account_id, year=None):
-    """Haal verkoopfacturen op die gekoppeld zijn aan een analytische rekening.
+    """Haal verkoop- én inkoopfacturen op die gekoppeld zijn aan een analytische rekening.
 
     Filtert account.move.line op analytic_distribution (Odoo 16/17 JSON-veld)
     en retourneert de bijbehorende factuurkoppen.
     Zonder year-parameter worden ALLE facturen teruggegeven.
     """
     inv_domain = [
-        ["move_id.move_type", "in", ["out_invoice", "out_refund"]],
+        ["move_id.move_type", "in", ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
         ["move_id.state", "=", "posted"],
         ["analytic_distribution", "ilike", str(analytic_account_id)],
     ]
@@ -9193,7 +9193,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                 with proj_subtabs[2]:
                     st.subheader(f"📄 Facturen – {selected_account_label}")
                     st.caption(
-                        "Verkoopfacturen waarvan minimaal één regel analytisch is toegewezen "
+                        "Verkoop- én inkoopfacturen waarvan minimaal één regel analytisch is toegewezen "
                         "aan dit project. Gebruik het datumfilter voor een deelperiode."
                     )
 
@@ -9241,9 +9241,16 @@ Gegenereerd door LAB Groep Financial Dashboard
                             "reversed": "↩️ Teruggedraaid",
                             "in_payment": "🔄 In verwerking",
                         }
+                        TYPE_LABELS = {
+                            "out_invoice": "🧾 Verkoopfactuur",
+                            "out_refund": "↩️ Verkoopcreditnota",
+                            "in_invoice": "🛒 Inkoopfactuur",
+                            "in_refund": "↩️ Inkoopcontractnota",
+                        }
                         df_inv = pd.DataFrame([
                             {
                                 "Factuurnr": i.get("name", ""),
+                                "Type": TYPE_LABELS.get(i.get("move_type", ""), i.get("move_type", "")),
                                 "Datum": i.get("invoice_date", ""),
                                 "Vervaldatum": i.get("invoice_date_due", ""),
                                 "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
@@ -9254,16 +9261,34 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 "Status": PAYMENT_LABELS.get(
                                     i.get("payment_state", ""), i.get("payment_state", "")
                                 ),
+                                "_move_type": i.get("move_type", ""),
                             }
                             for i in proj_invoices
                         ]).sort_values("Datum", ascending=False)
 
-                        open_inv = df_inv[df_inv["Openstaand"] > 0.01]
+                        df_out = df_inv[df_inv["_move_type"].isin(["out_invoice", "out_refund"])]
+                        df_in  = df_inv[df_inv["_move_type"].isin(["in_invoice", "in_refund"])]
+                        nog_te_ontvangen = df_out[df_out["Openstaand"] > 0.01]
+                        nog_te_betalen   = df_in[df_in["Openstaand"] > 0.01]
+
                         m1, m2, m3, m4 = st.columns(4)
                         m1.metric("📄 Facturen", str(len(df_inv)))
-                        m2.metric("💰 Totaal omzet", f"€{df_inv['Excl. BTW'].sum():,.0f}")
-                        m3.metric("⏳ Openstaand", f"€{df_inv['Openstaand'].sum():,.0f}")
-                        m4.metric("📬 Nog te ontvangen", str(len(open_inv)))
+                        m2.metric("💰 Omzet (excl. BTW)", f"€{df_out['Excl. BTW'].sum():,.0f}")
+                        m3.metric("🛒 Inkoop (excl. BTW)", f"€{df_in['Excl. BTW'].sum():,.0f}")
+                        m4.metric(
+                            "⚖️ Resultaat",
+                            f"€{df_out['Excl. BTW'].sum() - df_in['Excl. BTW'].sum():,.0f}"
+                        )
+
+                        open_cols = st.columns(2)
+                        with open_cols[0]:
+                            st.caption(f"📬 Nog te ontvangen: **{len(nog_te_ontvangen)}** facturen "
+                                       f"(€{nog_te_ontvangen['Openstaand'].sum():,.0f})")
+                        with open_cols[1]:
+                            st.caption(f"📤 Nog te betalen: **{len(nog_te_betalen)}** facturen "
+                                       f"(€{nog_te_betalen['Openstaand'].sum():,.0f})")
+
+                        df_inv = df_inv.drop(columns=["_move_type"])
 
                         st.markdown("---")
                         st.dataframe(
