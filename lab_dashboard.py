@@ -1705,33 +1705,51 @@ def get_analytic_lines(analytic_account_id, year=None):
 
 @st.cache_data(ttl=300)
 def get_analytic_invoices(analytic_account_id, year=None):
-    """Haal verkoop- én inkoopfacturen op die gekoppeld zijn aan een analytische rekening.
+    """Haal verkoop- én inkoopfacturen op via account.analytic.line.move_line_id.
 
-    Filtert account.move.line op analytic_distribution (Odoo 16/17 JSON-veld)
-    en retourneert de bijbehorende factuurkoppen.
+    Gebruikt de directe move_line_id koppeling vanuit analytische regels in plaats
+    van JSON-string matching op analytic_distribution. Dit is betrouwbaarder in
+    Odoo 16/17 en vindt exact de facturen die bijdragen aan de analytische stand.
     Zonder year-parameter worden ALLE facturen teruggegeven.
     """
-    inv_domain = [
-        ["move_id.move_type", "in", ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
-        ["move_id.state", "=", "posted"],
-        ["analytic_distribution", "ilike", str(analytic_account_id)],
-    ]
+    # Stap 1: haal analytische regels op voor dit project
+    aline_domain = [["account_id", "=", analytic_account_id]]
     if year:
-        inv_domain += [
-            ["move_id.invoice_date", ">=", f"{year}-01-01"],
-            ["move_id.invoice_date", "<=", f"{year}-12-31"],
+        aline_domain += [
+            ["date", ">=", f"{year}-01-01"],
+            ["date", "<=", f"{year}-12-31"],
         ]
-    lines = odoo_call(
-        "account.move.line", "search_read",
-        inv_domain,
-        ["move_id"],
-        limit=5000,
-        include_archived=True
+    alines = odoo_call(
+        "account.analytic.line", "search_read",
+        aline_domain,
+        ["move_line_id"],
+        limit=10000
     )
-    if not lines:
+    if not alines:
         return []
 
-    move_ids = list({l["move_id"][0] for l in lines if l.get("move_id")})
+    # Stap 2: filter op regels met een gekoppelde boekingsregel
+    move_line_ids = list({a["move_line_id"][0] for a in alines if a.get("move_line_id")})
+    if not move_line_ids:
+        return []
+
+    # Stap 3: zoek account.move.line die bij een factuur horen
+    move_lines = odoo_call(
+        "account.move.line", "search_read",
+        [
+            ["id", "in", move_line_ids],
+            ["move_id.move_type", "in", ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
+            ["move_id.state", "=", "posted"],
+        ],
+        ["move_id"],
+        limit=len(move_line_ids) + 100,
+        include_archived=True
+    )
+    if not move_lines:
+        return []
+
+    # Stap 4: haal de unieke factuurkoppen op
+    move_ids = list({l["move_id"][0] for l in move_lines if l.get("move_id")})
     return odoo_call(
         "account.move", "search_read",
         [["id", "in", move_ids]],
