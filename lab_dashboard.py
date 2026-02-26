@@ -110,7 +110,7 @@ import base64
 
 st.set_page_config(
     page_title="LAB Groep Dashboard",
-    page_icon="📊",
+    page_icon=":material/finance:",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -4023,12 +4023,42 @@ def validate_forecast(forecast):
 # =============================================================================
 
 def main():
-    st.title("📊 LAB Groep Financial Dashboard")
-    st.caption("Real-time data uit Odoo | v14 - Met Financial Forecast & Maandafsluiting")
-    
-    # Sidebar
-    st.sidebar.header("🔧 Filters")
-    
+    # CSS voor professionele sidebar navigatie
+    st.markdown("""
+    <style>
+    /* Sidebar navigatie styling */
+    [data-testid="stSidebarContent"] [data-testid="stRadio"] > div:first-child {
+        display: none;
+    }
+    [data-testid="stSidebarContent"] [data-testid="stRadio"] div[role="radiogroup"] {
+        gap: 2px;
+    }
+    [data-testid="stSidebarContent"] [data-testid="stRadio"] label {
+        padding: 7px 12px !important;
+        border-radius: 6px !important;
+        font-size: 0.92rem !important;
+        font-weight: 400 !important;
+        transition: background 0.15s;
+    }
+    [data-testid="stSidebarContent"] [data-testid="stRadio"] label:hover {
+        background: rgba(49, 51, 63, 0.1) !important;
+    }
+    /* Filter bar bovenaan */
+    .filter-bar {
+        padding: 8px 0 12px 0;
+        border-bottom: 1px solid rgba(49, 51, 63, 0.15);
+        margin-bottom: 16px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # =========================================================================
+    # SIDEBAR – Configuratie & Navigatie
+    # =========================================================================
+    st.sidebar.markdown("**LAB Groep**")
+    st.sidebar.markdown("Financial Dashboard", unsafe_allow_html=False)
+    st.sidebar.markdown("---")
+
     # API Key input (alleen tonen als niet in secrets)
     api_from_secrets = False
     try:
@@ -4036,11 +4066,10 @@ def main():
             api_from_secrets = True
     except:
         pass
-    
+
     if not api_from_secrets:
-        st.sidebar.markdown("### 🔑 API Configuratie")
         api_input = st.sidebar.text_input(
-            "Odoo API Key", 
+            "Odoo API Key",
             value=st.session_state.get("api_key", ""),
             type="password",
             help="Voer je Odoo API key in",
@@ -4048,10 +4077,7 @@ def main():
         )
         if api_input:
             st.session_state.api_key = api_input
-        st.sidebar.markdown("---")
-    
-    # OpenAI API Key voor chatbot
-    st.sidebar.markdown("### 🤖 AI Chat")
+
     openai_input = st.sidebar.text_input(
         "OpenAI API Key",
         value=st.session_state.get("openai_key", ""),
@@ -4061,56 +4087,73 @@ def main():
     )
     if openai_input:
         st.session_state.openai_key = openai_input
-    st.sidebar.markdown("---")
-    
+
     # Check of we een API key hebben
     if not get_api_key():
-        st.warning("👈 Voer je Odoo API Key in via de sidebar om te beginnen")
+        st.warning("Voer je Odoo API Key in via de sidebar om te beginnen")
         st.stop()
-    
-    # Dynamische jaarlijst
+
+    st.sidebar.markdown("---")
+
+    # Navigatie
+    NAV_ITEMS = [
+        "Overzicht",
+        "Bank",
+        "Facturen",
+        "Producten",
+        "Klantenkaart",
+        "Kosten",
+        "Cashflow",
+        "Balans",
+        "AI Chat",
+        "Maandafsluiting",
+        "LAB Projects",
+    ]
+    selected_nav = st.sidebar.radio("Navigatie", NAV_ITEMS, label_visibility="collapsed")
+
+    # =========================================================================
+    # FILTERS – Bovenaan in de hoofdruimte
+    # =========================================================================
     current_year = datetime.now().year
     years = list(range(current_year, 2022, -1))
-    selected_year = st.sidebar.selectbox("📅 Jaar", years, index=0)
-    
-    # Entiteit selectie
     entity_options = ["Alle bedrijven"] + list(COMPANIES.values())
-    selected_entity = st.sidebar.selectbox("🏢 Entiteit", entity_options)
-    
+
+    with st.container():
+        f_col1, f_col2, f_col3, f_col4 = st.columns([1, 1, 2, 1])
+        with f_col1:
+            selected_year = st.selectbox("Jaar", years, index=0, key="filter_year")
+        with f_col2:
+            selected_entity = st.selectbox("Entiteit", entity_options, key="filter_entity")
+        with f_col3:
+            if "exclude_intercompany" not in st.session_state:
+                st.session_state.exclude_intercompany = False
+            exclude_intercompany = st.checkbox(
+                "Intercompany uitsluiten",
+                value=st.session_state.exclude_intercompany,
+                key="exclude_intercompany_checkbox",
+                help="Sluit boekingen met andere LAB-entiteiten uit"
+            )
+            st.session_state.exclude_intercompany = exclude_intercompany
+        with f_col4:
+            st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
+            if st.button("Ververs", key="refresh_btn"):
+                st.cache_data.clear()
+                st.rerun()
+    st.markdown("---")
+
     company_id = None
     if selected_entity != "Alle bedrijven":
         company_id = [k for k, v in COMPANIES.items() if v == selected_entity][0]
-    
-    # Intercompany filter (beschikbaar voor alle entiteiten)
-    # Gebruik session_state om de waarde te behouden bij jaar/entiteit wijzigingen
-    st.sidebar.markdown("---")
-    if "exclude_intercompany" not in st.session_state:
-        st.session_state.exclude_intercompany = False
-    
-    exclude_intercompany = st.sidebar.checkbox(
-        "🔄 Intercompany uitsluiten",
-        value=st.session_state.exclude_intercompany,
-        key="exclude_intercompany_checkbox",
-        help="Sluit boekingen met andere LAB-entiteiten uit (bijv. facturen tussen LAB Shops en LAB Projects)"
-    )
-    st.session_state.exclude_intercompany = exclude_intercompany
-    
-    st.sidebar.markdown("---")
-    st.sidebar.caption(f"⏱️ Laatste update: {datetime.now().strftime('%H:%M:%S')}")
-    if st.sidebar.button("🔄 Ververs data"):
-        st.cache_data.clear()
-        st.rerun()
-    
-    # ==========================================================================
-    # TABS
-    # ==========================================================================
-    tabs = st.tabs(["💳 Overzicht", "🏦 Bank", "📄 Facturen", "🏆 Producten", "🗺️ Klantenkaart", "📉 Kosten", "📈 Cashflow", "📊 Balans", "💬 AI Chat", "📋 Maandafsluiting", "🎯 Budget 2026", "🏗️ LAB Projects"])
+
+    # =========================================================================
+    # NAVIGATIE – Pagina-inhoud op basis van selectie
+    # =========================================================================
     
     # =========================================================================
-    # TAB 1: OVERZICHT
+    # PAGINA: OVERZICHT
     # =========================================================================
-    with tabs[0]:
-        st.header("📊 Financieel Overzicht")
+    if selected_nav == "Overzicht":
+        st.header("Financieel Overzicht")
         
         # KPIs
         col1, col2, col3, col4 = st.columns(4)
@@ -4254,7 +4297,7 @@ def main():
         # OMZET GRAFIEK MET INTERACTIEVE SLIDER (WEEK/DAG TOGGLE)
         # =====================================================================
         st.markdown("---")
-        st.subheader("📊 Omzet Tijdlijn" + (" (excl. IC)" if exclude_intercompany else ""))
+        st.subheader("Omzet Tijdlijn" + (" (excl. IC)" if exclude_intercompany else ""))
         
         # Toggle voor week/dag weergave
         view_col1, view_col2 = st.columns([1, 4])
@@ -4266,7 +4309,7 @@ def main():
                 label_visibility="collapsed"
             )
         with view_col2:
-            st.caption("💡 Kies 'Dag' voor detail • Gebruik de schuifbalk om te navigeren • Sleep de randen om in te zoomen")
+            st.caption("Kies 'Dag' voor detail • Gebruik de schuifbalk om te navigeren • Sleep de randen om in te zoomen")
         
         if time_view == "📅 Week":
             # WEEKWEERGAVE
@@ -4420,7 +4463,7 @@ def main():
         # OMZET WEEK-OP-WEEK: JAARVERGELIJKING
         # =====================================================================
         st.markdown("---")
-        st.subheader("📅 Omzet Week-op-Week: Vergelijking met Vorig Jaar" + (" (excl. IC)" if exclude_intercompany else ""))
+        st.subheader("Omzet Week-op-Week: Vergelijking met Vorig Jaar" + (" (excl. IC)" if exclude_intercompany else ""))
 
         prev_year = selected_year - 1
         with st.spinner(f"Weekdata {selected_year} en {prev_year} laden..."):
@@ -4528,10 +4571,10 @@ def main():
             st.info("Geen weekdata beschikbaar voor de jaarvergelijking")
 
     # =========================================================================
-    # TAB 2: BANK
+    # PAGINA: BANK
     # =========================================================================
-    with tabs[1]:
-        st.header("🏦 Banksaldi per Rekening")
+    elif selected_nav == "Bank":
+        st.header("Banksaldi per Rekening")
         
         bank_data = get_bank_balances()
         rc_data = get_rc_balances()
@@ -4568,7 +4611,7 @@ def main():
             # R/C Intercompany sectie
             if rc_data_filtered:
                 st.markdown("---")
-                st.subheader("🔄 R/C Intercompany Posities")
+                st.subheader("R/C Intercompany Posities")
                 st.info("💡 Dit zijn rekening-courant posities met groepsmaatschappijen, geen bankrekeningen. "
                        "Rekeningen in de **12xxx** reeks zijn vorderingen, **14xxx** zijn schulden.")
                 
@@ -4589,7 +4632,7 @@ def main():
             # Grafiek - alleen tonen als "Alle bedrijven" is geselecteerd
             if selected_entity == "Alle bedrijven":
                 st.markdown("---")
-                st.subheader("📊 Verdeling per Entiteit")
+                st.subheader("Verdeling per Entiteit")
                 
                 comp_totals = []
                 for comp_id, comp_name in COMPANIES.items():
@@ -4607,10 +4650,10 @@ def main():
             st.info("Geen bankgegevens beschikbaar voor deze entiteit")
     
     # =========================================================================
-    # TAB 3: FACTUREN
+    # PAGINA: FACTUREN
     # =========================================================================
-    with tabs[2]:
-        st.header("📄 Facturen")
+    elif selected_nav == "Facturen":
+        st.header("Facturen")
         
         # Filters
         col1, col2, col3 = st.columns(3)
@@ -4728,17 +4771,17 @@ def main():
             st.info("Geen facturen gevonden. Pas de filters aan.")
     
     # =========================================================================
-    # TAB 4: PRODUCTEN (met subtabs)
+    # PAGINA: PRODUCTEN (met subtabs)
     # =========================================================================
-    with tabs[3]:
-        st.header("🏆 Productanalyse")
+    elif selected_nav == "Producten":
+        st.header("Productanalyse")
         
         # Subtabs voor producten
         prod_subtabs = st.tabs(["📦 Productcategorieën", "🏅 Top Producten", "🎨 Verf vs Behang", "📊 Categorie Trend"])
         
         # Subtab 1: Productcategorieën
         with prod_subtabs[0]:
-            st.subheader("📦 Omzet per Productcategorie")
+            st.subheader("Omzet per Productcategorie")
             
             # LAB Conceptstore (ID 1) gebruikt POS data, anderen account.move.line
             is_conceptstore = company_id == 1
@@ -4925,7 +4968,7 @@ def main():
 
         # Subtab 4: Categorie Trend (WoW + Cumulatief + YoY)
         with prod_subtabs[3]:
-            st.subheader(f"📊 Omzet per Categorie - Week Trend {selected_year}")
+            st.subheader(f"Omzet per Categorie – Week Trend {selected_year}")
 
             # Helper: haal gecombineerde productverkopen op (POS + facturen)
             def _fetch_combined_product_sales(year, cid):
@@ -5175,10 +5218,10 @@ def main():
                 st.info("Geen productverkopen gevonden voor deze selectie")
 
     # =========================================================================
-    # TAB 5: KLANTENKAART (nieuw!)
+    # PAGINA: KLANTENKAART
     # =========================================================================
-    with tabs[4]:
-        st.header("🗺️ Klantenkaart LAB Projects")
+    elif selected_nav == "Klantenkaart":
+        st.header("Klantenkaart LAB Projects")
         
         if not company_id or company_id == 3:
             with st.spinner("Klantlocaties laden..."):
@@ -5250,7 +5293,7 @@ def main():
                     
                     # Top klanten tabel
                     st.markdown("---")
-                    st.subheader("🏆 Top 15 Klanten op Omzet")
+                    st.subheader("Top 15 Klanten op Omzet")
                     
                     df_top_customers = df_map.nlargest(15, "Omzet")[["Klant", "Stad", "Omzet", "Facturen"]]
                     st.dataframe(
@@ -5275,12 +5318,12 @@ def main():
                    "Selecteer 'LAB Projects' of 'Alle bedrijven' in de sidebar.")
     
     # =========================================================================
-    # TAB 6: KOSTEN
+    # PAGINA: KOSTEN
     # =========================================================================
-    with tabs[5]:
-        st.header("📉 Kostenanalyse")
+    elif selected_nav == "Kosten":
+        st.header("Kostenanalyse")
         if exclude_intercompany:
-            st.caption("🔄 Intercompany boekingen uitgesloten")
+            st.caption("Intercompany boekingen uitgesloten")
         
         cost_data = get_cost_data(selected_year, company_id)
         
@@ -5309,7 +5352,7 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("🏆 Top 15 Kostenposten")
+                st.subheader("Top 15 Kostenposten")
                 top_costs = sorted_accounts[:15]
                 df_top = pd.DataFrame(top_costs, columns=["Kostensoort", "Bedrag"])
                 
@@ -5319,7 +5362,7 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
             
             with col2:
-                st.subheader("📊 Kostenverdeling")
+                st.subheader("Kostenverdeling")
                 df_pie = pd.DataFrame(sorted_accounts[:10], columns=["Kostensoort", "Bedrag"])
                 fig2 = px.pie(df_pie, values="Bedrag", names="Kostensoort",
                              color_discrete_sequence=px.colors.sequential.Blues_r)
@@ -5338,10 +5381,10 @@ def main():
             st.info("Geen kostendata beschikbaar")
     
     # =========================================================================
-    # TAB 7: CASHFLOW (INTERACTIEF)
+    # PAGINA: CASHFLOW
     # =========================================================================
-    with tabs[6]:
-        st.header("📈 Interactieve Cashflow Prognose")
+    elif selected_nav == "Cashflow":
+        st.header("Interactieve Cashflow Prognose")
 
         entity_label = "alle entiteiten" if selected_entity == "Alle bedrijven" else COMPANIES.get(company_id, "")
 
@@ -5547,7 +5590,7 @@ def main():
             # =====================================================================
             # PARTNER FILTERING (UITSLUITINGEN)
             # =====================================================================
-            st.subheader("🎯 Partner Selectie voor Prognose")
+            st.subheader("Partner Selectie voor Prognose")
 
             with st.expander("📥 Debiteuren uitsluiten van prognose", expanded=False):
                 st.caption("Selecteer debiteuren die je wilt uitsluiten van de cashflow prognose (bijv. dubieuze debiteuren)")
@@ -5633,7 +5676,7 @@ def main():
             # =====================================================================
             # HISTORISCHE DATA
             # =====================================================================
-            st.subheader("📊 Historische Cashflow (afgelopen weken)")
+            st.subheader("Historische Cashflow (afgelopen weken)")
 
             weeks_back = st.slider("Aantal weken terug", 4, 104, 12, key="cf_weeks_back", help="Maximaal 2 jaar (104 weken) terug")
             historical_data = get_historical_bank_movements(company_id, weeks_back)
@@ -5923,7 +5966,7 @@ def main():
             # =====================================================================
             # INTERACTIEVE GRAFIEK
             # =====================================================================
-            st.subheader("📈 Cashflow Overzicht")
+            st.subheader("Cashflow Overzicht")
 
             fig = go.Figure()
 
@@ -6161,10 +6204,10 @@ def main():
             )
 
     # =========================================================================
-    # TAB 8: BALANS (KWADRANT)
+    # PAGINA: BALANS
     # =========================================================================
-    with tabs[7]:
-        st.header("📊 Balans (Kwadrant)")
+    elif selected_nav == "Balans":
+        st.header("Balans (Kwadrant)")
         
         # Peildatum selectie
         balance_date = st.date_input(
@@ -6346,10 +6389,10 @@ def main():
                 )
 
     # =========================================================================
-    # TAB 9: AI CHAT
+    # PAGINA: AI CHAT
     # =========================================================================
-    with tabs[8]:
-        st.header("💬 AI Financial Assistant")
+    elif selected_nav == "AI Chat":
+        st.header("AI Financial Assistant")
         
         # Check voor OpenAI API key
         if not get_openai_key():
@@ -6452,10 +6495,10 @@ def main():
                         st.rerun()
 
     # =========================================================================
-    # TAB 10: MAANDAFSLUITING (FINANCIAL CLOSE)
+    # PAGINA: MAANDAFSLUITING
     # =========================================================================
-    with tabs[9]:
-        st.header("📋 Maandafsluiting (Financial Close)")
+    elif selected_nav == "Maandafsluiting":
+        st.header("Maandafsluiting")
 
         # Initialize session state for Financial Close authentication
         if "financial_close_authenticated" not in st.session_state:
@@ -6474,7 +6517,7 @@ def main():
             # =================================================================
             # PERIOD SELECTION
             # =================================================================
-            st.subheader("📅 Periode Selectie")
+            st.subheader("Periode Selectie")
 
             col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
             with col1:
@@ -6511,7 +6554,7 @@ def main():
             # =================================================================
             # COMPARISON PERIOD SELECTION
             # =================================================================
-            st.markdown("#### 🔄 Vergelijkingsperiode")
+            st.markdown("#### Vergelijkingsperiode")
 
             comparison_type = st.radio(
                 "Vergelijk met:",
@@ -7237,7 +7280,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             # =================================================================
             # KEY FINANCIAL METRICS
             # =================================================================
-            st.subheader("💰 Financiële Kerncijfers")
+            st.subheader("Financiële Kerncijfers")
 
             # Calculate deltas
             revenue_delta = current_revenue - prev_revenue
@@ -7292,7 +7335,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             # =================================================================
             # DATA VALIDATION CHECKS
             # =================================================================
-            st.subheader("✅ Validatie Controles")
+            st.subheader("Validatie Controles")
 
             validation_issues = []
             validation_warnings = []
@@ -7658,7 +7701,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                             st.error(f"❌ AI Analyse fout: {ai_error}")
                         elif ai_response:
                             st.markdown("---")
-                            st.markdown("### 🤖 AI Kostenvariantie Analyse")
+                            st.markdown("### AI Kostenvariantie Analyse")
                             st.markdown(ai_response)
                             if st.button("🔄 Verberg analyse", key="hide_cost_variance_analysis"):
                                 st.session_state.show_cost_variance_ai_analysis = False
@@ -7723,7 +7766,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                                     st.error(f"❌ AI Analyse fout: {ai_error}")
                                 elif ai_response:
                                     st.markdown("---")
-                                    st.markdown("### 🤖 AI Margevariantie Analyse")
+                                    st.markdown("### AI Margevariantie Analyse")
                                     st.markdown(ai_response)
                                     if st.button("🔄 Verberg analyse", key="hide_margin_variance_analysis"):
                                         st.session_state.show_margin_variance_ai_analysis = False
@@ -7738,7 +7781,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             # =================================================================
             # TREND ANALYSIS
             # =================================================================
-            st.subheader("📈 Trend Analyse")
+            st.subheader("Trend Analyse")
 
             # Get last 6 months of data for trend
             trend_data = []
@@ -7951,7 +7994,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             # =================================================================
             # ITEMS REQUIRING ATTENTION
             # =================================================================
-            st.subheader("⚠️ Aandachtspunten")
+            st.subheader("Aandachtspunten")
 
             attention_items = []
 
@@ -8217,7 +8260,7 @@ Gegenereerd door LAB Groep Financial Dashboard
 
         else:
             # Password configured but not yet authenticated - show login form
-            st.markdown("### 🔐 Authenticatie Vereist")
+            st.markdown("### Authenticatie Vereist")
             st.markdown("Voer het wachtwoord in om toegang te krijgen tot de Maandafsluiting.")
 
             password_input = st.text_input(
@@ -8240,11 +8283,10 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.markdown("---")
             st.info("💡 Het wachtwoord is geconfigureerd door de beheerder. Neem contact op als je toegang nodig hebt.")
     # =========================================================================
-    # TAB 11: BUDGET 2026
+    # (Budget 2026 tab verwijderd)
     # =========================================================================
-    with tabs[10]:
-        st.header("🎯 Budget & Forecast 2026")
-        st.caption("Gebaseerd op 2025 actuals met aanpasbare groeiparameters")
+    if False:
+        pass
         
         # =====================================================================
         # 2025 ACTUALS DATA (hard-coded voor snelheid, kan later live worden)
@@ -8989,10 +9031,10 @@ Gegenereerd door LAB Groep Financial Dashboard
             st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
     # =========================================================================
-    # TAB 12: LAB PROJECTS – ANALYTISCHE PROJECTANALYSE
+    # PAGINA: LAB PROJECTS
     # =========================================================================
-    with tabs[11]:
-        st.header("🏗️ LAB Projects – Analytische Projectanalyse")
+    elif selected_nav == "LAB Projects":
+        st.header("LAB Projects – Analytische Projectanalyse")
         st.caption(
             "Filter op analytisch plan en project (account.analytic.account). "
             "Projecten zijn niet jaargebonden – alle boekingen worden meegenomen."
@@ -9054,7 +9096,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # Subtab 1: Financieel Overzicht (geen jaarfilter)
                 # -----------------------------------------------------------------
                 with proj_subtabs[0]:
-                    st.subheader(f"📊 Financieel Overzicht – {selected_account_label}")
+                    st.subheader(f"Financieel Overzicht – {selected_account_label}")
                     st.caption("Totale stand over alle periodes (niet jaargebonden).")
 
                     with st.spinner("Analytische boekingsregels ophalen..."):
@@ -9122,7 +9164,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # Subtab 2: Verlooptijdlijn (chronologisch, alle periodes)
                 # -----------------------------------------------------------------
                 with proj_subtabs[1]:
-                    st.subheader(f"📅 Verloop over de tijd – {selected_account_label}")
+                    st.subheader(f"Verloop over de tijd – {selected_account_label}")
                     st.caption("Chronologisch overzicht van alle boekingen, geen jaargrens.")
 
                     with st.spinner("Boekingsregels ophalen..."):
@@ -9222,7 +9264,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # Subtab 3: Facturen (met lokaal datumfilter)
                 # -----------------------------------------------------------------
                 with proj_subtabs[2]:
-                    st.subheader(f"📄 Facturen – {selected_account_label}")
+                    st.subheader(f"Facturen – {selected_account_label}")
                     st.caption(
                         "Verkoop- én inkoopfacturen waarvan minimaal één regel analytisch is toegewezen "
                         "aan dit project. Gebruik het datumfilter voor een deelperiode."
@@ -9571,7 +9613,7 @@ Gegenereerd door LAB Groep Financial Dashboard
 
                         # ── AI-analyse sectie ──────────────────────────────────
                         st.markdown("---")
-                        st.markdown("### 📄 Projectdetail – Facturen")
+                        st.markdown("### Projectdetail – Facturen")
                         st.caption("Kies een project om alle in- en uitgaande facturen te bekijken:")
 
                         proj_name_to_id = {s["Project"]: s["id"] for s in all_summaries}
@@ -9654,7 +9696,7 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 )
 
                         st.markdown("---")
-                        st.markdown("### 🤖 AI-Analyse van Verlieslatende Projecten")
+                        st.markdown("### AI-Analyse van Verlieslatende Projecten")
 
                         neg_projects = [s for s in all_summaries if s.get("Resultaat", 0) < 0]
 
