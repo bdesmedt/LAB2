@@ -1806,6 +1806,84 @@ def get_analytic_all_invoices(analytic_account_id):
     ) or []
 
 @st.cache_data(ttl=300)
+def get_analytic_invoices_with_share(analytic_account_id):
+    """Haal facturen op met het projectaandeel berekend via analytic_distribution.
+
+    Voor facturen die over meerdere projecten verdeeld zijn, wordt per factuurregel
+    het percentage uit analytic_distribution gebruikt om het projectaandeel te berekenen.
+    Retourneert facturen met extra velden:
+      - proj_share_untaxed  : projectaandeel excl. BTW
+      - proj_share_pct      : projectpercentage (0-100)
+      - proj_share_residual : projectaandeel openstaand bedrag
+    """
+    import json as _json
+
+    # Stap 1: factuurregels ophalen met analytic_distribution en regelbedrag
+    lines = odoo_call(
+        "account.move.line", "search_read",
+        [
+            ["move_id.move_type", "in",
+             ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
+            ["move_id.state", "=", "posted"],
+            ["analytic_distribution", "ilike", str(analytic_account_id)],
+        ],
+        ["move_id", "price_subtotal", "analytic_distribution"],
+        limit=5000,
+        include_archived=True
+    )
+    if not lines:
+        return []
+
+    # Stap 2: projectaandeel per factuur berekenen
+    move_share = {}  # move_id -> projectaandeel excl. BTW
+    for line in lines:
+        if not line.get("move_id"):
+            continue
+        move_id = line["move_id"][0]
+
+        analytic_dist = line.get("analytic_distribution") or {}
+        if isinstance(analytic_dist, str):
+            try:
+                analytic_dist = _json.loads(analytic_dist)
+            except Exception:
+                analytic_dist = {}
+
+        project_pct = 0.0
+        for key, pct in analytic_dist.items():
+            if str(key) == str(analytic_account_id):
+                project_pct = float(pct) / 100.0
+                break
+
+        line_amount = abs(line.get("price_subtotal") or 0)
+        move_share[move_id] = move_share.get(move_id, 0.0) + line_amount * project_pct
+
+    if not move_share:
+        return []
+
+    # Stap 3: volledige factuurdata ophalen
+    move_ids = list(move_share.keys())
+    invoices = odoo_call(
+        "account.move", "search_read",
+        [["id", "in", move_ids]],
+        ["name", "partner_id", "invoice_date", "invoice_date_due",
+         "amount_untaxed", "amount_total", "amount_residual",
+         "move_type", "payment_state", "ref", "company_id"],
+        limit=len(move_ids) + 100,
+        include_archived=True
+    ) or []
+
+    # Stap 4: projectaandeel toevoegen aan elk factuurrecord
+    for inv in invoices:
+        proj_share = move_share.get(inv["id"], 0.0)
+        total_untaxed = abs(inv.get("amount_untaxed") or 0)
+        proj_pct = (proj_share / total_untaxed) if total_untaxed else 0.0
+        inv["proj_share_untaxed"] = proj_share
+        inv["proj_share_pct"] = round(proj_pct * 100, 1)
+        inv["proj_share_residual"] = abs(inv.get("amount_residual") or 0) * proj_pct
+
+    return invoices
+
+@st.cache_data(ttl=300)
 def get_all_analytic_summaries(plan_id):
     """Haal financiële samenvatting op voor ALLE analytische rekeningen onder een plan.
 
@@ -9555,12 +9633,24 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # SECTIE 2: FACTUREN OVERZICHT (alle projecten in plan)
                 # ================================================================
                 st.markdown("---")
-                st.subheader("Facturen – Overzicht alle projecten")
+                _fov_title = (
+                    f"Facturen – {len(selected_project_labels)} project{'en' if len(selected_project_labels) != 1 else ''} geselecteerd"
+                    if selected_project_labels
+                    else "Facturen – Overzicht alle projecten"
+                )
+                st.subheader(_fov_title)
 
                 if st.session_state.get("_fov_plan_id") != selected_plan_id:
                     st.session_state["_fov_loaded"] = False
                     st.session_state["_fov_data"] = []
                     st.session_state["_fov_plan_id"] = selected_plan_id
+
+                # Reset cache als projectselectie is gewijzigd
+                _fov_proj_key = tuple(sorted(selected_project_labels))
+                if st.session_state.get("_fov_proj_key") != _fov_proj_key:
+                    st.session_state["_fov_loaded"] = False
+                    st.session_state["_fov_data"] = []
+                    st.session_state["_fov_proj_key"] = _fov_proj_key
 
                 _PAYMENT_LABELS_FOV = {
                     "not_paid":   "Niet betaald",
@@ -9570,41 +9660,53 @@ Gegenereerd door LAB Groep Financial Dashboard
                     "in_payment": "In verwerking",
                 }
 
+                # Bepaal welke accounts geladen worden op basis van selectie
+                _fov_accounts = (
+                    [a for a in analytic_accounts
+                     if _account_label(a) in selected_project_labels]
+                    if selected_project_labels
+                    else analytic_accounts
+                )
+                _fov_btn_label = (
+                    f"Facturen ophalen voor {len(_fov_accounts)} geselecteerd project{'en' if len(_fov_accounts) != 1 else ''}"
+                    if selected_project_labels
+                    else "Facturen ophalen voor alle projecten"
+                )
+
                 if not st.session_state.get("_fov_loaded"):
                     st.info(
-                        "Klik op de knop hieronder om alle facturen voor dit plan op te halen. "
+                        "Klik op de knop hieronder om de facturen op te halen. "
                         "Dit kan even duren afhankelijk van het aantal projecten."
                     )
-                    if st.button(
-                        "Facturen ophalen voor alle projecten",
-                        key="btn_fov_load",
-                    ):
+                    if st.button(_fov_btn_label, key="btn_fov_load"):
                         _collected_inv = []
                         with st.spinner(
-                            f"Facturen ophalen voor {len(analytic_accounts)} projecten..."
+                            f"Facturen ophalen voor {len(_fov_accounts)} project{'en' if len(_fov_accounts) != 1 else ''}..."
                         ):
-                            for _acc in analytic_accounts:
-                                _acc_inv = get_analytic_all_invoices(_acc["id"])
+                            for _acc in _fov_accounts:
+                                _acc_inv = get_analytic_invoices_with_share(_acc["id"])
                                 _acc_lbl = _account_label(_acc)
                                 for _inv in _acc_inv:
                                     _collected_inv.append(
                                         {
-                                            "Project":    _acc_lbl,
+                                            "Project":           _acc_lbl,
                                             "Type": (
                                                 "Verkoop"
                                                 if _inv.get("move_type")
                                                 in ("out_invoice", "out_refund")
                                                 else "Inkoop"
                                             ),
-                                            "Factuurnr":  _inv.get("name", ""),
-                                            "Datum":      _inv.get("invoice_date", ""),
+                                            "Factuurnr":         _inv.get("name", ""),
+                                            "Datum":             _inv.get("invoice_date", ""),
                                             "Relatie": (
                                                 _inv["partner_id"][1]
                                                 if _inv.get("partner_id")
                                                 else ""
                                             ),
-                                            "Excl. BTW":  _inv.get("amount_untaxed", 0),
-                                            "Openstaand": _inv.get("amount_residual", 0),
+                                            "Totaal excl. BTW":  _inv.get("amount_untaxed", 0),
+                                            "% Project":         _inv.get("proj_share_pct", 100),
+                                            "Aandeel excl. BTW": _inv.get("proj_share_untaxed", _inv.get("amount_untaxed", 0)),
+                                            "Openstaand":        _inv.get("proj_share_residual", _inv.get("amount_residual", 0)),
                                             "Status": _PAYMENT_LABELS_FOV.get(
                                                 _inv.get("payment_state", ""),
                                                 _inv.get("payment_state", ""),
@@ -9646,11 +9748,11 @@ Gegenereerd door LAB Groep Financial Dashboard
                         _fov_k1, _fov_k2, _fov_k3 = st.columns(3)
                         _fov_k1.metric("Facturen", str(len(_df_fov_show)))
                         _fov_k2.metric(
-                            "Totaal excl. BTW",
-                            f"\u20ac{_df_fov_show['Excl. BTW'].sum():,.0f}",
+                            "Aandeel excl. BTW",
+                            f"\u20ac{_df_fov_show['Aandeel excl. BTW'].sum():,.0f}",
                         )
                         _fov_k3.metric(
-                            "Openstaand",
+                            "Openstaand (aandeel)",
                             f"\u20ac{_df_fov_show['Openstaand'].sum():,.0f}",
                             delta_color=(
                                 "inverse"
@@ -9661,8 +9763,10 @@ Gegenereerd door LAB Groep Financial Dashboard
                         st.dataframe(
                             _df_fov_show.style.format(
                                 {
-                                    "Excl. BTW":  "\u20ac{:,.2f}",
-                                    "Openstaand": "\u20ac{:,.2f}",
+                                    "Totaal excl. BTW":  "\u20ac{:,.2f}",
+                                    "% Project":         "{:.1f}%",
+                                    "Aandeel excl. BTW": "\u20ac{:,.2f}",
+                                    "Openstaand":        "\u20ac{:,.2f}",
                                 }
                             ),
                             use_container_width=True,
@@ -9732,7 +9836,7 @@ Gegenereerd door LAB Groep Financial Dashboard
 
                             # Facturen in/uit
                             with st.spinner("Facturen laden..."):
-                                all_inv = get_analytic_all_invoices(proj_account_id)
+                                all_inv = get_analytic_invoices_with_share(proj_account_id)
 
                             if not all_inv:
                                 st.info(
@@ -9753,15 +9857,24 @@ Gegenereerd door LAB Groep Financial Dashboard
 
                                 def _inv_row_p(i):
                                     return {
-                                        "Factuurnr":  i.get("name", ""),
-                                        "Datum":      i.get("invoice_date", ""),
-                                        "Relatie":    i["partner_id"][1] if i.get("partner_id") else "",
-                                        "Excl. BTW":  i.get("amount_untaxed", 0),
-                                        "Openstaand": i.get("amount_residual", 0),
-                                        "Status":     PAYMENT_LABELS_P.get(
+                                        "Factuurnr":          i.get("name", ""),
+                                        "Datum":              i.get("invoice_date", ""),
+                                        "Relatie":            i["partner_id"][1] if i.get("partner_id") else "",
+                                        "Totaal excl. BTW":   i.get("amount_untaxed", 0),
+                                        "% Project":          i.get("proj_share_pct", 100),
+                                        "Aandeel excl. BTW":  i.get("proj_share_untaxed", i.get("amount_untaxed", 0)),
+                                        "Aandeel openstaand": i.get("proj_share_residual", i.get("amount_residual", 0)),
+                                        "Status":             PAYMENT_LABELS_P.get(
                                             i.get("payment_state", ""), i.get("payment_state", "")
                                         ),
                                     }
+
+                                _fmt_p = {
+                                    "Totaal excl. BTW":   "\u20ac{:,.2f}",
+                                    "% Project":          "{:.1f}%",
+                                    "Aandeel excl. BTW":  "\u20ac{:,.2f}",
+                                    "Aandeel openstaand": "\u20ac{:,.2f}",
+                                }
 
                                 col_out, col_in = st.columns(2)
 
@@ -9770,19 +9883,16 @@ Gegenereerd door LAB Groep Financial Dashboard
                                     if out_inv:
                                         df_out_p = pd.DataFrame([_inv_row_p(i) for i in out_inv])
                                         st.metric(
-                                            "Totaal omzet",
-                                            f"\u20ac{df_out_p['Excl. BTW'].sum():,.0f}",
+                                            "Aandeel omzet",
+                                            f"\u20ac{df_out_p['Aandeel excl. BTW'].sum():,.0f}",
                                             delta=(
-                                                f"\u20ac{df_out_p['Openstaand'].sum():,.0f} open"
-                                                if df_out_p["Openstaand"].sum() > 0 else None
+                                                f"\u20ac{df_out_p['Aandeel openstaand'].sum():,.0f} open"
+                                                if df_out_p["Aandeel openstaand"].sum() > 0 else None
                                             ),
-                                            delta_color="inverse" if df_out_p["Openstaand"].sum() > 0 else "off",
+                                            delta_color="inverse" if df_out_p["Aandeel openstaand"].sum() > 0 else "off",
                                         )
                                         st.dataframe(
-                                            df_out_p.style.format({
-                                                "Excl. BTW":  "\u20ac{:,.2f}",
-                                                "Openstaand": "\u20ac{:,.2f}",
-                                            }),
+                                            df_out_p.style.format(_fmt_p),
                                             use_container_width=True, hide_index=True,
                                         )
                                         csv_out = df_out_p.to_csv(index=False).encode("utf-8")
@@ -9801,14 +9911,11 @@ Gegenereerd door LAB Groep Financial Dashboard
                                     if in_inv:
                                         df_in_p = pd.DataFrame([_inv_row_p(i) for i in in_inv])
                                         st.metric(
-                                            "Totaal inkoop",
-                                            f"\u20ac{df_in_p['Excl. BTW'].sum():,.0f}",
+                                            "Aandeel inkoop",
+                                            f"\u20ac{df_in_p['Aandeel excl. BTW'].sum():,.0f}",
                                         )
                                         st.dataframe(
-                                            df_in_p.style.format({
-                                                "Excl. BTW":  "\u20ac{:,.2f}",
-                                                "Openstaand": "\u20ac{:,.2f}",
-                                            }),
+                                            df_in_p.style.format(_fmt_p),
                                             use_container_width=True, hide_index=True,
                                         )
                                         csv_in = df_in_p.to_csv(index=False).encode("utf-8")
