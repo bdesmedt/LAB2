@@ -9551,7 +9551,133 @@ Gegenereerd door LAB Groep Financial Dashboard
                                     st.markdown(ai_response)
 
                 # ================================================================
-                # SECTIE 2: PROJECTDETAIL (alleen als projecten geselecteerd)
+                # SECTIE 2: FACTUREN OVERZICHT (alle projecten in plan)
+                # ================================================================
+                st.markdown("---")
+                st.subheader("Facturen – Overzicht alle projecten")
+
+                if st.session_state.get("_fov_plan_id") != selected_plan_id:
+                    st.session_state["_fov_loaded"] = False
+                    st.session_state["_fov_data"] = []
+                    st.session_state["_fov_plan_id"] = selected_plan_id
+
+                _PAYMENT_LABELS_FOV = {
+                    "not_paid":   "Niet betaald",
+                    "partial":    "Deels betaald",
+                    "paid":       "Betaald",
+                    "reversed":   "Teruggedraaid",
+                    "in_payment": "In verwerking",
+                }
+
+                if not st.session_state.get("_fov_loaded"):
+                    st.info(
+                        "Klik op de knop hieronder om alle facturen voor dit plan op te halen. "
+                        "Dit kan even duren afhankelijk van het aantal projecten."
+                    )
+                    if st.button(
+                        "Facturen ophalen voor alle projecten",
+                        key="btn_fov_load",
+                    ):
+                        _collected_inv = []
+                        with st.spinner(
+                            f"Facturen ophalen voor {len(analytic_accounts)} projecten..."
+                        ):
+                            for _acc in analytic_accounts:
+                                _acc_inv = get_analytic_all_invoices(_acc["id"])
+                                _acc_lbl = _account_label(_acc)
+                                for _inv in _acc_inv:
+                                    _collected_inv.append(
+                                        {
+                                            "Project":    _acc_lbl,
+                                            "Type": (
+                                                "Verkoop"
+                                                if _inv.get("move_type")
+                                                in ("out_invoice", "out_refund")
+                                                else "Inkoop"
+                                            ),
+                                            "Factuurnr":  _inv.get("name", ""),
+                                            "Datum":      _inv.get("invoice_date", ""),
+                                            "Relatie": (
+                                                _inv["partner_id"][1]
+                                                if _inv.get("partner_id")
+                                                else ""
+                                            ),
+                                            "Excl. BTW":  _inv.get("amount_untaxed", 0),
+                                            "Openstaand": _inv.get("amount_residual", 0),
+                                            "Status": _PAYMENT_LABELS_FOV.get(
+                                                _inv.get("payment_state", ""),
+                                                _inv.get("payment_state", ""),
+                                            ),
+                                        }
+                                    )
+                        st.session_state["_fov_data"] = _collected_inv
+                        st.session_state["_fov_loaded"] = True
+                        st.rerun()
+                else:
+                    _fov_rows = st.session_state["_fov_data"]
+                    _fov_refresh_col, _ = st.columns([1, 5])
+                    with _fov_refresh_col:
+                        if st.button("Verversen", key="btn_fov_refresh"):
+                            st.session_state["_fov_loaded"] = False
+                            st.rerun()
+                    if not _fov_rows:
+                        st.info("Geen facturen gevonden voor projecten in dit plan.")
+                    else:
+                        _df_fov = pd.DataFrame(_fov_rows)
+                        _fov_f1, _fov_f2 = st.columns(2)
+                        with _fov_f1:
+                            _fov_type = st.selectbox(
+                                "Type",
+                                ["Alle", "Verkoop", "Inkoop"],
+                                key="fov_type_sel",
+                            )
+                        with _fov_f2:
+                            _fov_status = st.selectbox(
+                                "Status",
+                                ["Alle", "Niet betaald", "Deels betaald", "Betaald"],
+                                key="fov_status_sel",
+                            )
+                        _df_fov_show = _df_fov.copy()
+                        if _fov_type != "Alle":
+                            _df_fov_show = _df_fov_show[_df_fov_show["Type"] == _fov_type]
+                        if _fov_status != "Alle":
+                            _df_fov_show = _df_fov_show[_df_fov_show["Status"] == _fov_status]
+                        _fov_k1, _fov_k2, _fov_k3 = st.columns(3)
+                        _fov_k1.metric("Facturen", str(len(_df_fov_show)))
+                        _fov_k2.metric(
+                            "Totaal excl. BTW",
+                            f"\u20ac{_df_fov_show['Excl. BTW'].sum():,.0f}",
+                        )
+                        _fov_k3.metric(
+                            "Openstaand",
+                            f"\u20ac{_df_fov_show['Openstaand'].sum():,.0f}",
+                            delta_color=(
+                                "inverse"
+                                if _df_fov_show["Openstaand"].sum() > 0
+                                else "off"
+                            ),
+                        )
+                        st.dataframe(
+                            _df_fov_show.style.format(
+                                {
+                                    "Excl. BTW":  "\u20ac{:,.2f}",
+                                    "Openstaand": "\u20ac{:,.2f}",
+                                }
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                        _csv_fov = _df_fov_show.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            "Download CSV",
+                            data=_csv_fov,
+                            file_name=f"facturen_{selected_plan_name}.csv",
+                            mime="text/csv",
+                            key="dl_fov",
+                        )
+
+                # ================================================================
+                # SECTIE 3: PROJECTDETAIL (alleen als projecten geselecteerd)
                 # ================================================================
                 if selected_project_labels:
                     st.markdown("---")
