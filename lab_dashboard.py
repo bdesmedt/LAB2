@@ -9645,6 +9645,13 @@ Gegenereerd door LAB Groep Financial Dashboard
                     st.session_state["_fov_data"] = []
                     st.session_state["_fov_plan_id"] = selected_plan_id
 
+                # Reset cache als projectselectie is gewijzigd
+                _fov_proj_key = tuple(sorted(selected_project_labels))
+                if st.session_state.get("_fov_proj_key") != _fov_proj_key:
+                    st.session_state["_fov_loaded"] = False
+                    st.session_state["_fov_data"] = []
+                    st.session_state["_fov_proj_key"] = _fov_proj_key
+
                 _PAYMENT_LABELS_FOV = {
                     "not_paid":   "Niet betaald",
                     "partial":    "Deels betaald",
@@ -9653,20 +9660,30 @@ Gegenereerd door LAB Groep Financial Dashboard
                     "in_payment": "In verwerking",
                 }
 
+                # Bepaal welke accounts geladen worden op basis van selectie
+                _fov_accounts = (
+                    [a for a in analytic_accounts
+                     if _account_label(a) in selected_project_labels]
+                    if selected_project_labels
+                    else analytic_accounts
+                )
+                _fov_btn_label = (
+                    f"Facturen ophalen voor {len(_fov_accounts)} geselecteerd project{'en' if len(_fov_accounts) != 1 else ''}"
+                    if selected_project_labels
+                    else "Facturen ophalen voor alle projecten"
+                )
+
                 if not st.session_state.get("_fov_loaded"):
                     st.info(
-                        "Klik op de knop hieronder om alle facturen voor dit plan op te halen. "
+                        "Klik op de knop hieronder om de facturen op te halen. "
                         "Dit kan even duren afhankelijk van het aantal projecten."
                     )
-                    if st.button(
-                        "Facturen ophalen voor alle projecten",
-                        key="btn_fov_load",
-                    ):
+                    if st.button(_fov_btn_label, key="btn_fov_load"):
                         _collected_inv = []
                         with st.spinner(
-                            f"Facturen ophalen voor {len(analytic_accounts)} projecten..."
+                            f"Facturen ophalen voor {len(_fov_accounts)} project{'en' if len(_fov_accounts) != 1 else ''}..."
                         ):
-                            for _acc in analytic_accounts:
+                            for _acc in _fov_accounts:
                                 _acc_inv = get_analytic_invoices_with_share(_acc["id"])
                                 _acc_lbl = _account_label(_acc)
                                 for _inv in _acc_inv:
@@ -9724,8 +9741,6 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 key="fov_status_sel",
                             )
                         _df_fov_show = _df_fov.copy()
-                        if selected_project_labels:
-                            _df_fov_show = _df_fov_show[_df_fov_show["Project"].isin(selected_project_labels)]
                         if _fov_type != "Alle":
                             _df_fov_show = _df_fov_show[_df_fov_show["Type"] == _fov_type]
                         if _fov_status != "Alle":
