@@ -4099,7 +4099,6 @@ def main():
     NAV_ITEMS = [
         "Overzicht",
         "Bank",
-        "Facturen",
         "Producten",
         "Klantenkaart",
         "Kosten",
@@ -7628,6 +7627,267 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             st.markdown("---")
 
             # =================================================================
+            # MAANDCHECKLIST
+            # =================================================================
+            st.subheader("Maandchecklist")
+            st.caption(f"Afsluitchecklist voor {period_label} — automatische controles vanuit Odoo")
+
+            with st.spinner("Checklist controleren..."):
+
+                # -- Check 1: Niet-verwerkte bankmutaties --
+                bank_recon_domain = [
+                    ("date", ">=", period_start),
+                    ("date", "<=", period_end),
+                    ("is_reconciled", "=", False),
+                ]
+                if fc_company_id:
+                    bank_recon_domain.append(("company_id", "=", fc_company_id))
+                unreconciled_bank = odoo_call(
+                    "account.bank.statement.line", "search_read",
+                    bank_recon_domain,
+                    ["date", "payment_ref", "amount", "company_id"],
+                    limit=500
+                ) or []
+
+                # -- Check 2: Tussenrekeningen (490-499) saldo --
+                tussen_domain = [
+                    ("date", "<=", period_end),
+                    ("parent_state", "=", "posted"),
+                    ("account_id.code", ">=", "490000"),
+                    ("account_id.code", "<", "500000"),
+                ]
+                if fc_company_id:
+                    tussen_domain.append(("company_id", "=", fc_company_id))
+                tussen_raw = odoo_read_group("account.move.line", tussen_domain, ["balance:sum"], [])
+                tussen_balance = sum(r.get("balance", 0) for r in tussen_raw)
+
+                # -- Check 3: Loonjournaalposten (454-456 rekeningen) --
+                loon_domain = [
+                    ("date", ">=", period_start),
+                    ("date", "<=", period_end),
+                    ("parent_state", "=", "posted"),
+                    ("account_id.code", ">=", "454000"),
+                    ("account_id.code", "<", "456000"),
+                ]
+                if fc_company_id:
+                    loon_domain.append(("company_id", "=", fc_company_id))
+                loon_raw = odoo_read_group("account.move.line", loon_domain, ["balance:sum"], [])
+                loon_amount = abs(sum(r.get("balance", 0) for r in loon_raw))
+
+                # -- Check 4: Conceptfacturen binnen cut-off m+7 --
+                cutoff_date = (datetime.strptime(period_end, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+                draft_inv_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", cutoff_date),
+                    ("state", "=", "draft"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                ]
+                if fc_company_id:
+                    draft_inv_domain.append(("company_id", "=", fc_company_id))
+                draft_invoices = odoo_call(
+                    "account.move", "search_read",
+                    draft_inv_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=200
+                ) or []
+
+                # -- Check 6: Openstaande IC facturen ouder dan periode --
+                ic_open_domain = [
+                    ("invoice_date", "<", period_start),
+                    ("state", "=", "posted"),
+                    ("payment_state", "in", ["not_paid", "partial"]),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                ]
+                if fc_company_id:
+                    ic_open_domain.append(("company_id", "=", fc_company_id))
+                ic_open_all = odoo_call(
+                    "account.move", "search_read",
+                    ic_open_domain,
+                    ["name", "invoice_date", "partner_id", "amount_residual", "company_id"],
+                    limit=500
+                ) or []
+                # Filter op IC partners (partner naam bevat "LAB")
+                ic_open_invoices = [
+                    inv for inv in ic_open_all
+                    if inv.get("partner_id") and "lab" in str(inv["partner_id"][1]).lower()
+                ]
+
+                # -- Check 7/10: R/C saldo (alle entiteiten) --
+                rc_data_check = get_rc_balances()
+                rc_total = sum(r.get("current_statement_balance", 0) for r in rc_data_check) if rc_data_check else None
+
+                # -- Check 8: IC merkrechten factuur --
+                merk_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", period_end),
+                    ("state", "=", "posted"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                    ("invoice_line_ids.name", "ilike", "merkrecht"),
+                ]
+                if fc_company_id:
+                    merk_domain.append(("company_id", "=", fc_company_id))
+                merk_invoices = odoo_call(
+                    "account.move", "search_read",
+                    merk_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=50
+                ) or []
+
+                # -- Check 9: Donatie facturen --
+                donatie_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", period_end),
+                    ("state", "=", "posted"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                    ("invoice_line_ids.name", "ilike", "donatie"),
+                ]
+                if fc_company_id:
+                    donatie_domain.append(("company_id", "=", fc_company_id))
+                donatie_invoices = odoo_call(
+                    "account.move", "search_read",
+                    donatie_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=50
+                ) or []
+
+            # Bouw checklist items
+            checklist_items = [
+                {
+                    "nr": 1,
+                    "label": "Alle bankmutaties verwerkt",
+                    "auto": True,
+                    "ok": len(unreconciled_bank) == 0,
+                    "detail": f"{len(unreconciled_bank)} niet-verwerkte bankmutaties gevonden" if unreconciled_bank else "Alle bankmutaties verwerkt",
+                    "severity": "critical" if unreconciled_bank else "ok",
+                    "records": unreconciled_bank[:5],
+                },
+                {
+                    "nr": 2,
+                    "label": "Tussenrekeningen lopen allemaal af",
+                    "auto": True,
+                    "ok": abs(tussen_balance) < 1.0,
+                    "detail": f"Saldo tussenrekeningen (490-499): €{tussen_balance:,.2f}" if abs(tussen_balance) >= 1.0 else "Tussenrekeningen: €0,00",
+                    "severity": "warning" if abs(tussen_balance) >= 1.0 else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 3,
+                    "label": "Loonjournaalposten geboekt",
+                    "auto": True,
+                    "ok": loon_amount > 0,
+                    "detail": f"Loonrekeningen (454-455): €{loon_amount:,.0f} geboekt" if loon_amount > 0 else "Geen loonjournaalposten gevonden op 454-455",
+                    "severity": "warning" if loon_amount == 0 else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 4,
+                    "label": f"Alle facturen verwerkt (cut-off: {cutoff_date})",
+                    "auto": True,
+                    "ok": len(draft_invoices) == 0,
+                    "detail": f"{len(draft_invoices)} conceptfacturen met datum ≤ {cutoff_date}" if draft_invoices else f"Geen conceptfacturen vóór {cutoff_date}",
+                    "severity": "warning" if draft_invoices else "ok",
+                    "records": draft_invoices[:5],
+                },
+                {
+                    "nr": 5,
+                    "label": "Ontbrekende facturen voor kosten (bv. inhuur) voorzien",
+                    "auto": False,
+                    "ok": None,
+                    "detail": "Handmatige controle — bevestig manueel",
+                    "severity": "manual",
+                    "records": [],
+                },
+                {
+                    "nr": 6,
+                    "label": "Afboeken IC facturen openstaand (t/m vorige periode)",
+                    "auto": True,
+                    "ok": len(ic_open_invoices) == 0,
+                    "detail": f"{len(ic_open_invoices)} openstaande IC facturen ouder dan {period_start}" if ic_open_invoices else "Geen openstaande IC facturen",
+                    "severity": "warning" if ic_open_invoices else "ok",
+                    "records": ic_open_invoices[:5],
+                },
+                {
+                    "nr": 7,
+                    "label": "Onderlinge R/C posities afgestemd",
+                    "auto": True,
+                    "ok": rc_total is not None and abs(rc_total) < 1.0,
+                    "detail": f"Totaal R/C saldo: €{rc_total:,.2f}" if rc_total is not None else "R/C data niet beschikbaar",
+                    "severity": "warning" if (rc_total is None or abs(rc_total or 0) >= 1.0) else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 8,
+                    "label": "IC factuur merkrechten (LCTW → LS) geboekt",
+                    "auto": True,
+                    "ok": len(merk_invoices) > 0,
+                    "detail": f"{len(merk_invoices)} merkrechten factuur/facturen aangetroffen" if merk_invoices else "Geen merkrechten factuur gevonden in periode",
+                    "severity": "warning" if not merk_invoices else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 9,
+                    "label": "Donatie facturen LS / LC geboekt",
+                    "auto": True,
+                    "ok": len(donatie_invoices) > 0,
+                    "detail": f"{len(donatie_invoices)} donatiefactuur/facturen aangetroffen" if donatie_invoices else "Geen donatiefacturen gevonden in periode",
+                    "severity": "warning" if not donatie_invoices else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 10,
+                    "label": "IC posities debiteuren / crediteuren afgestemd",
+                    "auto": True,
+                    "ok": rc_total is not None and abs(rc_total) < 1.0,
+                    "detail": f"R/C netto saldo alle entiteiten: €{rc_total:,.2f}" if rc_total is not None else "R/C data niet beschikbaar",
+                    "severity": "warning" if (rc_total is None or abs(rc_total or 0) >= 1.0) else "ok",
+                    "records": [],
+                },
+            ]
+
+            # Statistieken
+            cl_auto_ok = sum(1 for i in checklist_items if i["auto"] and i["ok"] is True)
+            cl_auto_warn = sum(1 for i in checklist_items if i["auto"] and i["ok"] is False)
+            cl_manual = sum(1 for i in checklist_items if not i["auto"])
+
+            cl_s1, cl_s2, cl_s3 = st.columns(3)
+            with cl_s1:
+                st.metric("Automatisch OK", cl_auto_ok)
+            with cl_s2:
+                st.metric("Aandacht vereist", cl_auto_warn)
+            with cl_s3:
+                st.metric("Handmatig", cl_manual)
+
+            st.markdown("")
+
+            # Render checklist regels
+            for item in checklist_items:
+                c_label, c_detail = st.columns([4, 5])
+                with c_label:
+                    if not item["auto"]:
+                        man_key = f"cl_manual_{item['nr']}_{close_year}_{close_month}"
+                        st.checkbox(f"{item['nr']}. {item['label']}", key=man_key)
+                    elif item["ok"]:
+                        st.markdown(f"✅ **{item['nr']}. {item['label']}**")
+                    elif item["severity"] == "critical":
+                        st.markdown(f"🚨 **{item['nr']}. {item['label']}**")
+                    else:
+                        st.markdown(f"⚠️ **{item['nr']}. {item['label']}**")
+                with c_detail:
+                    st.caption(item["detail"])
+                    if item["records"]:
+                        with st.expander("Details", expanded=False):
+                            for rec in item["records"]:
+                                partner = ""
+                                if rec.get("partner_id") and isinstance(rec["partner_id"], list):
+                                    partner = rec["partner_id"][1]
+                                date_val = rec.get("invoice_date") or rec.get("date", "")
+                                amount_val = rec.get("amount_total") or rec.get("amount_residual") or rec.get("amount", 0)
+                                rec_name = rec.get("name") or rec.get("payment_ref", "—")
+                                st.markdown(f"- {date_val} | {rec_name} | {partner} | €{amount_val:,.0f}")
+
+            st.markdown("---")
+
+            # =================================================================
             # COST COMPONENT DETAILS
             # =================================================================
             st.subheader("💼 Kostencomponenten Analyse")
@@ -9035,10 +9295,6 @@ Gegenereerd door LAB Groep Financial Dashboard
     # =========================================================================
     elif selected_nav == "LAB Projects":
         st.header("LAB Projects – Analytische Projectanalyse")
-        st.caption(
-            "Filter op analytisch plan en project (account.analytic.account). "
-            "Projecten zijn niet jaargebonden – alle boekingen worden meegenomen."
-        )
 
         # --- Laad analytische plannen ---
         with st.spinner("Analytische plannen ophalen..."):
@@ -9046,24 +9302,23 @@ Gegenereerd door LAB Groep Financial Dashboard
 
         if not analytic_plans:
             st.warning(
-                "⚠️ Geen analytische plannen gevonden in Odoo. "
-                "Controleer of de analytische boekhouding-module actief is "
-                "en of de gebruiker toegang heeft tot account.analytic.plan."
+                "Geen analytische plannen gevonden in Odoo. "
+                "Controleer of de analytische boekhouding-module actief is."
             )
         else:
-            # Plan selector + project selector naast elkaar
             plan_options = {p["name"]: p["id"] for p in sorted(analytic_plans, key=lambda x: x["name"])}
-            col_p, col_a = st.columns(2)
-            with col_p:
+
+            top_c1, top_c2 = st.columns([1, 3])
+            with top_c1:
                 selected_plan_name = st.selectbox(
-                    "📋 Analytisch Plan",
+                    "Analytisch Plan",
                     list(plan_options.keys()),
                     key="proj_plan_select",
-                    help="Kies het analytische plan (bijv. 'Projecten', 'Afdelingen')"
+                    help="Kies het analytische plan (bijv. Projecten)"
                 )
             selected_plan_id = plan_options[selected_plan_name]
 
-            with st.spinner(f"Projecten ophalen voor plan '{selected_plan_name}'..."):
+            with st.spinner(f"Projecten ophalen voor '{selected_plan_name}'..."):
                 analytic_accounts = get_analytic_accounts(selected_plan_id)
 
             if not analytic_accounts:
@@ -9072,722 +9327,373 @@ Gegenereerd door LAB Groep Financial Dashboard
                 def _account_label(a):
                     code = a.get("code") or ""
                     name = a.get("name", "")
-                    return f"{code} – {name}".strip("– ") if code else name
+                    return f"{code} \u2013 {name}".strip("\u2013 ") if code else name
 
-                account_options = {
+                account_label_to_id = {
                     _account_label(a): a["id"]
                     for a in sorted(analytic_accounts, key=lambda x: x.get("name", ""))
                 }
-                with col_a:
-                    selected_account_label = st.selectbox(
-                        "🏗️ Project / Analytische Rekening",
-                        list(account_options.keys()),
-                        key="proj_account_select",
-                        help="Kies het specifieke project of de analytische rekening"
+
+                with top_c2:
+                    selected_project_labels = st.multiselect(
+                        "Project(en) — leeg = overzicht alle projecten",
+                        list(account_label_to_id.keys()),
+                        key="proj_multiselect",
+                        help="Selecteer één of meerdere projecten voor gecombineerde detailanalyse"
                     )
-                selected_account_id = account_options[selected_account_label]
 
                 st.markdown("---")
 
-                # --- Subtabs ---
-                proj_subtabs = st.tabs(["📊 Overzicht", "📅 Verlooptijdlijn", "📄 Facturen", "🔍 Margerisico"])
+                # ================================================================
+                # SECTIE 1: PORTEFEUILLE OVERZICHT (altijd zichtbaar)
+                # ================================================================
+                st.subheader(f"Portefeuille – {selected_plan_name}")
 
-                # -----------------------------------------------------------------
-                # Subtab 1: Financieel Overzicht (geen jaarfilter)
-                # -----------------------------------------------------------------
-                with proj_subtabs[0]:
-                    st.subheader(f"Financieel Overzicht – {selected_account_label}")
-                    st.caption("Totale stand over alle periodes (niet jaargebonden).")
+                with st.spinner("Alle projecten laden..."):
+                    all_summaries = get_all_analytic_summaries(selected_plan_id)
 
-                    with st.spinner("Analytische boekingsregels ophalen..."):
-                        alines = get_analytic_lines(selected_account_id)
+                if not all_summaries:
+                    st.info("Geen projectdata gevonden voor dit plan.")
+                else:
+                    def _classify(row):
+                        if row["Opbrengst"] <= 0:
+                            return "Geen omzet"
+                        elif row["Resultaat"] < 0:
+                            return "Verlieslatend"
+                        elif (row["Marge %"] or 0) < 10:
+                            return "Break-even (0\u201310%)"
+                        elif (row["Marge %"] or 0) < 25:
+                            return "Winstgevend (10\u201325%)"
+                        else:
+                            return "Uitstekend (>25%)"
 
-                    if not alines:
-                        st.info("Geen analytische boekingen gevonden voor dit project.")
-                    else:
-                        revenue_lines = [l for l in alines if (l.get("amount") or 0) > 0]
-                        cost_lines    = [l for l in alines if (l.get("amount") or 0) < 0]
+                    df_all = pd.DataFrame(all_summaries)
+                    df_all["Cluster"] = df_all.apply(_classify, axis=1)
 
-                        total_revenue = sum(l.get("amount", 0) for l in revenue_lines)
-                        total_costs   = abs(sum(l.get("amount", 0) for l in cost_lines))
-                        result        = total_revenue - total_costs
-                        margin_pct    = result / total_revenue * 100 if total_revenue else 0
+                    totals_rev = df_all["Opbrengst"].sum()
+                    totals_res = df_all["Resultaat"].sum()
+                    neg_count  = len(df_all[df_all["Resultaat"] < 0])
 
-                        # Datumrange tonen
-                        dates = sorted(l["date"] for l in alines if l.get("date"))
-                        if dates:
-                            st.caption(f"📆 Eerste boeking: {dates[0]} · Laatste boeking: {dates[-1]}")
+                    pk1, pk2, pk3, pk4 = st.columns(4)
+                    pk1.metric("Projecten", str(len(df_all)))
+                    pk2.metric("Totaal Opbrengst", f"\u20ac{totals_rev:,.0f}")
+                    pk3.metric("Totaal Resultaat", f"\u20ac{totals_res:,.0f}",
+                               delta="positief" if totals_res >= 0 else "negatief",
+                               delta_color="normal" if totals_res >= 0 else "inverse")
+                    pk4.metric("Verlieslatend", str(neg_count),
+                               delta=f"{neg_count / len(df_all) * 100:.0f}% van totaal",
+                               delta_color="inverse" if neg_count > 0 else "off")
 
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("💰 Opbrengsten", f"€{total_revenue:,.0f}")
-                        c2.metric("📉 Kosten", f"€{total_costs:,.0f}")
-                        c3.metric("📈 Resultaat", f"€{result:,.0f}",
-                                  delta=f"{margin_pct:.1f}% marge",
-                                  delta_color="normal" if result >= 0 else "inverse")
-                        c4.metric("📋 Boekingsregels", str(len(alines)))
+                    st.markdown("---")
 
-                        st.markdown("---")
+                    CLUSTER_COLORS = {
+                        "Verlieslatend":          "#c0392b",
+                        "Break-even (0\u201310%)":  "#f39c12",
+                        "Winstgevend (10\u201325%)": "#27ae60",
+                        "Uitstekend (>25%)":       "#1a5276",
+                        "Geen omzet":              "#7f8c8d",
+                    }
+                    df_bubble = df_all.copy()
+                    df_bubble["Marge_disp"] = df_bubble["Marge %"].fillna(0)
+                    df_bubble["Bubble"]     = df_bubble["Resultaat"].abs().clip(lower=200)
 
-                        # Staafdiagram: Opbrengst / Kosten / Resultaat
-                        fig_kpi = go.Figure()
-                        fig_kpi.add_trace(go.Bar(
-                            x=["Opbrengsten", "Kosten", "Resultaat"],
-                            y=[total_revenue, total_costs, result],
-                            marker_color=["#1e3a5f", "#c0392b",
-                                          "#27ae60" if result >= 0 else "#c0392b"],
-                            showlegend=False
-                        ))
-                        fig_kpi.update_layout(
-                            title=f"Financieel Overzicht – {selected_account_label}",
-                            height=350, yaxis_title="Bedrag (€)"
-                        )
-                        st.plotly_chart(fig_kpi, use_container_width=True)
-
-                        # Top-10 boekingsregels op absoluut bedrag
-                        st.markdown("##### Top boekingsregels")
-                        top_lines = sorted(alines, key=lambda x: abs(x.get("amount", 0)), reverse=True)[:10]
-                        df_top = pd.DataFrame([
-                            {
-                                "Datum": l.get("date", ""),
-                                "Omschrijving": l.get("name", ""),
-                                "Relatie": l["partner_id"][1] if l.get("partner_id") else "",
-                                "Bedrag": l.get("amount", 0),
-                            }
-                            for l in top_lines
-                        ])
-                        st.dataframe(
-                            df_top.style.format({"Bedrag": "€{:,.2f}"}),
-                            use_container_width=True, hide_index=True
-                        )
-
-                # -----------------------------------------------------------------
-                # Subtab 2: Verlooptijdlijn (chronologisch, alle periodes)
-                # -----------------------------------------------------------------
-                with proj_subtabs[1]:
-                    st.subheader(f"Verloop over de tijd – {selected_account_label}")
-                    st.caption("Chronologisch overzicht van alle boekingen, geen jaargrens.")
-
-                    with st.spinner("Boekingsregels ophalen..."):
-                        alines_tl = get_analytic_lines(selected_account_id)
-
-                    if not alines_tl:
-                        st.info("Geen analytische boekingen gevonden voor dit project.")
-                    else:
-                        # Groepeer per maand (alle jaren)
-                        monthly: dict = {}
-                        for line in alines_tl:
-                            date_str = line.get("date", "")
-                            if not date_str:
-                                continue
-                            month_key = date_str[:7]
-                            monthly.setdefault(month_key, {"opbrengst": 0.0, "kosten": 0.0})
-                            amount = line.get("amount", 0) or 0
-                            if amount >= 0:
-                                monthly[month_key]["opbrengst"] += amount
-                            else:
-                                monthly[month_key]["kosten"] += abs(amount)
-
-                        months_sorted = sorted(monthly.keys())
-                        df_monthly = pd.DataFrame([
-                            {
-                                "Maand": m,
-                                "Opbrengst": monthly[m]["opbrengst"],
-                                "Kosten": monthly[m]["kosten"],
-                                "Resultaat": monthly[m]["opbrengst"] - monthly[m]["kosten"],
-                                "Marge %": (
-                                    (monthly[m]["opbrengst"] - monthly[m]["kosten"])
-                                    / monthly[m]["opbrengst"] * 100
-                                    if monthly[m]["opbrengst"] else None
-                                ),
-                            }
-                            for m in months_sorted
-                        ])
-
-                        # Cumulatief resultaat als lijn
-                        df_monthly["Cumulatief Resultaat"] = df_monthly["Resultaat"].cumsum()
-
-                        fig_trend = go.Figure()
-                        fig_trend.add_trace(go.Bar(
-                            name="Opbrengst", x=df_monthly["Maand"], y=df_monthly["Opbrengst"],
-                            marker_color="#1e3a5f"
-                        ))
-                        fig_trend.add_trace(go.Bar(
-                            name="Kosten", x=df_monthly["Maand"], y=df_monthly["Kosten"],
-                            marker_color="#c0392b", opacity=0.85
-                        ))
-                        fig_trend.add_trace(go.Scatter(
-                            name="Cumulatief Resultaat", x=df_monthly["Maand"],
-                            y=df_monthly["Cumulatief Resultaat"],
-                            mode="lines+markers",
-                            line=dict(color="#f39c12", width=2),
-                            yaxis="y2"
-                        ))
-                        fig_trend.update_layout(
-                            barmode="group", height=430,
-                            title="Opbrengst & Kosten per Maand (cumulatief resultaat op rechter-as)",
-                            xaxis_title="Maand", yaxis_title="Bedrag (€)",
-                            yaxis2=dict(title="Cumulatief (€)", overlaying="y", side="right",
-                                        showgrid=False)
-                        )
-                        st.plotly_chart(fig_trend, use_container_width=True)
-
-                        # Marge % lijn
-                        df_margin = df_monthly.dropna(subset=["Marge %"])
-                        if not df_margin.empty:
-                            fig_margin = px.line(
-                                df_margin, x="Maand", y="Marge %",
-                                title="Marge % per Maand",
-                                markers=True, color_discrete_sequence=["#27ae60"]
-                            )
-                            avg_m = df_margin["Marge %"].mean()
-                            fig_margin.add_hline(
-                                y=avg_m, line_dash="dash", line_color="gray",
-                                annotation_text=f"Gem. {avg_m:.1f}%"
-                            )
-                            fig_margin.add_hline(y=0, line_color="red", line_dash="dot")
-                            fig_margin.update_layout(height=280)
-                            st.plotly_chart(fig_margin, use_container_width=True)
-
-                        st.markdown("##### Maandoverzicht")
-                        st.dataframe(
-                            df_monthly.style.format({
-                                "Opbrengst": "€{:,.0f}",
-                                "Kosten": "€{:,.0f}",
-                                "Resultaat": "€{:,.0f}",
-                                "Cumulatief Resultaat": "€{:,.0f}",
-                                "Marge %": lambda v: f"{v:.1f}%" if v is not None else "–",
-                            }),
-                            use_container_width=True, hide_index=True
-                        )
-
-                # -----------------------------------------------------------------
-                # Subtab 3: Facturen (met lokaal datumfilter)
-                # -----------------------------------------------------------------
-                with proj_subtabs[2]:
-                    st.subheader(f"Facturen – {selected_account_label}")
-                    st.caption(
-                        "Verkoop- én inkoopfacturen waarvan minimaal één regel analytisch is toegewezen "
-                        "aan dit project. Gebruik het datumfilter voor een deelperiode."
+                    fig_bubble = px.scatter(
+                        df_bubble,
+                        x="Opbrengst", y="Marge_disp",
+                        size="Bubble", color="Cluster",
+                        color_discrete_map=CLUSTER_COLORS,
+                        hover_name="Project",
+                        hover_data={
+                            "Opbrengst":  ":\u20ac,.0f",
+                            "Kosten":     ":\u20ac,.0f",
+                            "Resultaat":  ":\u20ac,.0f",
+                            "Marge_disp": ":.1f",
+                            "Bubble":     False,
+                        },
+                        title="Projectportfolio: Opbrengst vs Marge % (grootte = |resultaat|)",
+                        labels={"Opbrengst": "Opbrengst (\u20ac)", "Marge_disp": "Marge %",
+                                "Cluster": "Categorie"},
+                        height=420,
                     )
+                    fig_bubble.add_hline(y=0,  line_color="#c0392b", line_dash="dot",
+                                         annotation_text="0% (break-even)")
+                    fig_bubble.add_hline(y=10, line_color="#f39c12", line_dash="dash",
+                                         annotation_text="10%")
+                    fig_bubble.add_hline(y=25, line_color="#27ae60", line_dash="dash",
+                                         annotation_text="25%")
+                    st.plotly_chart(fig_bubble, use_container_width=True)
 
-                    # Lokaal datumfilter (optioneel)
-                    fc1, fc2, fc3 = st.columns([1, 1, 2])
-                    with fc1:
-                        inv_from = st.date_input("Vanaf", value=None, key="proj_inv_from",
-                                                  help="Leeg = alle periodes")
-                    with fc2:
-                        inv_to = st.date_input("Tot en met", value=None, key="proj_inv_to",
-                                                help="Leeg = alle periodes")
+                    CLUSTER_ORDER = [
+                        "Verlieslatend",
+                        "Break-even (0\u201310%)",
+                        "Winstgevend (10\u201325%)",
+                        "Uitstekend (>25%)",
+                        "Geen omzet",
+                    ]
 
-                    # Bepaal optioneel jaar voor caching (alleen als volledig jaar geselecteerd)
-                    inv_year_filter = None
-                    if inv_from and inv_to and inv_from.year == inv_to.year and \
-                       inv_from.month == 1 and inv_to.month == 12:
-                        inv_year_filter = inv_from.year
+                    def _cell_color(val):
+                        if isinstance(val, (int, float)) and val < 0:
+                            return "color: #c0392b; font-weight: bold"
+                        return ""
 
-                    with st.spinner("Facturen ophalen..."):
-                        proj_invoices, inv_attribution = get_analytic_invoices(
-                            selected_account_id, year=inv_year_filter
+                    for cl in CLUSTER_ORDER:
+                        cl_df = df_all[df_all["Cluster"] == cl].sort_values("Resultaat")
+                        if cl_df.empty:
+                            continue
+                        n   = len(cl_df)
+                        tot = cl_df["Resultaat"].sum()
+                        exp_label = (
+                            f"{cl}  \u2013  {n} project{'en' if n != 1 else ''}  \u00b7  "
+                            f"resultaat \u20ac{tot:,.0f}"
                         )
+                        with st.expander(exp_label, expanded=(cl == "Verlieslatend" and n > 0)):
+                            disp = cl_df[["Project", "Opbrengst", "Kosten",
+                                          "Resultaat", "Marge %"]].copy()
+                            st.dataframe(
+                                disp.style
+                                .format({
+                                    "Opbrengst": "\u20ac{:,.0f}",
+                                    "Kosten":    "\u20ac{:,.0f}",
+                                    "Resultaat": "\u20ac{:,.0f}",
+                                    "Marge %": lambda v: f"{v:.1f}%" if v is not None else "\u2013",
+                                })
+                                .applymap(_cell_color, subset=["Resultaat"]),
+                                use_container_width=True, hide_index=True,
+                            )
 
-                    # Datumfilter in Python als geen volledig jaar
-                    if proj_invoices and (inv_from or inv_to):
-                        if inv_from:
-                            proj_invoices = [
-                                i for i in proj_invoices
-                                if i.get("invoice_date", "") >= str(inv_from)
-                            ]
-                        if inv_to:
-                            proj_invoices = [
-                                i for i in proj_invoices
-                                if i.get("invoice_date", "") <= str(inv_to)
-                            ]
+                    # AI-analyse verlieslatende projecten
+                    st.markdown("---")
+                    neg_projects = [s for s in all_summaries if s.get("Resultaat", 0) < 0]
 
-                    if not proj_invoices:
-                        st.info(
-                            "Geen facturen gevonden voor dit project in de geselecteerde periode. "
-                            "Controleer of factuurregels een analytische verdeling hebben naar deze rekening."
+                    if not neg_projects:
+                        st.success(
+                            "Geen verlieslatende projecten gevonden \u2013 "
+                            "alle projecten zijn winstgevend of break-even."
                         )
                     else:
-                        PAYMENT_LABELS = {
-                            "not_paid": "❌ Niet betaald",
-                            "partial": "⚠️ Deels betaald",
-                            "paid": "✅ Betaald",
-                            "reversed": "↩️ Teruggedraaid",
-                            "in_payment": "🔄 In verwerking",
-                        }
-                        TYPE_LABELS = {
-                            "out_invoice": "🧾 Verkoopfactuur",
-                            "out_refund": "↩️ Verkoopcreditnota",
-                            "in_invoice": "🛒 Inkoopfactuur",
-                            "in_refund": "↩️ Inkoopcontractnota",
-                        }
-                        df_inv = pd.DataFrame([
-                            {
-                                "Factuurnr": i.get("name", ""),
-                                "Type": TYPE_LABELS.get(i.get("move_type", ""), i.get("move_type", "")),
-                                "Datum": i.get("invoice_date", ""),
-                                "Vervaldatum": i.get("invoice_date_due", ""),
-                                "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
-                                "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
-                                "Proj. aandeel": abs(inv_attribution.get(i.get("id"), 0)),
-                                "Totaal factuur": i.get("amount_untaxed", 0),
-                                "Openstaand": i.get("amount_residual", 0),
-                                "Status": PAYMENT_LABELS.get(
-                                    i.get("payment_state", ""), i.get("payment_state", "")
-                                ),
-                                "_move_type": i.get("move_type", ""),
-                                "_move_id": i.get("id"),
-                            }
-                            for i in proj_invoices
-                        ]).sort_values("Datum", ascending=False)
-
-                        df_out = df_inv[df_inv["_move_type"].isin(["out_invoice", "out_refund"])]
-                        df_in  = df_inv[df_inv["_move_type"].isin(["in_invoice", "in_refund"])]
-                        proj_omzet  = df_out["Proj. aandeel"].sum()
-                        proj_kosten = df_in["Proj. aandeel"].sum()
-
-                        m1, m2, m3, m4 = st.columns(4)
-                        m1.metric("📄 Facturen", str(len(df_inv)))
-                        m2.metric("💰 Proj. omzet", f"€{proj_omzet:,.0f}")
-                        m3.metric("🛒 Proj. inkoop", f"€{proj_kosten:,.0f}")
-                        m4.metric("⚖️ Resultaat", f"€{proj_omzet - proj_kosten:,.0f}")
-
-                        df_inv = df_inv.drop(columns=["_move_type", "_move_id"])
-
-                        st.markdown("---")
-                        st.dataframe(
-                            df_inv.style.format({
-                                "Proj. aandeel": "€{:,.2f}",
-                                "Totaal factuur": "€{:,.2f}",
-                                "Openstaand": "€{:,.2f}",
-                            }),
-                            use_container_width=True, hide_index=True
+                        st.warning(
+                            f"{len(neg_projects)} project(en) met negatief resultaat. "
+                            "Klik op de knop hieronder voor een AI-analyse."
                         )
-                        csv = df_inv.to_csv(index=False).encode("utf-8")
-                        st.download_button(
-                            "⬇️ Download CSV",
-                            data=csv,
-                            file_name=f"lab_projects_{selected_account_id}_facturen.csv",
-                            mime="text/csv"
-                        )
-
-                # -----------------------------------------------------------------
-                # Subtab 4: Margerisico – geclusterd overzicht, drill-down, AI
-                # -----------------------------------------------------------------
-                with proj_subtabs[3]:
-                    st.subheader(f"🔍 Margerisico – alle projecten onder '{selected_plan_name}'")
-                    st.caption(
-                        "Projecten geclusterd op margeniveau. Selecteer een project onderaan "
-                        "om alle in- en uitgaande facturen te bekijken."
-                    )
-
-                    with st.spinner(f"Alle projecten ophalen voor plan '{selected_plan_name}'..."):
-                        all_summaries = get_all_analytic_summaries(selected_plan_id)
-
-                    if not all_summaries:
-                        st.info("Geen projectdata gevonden voor dit plan.")
-                    else:
-                        # ── Cluster classificatie ──────────────────────────────
-                        def _classify(row):
-                            if row["Opbrengst"] <= 0:
-                                return "⚫ Geen omzet"
-                            elif row["Resultaat"] < 0:
-                                return "🔴 Verlieslatend"
-                            elif (row["Marge %"] or 0) < 10:
-                                return "🟡 Break-even (0–10%)"
-                            elif (row["Marge %"] or 0) < 25:
-                                return "🟢 Winstgevend (10–25%)"
-                            else:
-                                return "💚 Uitstekend (>25%)"
-
-                        df_all = pd.DataFrame(all_summaries)
-                        df_all["Cluster"] = df_all.apply(_classify, axis=1)
-
-                        # ── KPI-balk ───────────────────────────────────────────
-                        totals_rev  = df_all["Opbrengst"].sum()
-                        totals_res  = df_all["Resultaat"].sum()
-                        neg_count   = len(df_all[df_all["Resultaat"] < 0])
-
-                        pk1, pk2, pk3, pk4 = st.columns(4)
-                        pk1.metric("🏗️ Projecten", str(len(df_all)))
-                        pk2.metric("💰 Totaal Opbrengst", f"€{totals_rev:,.0f}")
-                        pk3.metric("📈 Totaal Resultaat", f"€{totals_res:,.0f}",
-                                   delta="positief" if totals_res >= 0 else "negatief",
-                                   delta_color="normal" if totals_res >= 0 else "inverse")
-                        pk4.metric("🔴 Verlieslatend", str(neg_count),
-                                   delta=f"{neg_count / len(df_all) * 100:.0f}% van totaal",
-                                   delta_color="inverse" if neg_count > 0 else "off")
-
-                        st.markdown("---")
-
-                        # ── Bubble chart: Opbrengst vs Marge % ────────────────
-                        CLUSTER_COLORS = {
-                            "🔴 Verlieslatend":       "#c0392b",
-                            "🟡 Break-even (0–10%)":  "#f39c12",
-                            "🟢 Winstgevend (10–25%)":"#27ae60",
-                            "💚 Uitstekend (>25%)":   "#1a5276",
-                            "⚫ Geen omzet":           "#7f8c8d",
-                        }
-                        df_bubble = df_all.copy()
-                        df_bubble["Marge_disp"] = df_bubble["Marge %"].fillna(0)
-                        df_bubble["Bubble"]     = df_bubble["Resultaat"].abs().clip(lower=200)
-
-                        fig_bubble = px.scatter(
-                            df_bubble,
-                            x="Opbrengst", y="Marge_disp",
-                            size="Bubble", color="Cluster",
-                            color_discrete_map=CLUSTER_COLORS,
-                            hover_name="Project",
-                            hover_data={
-                                "Opbrengst": ":€,.0f",
-                                "Kosten": ":€,.0f",
-                                "Resultaat": ":€,.0f",
-                                "Marge_disp": ":.1f",
-                                "Bubble": False,
-                            },
-                            title="Projectportfolio: Opbrengst vs Marge % (grootte = |resultaat|)",
-                            labels={"Opbrengst": "Opbrengst (€)",
-                                    "Marge_disp": "Marge %",
-                                    "Cluster": "Categorie"},
-                            height=420,
-                        )
-                        fig_bubble.add_hline(y=0,  line_color="#c0392b", line_dash="dot",
-                                             annotation_text="0% (break-even)")
-                        fig_bubble.add_hline(y=10, line_color="#f39c12", line_dash="dash",
-                                             annotation_text="10%")
-                        fig_bubble.add_hline(y=25, line_color="#27ae60", line_dash="dash",
-                                             annotation_text="25%")
-                        st.plotly_chart(fig_bubble, use_container_width=True)
-
-                        # ── Cluster-expanders ──────────────────────────────────
-                        CLUSTER_ORDER = [
-                            "🔴 Verlieslatend",
-                            "🟡 Break-even (0–10%)",
-                            "🟢 Winstgevend (10–25%)",
-                            "💚 Uitstekend (>25%)",
-                            "⚫ Geen omzet",
-                        ]
-
-                        def _cell_color(val):
-                            if isinstance(val, (int, float)) and val < 0:
-                                return "color: #c0392b; font-weight: bold"
-                            return ""
-
-                        for cl in CLUSTER_ORDER:
-                            cl_df = df_all[df_all["Cluster"] == cl].sort_values("Resultaat")
-                            if cl_df.empty:
-                                continue
-                            n   = len(cl_df)
-                            tot = cl_df["Resultaat"].sum()
-                            label = (
-                                f"{cl}  –  {n} project{'en' if n != 1 else ''}  ·  "
-                                f"resultaat €{tot:,.0f}"
-                            )
-                            with st.expander(label, expanded=(cl == "🔴 Verlieslatend" and n > 0)):
-                                disp = cl_df[["Project", "Opbrengst", "Kosten",
-                                              "Resultaat", "Marge %"]].copy()
-                                st.dataframe(
-                                    disp.style
-                                    .format({
-                                        "Opbrengst": "€{:,.0f}",
-                                        "Kosten":    "€{:,.0f}",
-                                        "Resultaat": "€{:,.0f}",
-                                        "Marge %": lambda v: f"{v:.1f}%" if v is not None else "–",
-                                    })
-                                    .applymap(_cell_color, subset=["Resultaat"]),
-                                    use_container_width=True, hide_index=True,
-                                )
-
-                        # ── Drill-down: project kiezen → facturen ──────────────
-                        st.markdown("---")
-                        st.markdown("### 🔎 Projectdetail – Facturen")
-
-                        drill_options = ["(selecteer een project)"] + sorted(
-                            s["Project"] for s in all_summaries
-                        )
-                        selected_drill = st.selectbox(
-                            "Kies een project om alle in- en uitgaande facturen te bekijken:",
-                            drill_options,
-                            key="proj_drill_select",
-                        )
-
-                        if selected_drill != "(selecteer een project)":
-                            drill_data = next(
-                                (s for s in all_summaries if s["Project"] == selected_drill), None
-                            )
-                            if drill_data:
-                                # Mini KPI-balk voor het project
-                                d1, d2, d3 = st.columns(3)
-                                d1.metric("💰 Opbrengst", f"€{drill_data['Opbrengst']:,.0f}")
-                                d2.metric("📉 Kosten",    f"€{drill_data['Kosten']:,.0f}")
-                                marge_lbl = (
-                                    f"{drill_data['Marge %']:.1f}% marge"
-                                    if drill_data.get("Marge %") is not None else ""
-                                )
-                                d3.metric(
-                                    "📈 Resultaat", f"€{drill_data['Resultaat']:,.0f}",
-                                    delta=marge_lbl,
-                                    delta_color="normal" if drill_data["Resultaat"] >= 0 else "inverse",
-                                )
-
-                                with st.spinner(f"Facturen ophalen voor '{selected_drill}'..."):
-                                    all_inv = get_analytic_all_invoices(drill_data["id"])
-
-                                if not all_inv:
-                                    st.info(
-                                        "Geen facturen gevonden die analytisch zijn gekoppeld "
-                                        "aan dit project."
-                                    )
-                                else:
-                                    PAYMENT_LABELS = {
-                                        "not_paid":   "❌ Niet betaald",
-                                        "partial":    "⚠️ Deels betaald",
-                                        "paid":       "✅ Betaald",
-                                        "reversed":   "↩️ Teruggedraaid",
-                                        "in_payment": "🔄 In verwerking",
-                                    }
-
-                                    def _inv_row(i):
-                                        return {
-                                            "Factuurnr":  i.get("name", ""),
-                                            "Datum":      i.get("invoice_date", ""),
-                                            "Relatie":    i["partner_id"][1] if i.get("partner_id") else "",
-                                            "Excl. BTW":  i.get("amount_untaxed", 0),
-                                            "Openstaand": i.get("amount_residual", 0),
-                                            "Status":     PAYMENT_LABELS.get(
-                                                i.get("payment_state", ""), i.get("payment_state", "")
-                                            ),
-                                        }
-
-                                    out_inv = sorted(
-                                        [i for i in all_inv if i.get("move_type") in
-                                         ("out_invoice", "out_refund")],
-                                        key=lambda x: x.get("invoice_date", ""), reverse=True
-                                    )
-                                    in_inv = sorted(
-                                        [i for i in all_inv if i.get("move_type") in
-                                         ("in_invoice", "in_refund")],
-                                        key=lambda x: x.get("invoice_date", ""), reverse=True
-                                    )
-
-                                    col_out, col_in = st.columns(2)
-
-                                    with col_out:
-                                        st.markdown(f"**📤 Verkoopfacturen ({len(out_inv)})**")
-                                        if out_inv:
-                                            df_out = pd.DataFrame([_inv_row(i) for i in out_inv])
-                                            st.metric(
-                                                "Totaal omzet",
-                                                f"€{df_out['Excl. BTW'].sum():,.0f}",
-                                                delta=f"€{df_out['Openstaand'].sum():,.0f} open",
-                                                delta_color="inverse" if df_out["Openstaand"].sum() > 0 else "off",
-                                            )
-                                            st.dataframe(
-                                                df_out.style.format({
-                                                    "Excl. BTW":  "€{:,.2f}",
-                                                    "Openstaand": "€{:,.2f}",
-                                                }),
-                                                use_container_width=True, hide_index=True,
-                                            )
-                                        else:
-                                            st.info("Geen verkoopfacturen gevonden.")
-
-                                    with col_in:
-                                        st.markdown(f"**📥 Inkoopfacturen ({len(in_inv)})**")
-                                        if in_inv:
-                                            df_in = pd.DataFrame([_inv_row(i) for i in in_inv])
-                                            st.metric(
-                                                "Totaal inkoop",
-                                                f"€{df_in['Excl. BTW'].sum():,.0f}",
-                                            )
-                                            st.dataframe(
-                                                df_in.style.format({
-                                                    "Excl. BTW":  "€{:,.2f}",
-                                                    "Openstaand": "€{:,.2f}",
-                                                }),
-                                                use_container_width=True, hide_index=True,
-                                            )
-                                        else:
-                                            st.info("Geen inkoopfacturen gevonden.")
-
-                        # ── AI-analyse sectie ──────────────────────────────────
-                        st.markdown("---")
-                        st.markdown("### Projectdetail – Facturen")
-                        st.caption("Kies een project om alle in- en uitgaande facturen te bekijken:")
-
-                        proj_name_to_id = {s["Project"]: s["id"] for s in all_summaries}
-                        proj_detail_name = st.selectbox(
-                            "Project",
-                            options=["– kies een project –"] + list(proj_name_to_id.keys()),
-                            key="marge_proj_detail_select"
-                        )
-
-                        if proj_detail_name != "– kies een project –":
-                            detail_account_id = proj_name_to_id[proj_detail_name]
-                            with st.spinner("Facturen ophalen..."):
-                                detail_invoices, detail_attribution = get_analytic_invoices(detail_account_id)
-
-                            if not detail_invoices:
-                                st.info(
-                                    "Geen facturen gevonden voor dit project. "
-                                    "Controleer of factuurregels een analytische verdeling hebben."
-                                )
-                            else:
-                                PAYMENT_LABELS_M = {
-                                    "not_paid": "❌ Niet betaald",
-                                    "partial": "⚠️ Deels betaald",
-                                    "paid": "✅ Betaald",
-                                    "reversed": "↩️ Teruggedraaid",
-                                    "in_payment": "🔄 In verwerking",
-                                }
-                                TYPE_LABELS_M = {
-                                    "out_invoice": "🧾 Verkoopfactuur",
-                                    "out_refund": "↩️ Verkoopcreditnota",
-                                    "in_invoice": "🛒 Inkoopfactuur",
-                                    "in_refund": "↩️ Inkoopcontractnota",
-                                }
-                                df_det = pd.DataFrame([
-                                    {
-                                        "Factuurnr": i.get("name", ""),
-                                        "Type": TYPE_LABELS_M.get(i.get("move_type", ""), i.get("move_type", "")),
-                                        "Datum": i.get("invoice_date", ""),
-                                        "Vervaldatum": i.get("invoice_date_due", ""),
-                                        "Relatie": i["partner_id"][1] if i.get("partner_id") else "",
-                                        "Bedrijf": i["company_id"][1] if i.get("company_id") else "",
-                                        "Proj. aandeel": abs(detail_attribution.get(i.get("id"), 0)),
-                                        "Totaal factuur": i.get("amount_untaxed", 0),
-                                        "Openstaand": i.get("amount_residual", 0),
-                                        "Status": PAYMENT_LABELS_M.get(
-                                            i.get("payment_state", ""), i.get("payment_state", "")
-                                        ),
-                                        "_move_type": i.get("move_type", ""),
-                                    }
-                                    for i in detail_invoices
-                                ]).sort_values("Datum", ascending=False)
-
-                                df_det_out = df_det[df_det["_move_type"].isin(["out_invoice", "out_refund"])]
-                                df_det_in  = df_det[df_det["_move_type"].isin(["in_invoice", "in_refund"])]
-                                det_omzet  = df_det_out["Proj. aandeel"].sum()
-                                det_kosten = df_det_in["Proj. aandeel"].sum()
-
-                                dm1, dm2, dm3, dm4 = st.columns(4)
-                                dm1.metric("📄 Facturen", str(len(df_det)))
-                                dm2.metric("💰 Proj. omzet", f"€{det_omzet:,.0f}")
-                                dm3.metric("🛒 Proj. inkoop", f"€{det_kosten:,.0f}")
-                                dm4.metric("⚖️ Resultaat", f"€{det_omzet - det_kosten:,.0f}")
-
-                                df_det = df_det.drop(columns=["_move_type"])
-                                st.dataframe(
-                                    df_det.style.format({
-                                        "Proj. aandeel": "€{:,.2f}",
-                                        "Totaal factuur": "€{:,.2f}",
-                                        "Openstaand": "€{:,.2f}",
-                                    }),
-                                    use_container_width=True, hide_index=True
-                                )
-                                csv_det = df_det.to_csv(index=False).encode("utf-8")
-                                st.download_button(
-                                    "⬇️ Download CSV",
-                                    data=csv_det,
-                                    file_name=f"lab_marge_{detail_account_id}_facturen.csv",
-                                    mime="text/csv",
-                                    key="marge_proj_csv"
-                                )
-
-                        st.markdown("---")
-                        st.markdown("### AI-Analyse van Verlieslatende Projecten")
-
-                        neg_projects = [s for s in all_summaries if s.get("Resultaat", 0) < 0]
-
-                        if not neg_projects:
-                            st.success(
-                                "✅ Geen verlieslatende projecten gevonden – "
-                                "alle projecten zijn winstgevend of break-even."
+                        if not get_openai_key():
+                            st.info(
+                                "Voer een OpenAI API key in via de sidebar "
+                                "om de AI-analyse te activeren."
                             )
                         else:
-                            st.warning(
-                                f"⚠️ **{len(neg_projects)} project(en) met negatief resultaat** gevonden. "
-                                "Klik op de knop hieronder voor een AI-analyse."
-                            )
-                            if not get_openai_key():
-                                st.info(
-                                    "💡 Voer een OpenAI API key in via de sidebar "
-                                    "(🤖 AI Chat) om de analyse te activeren."
-                                )
-                            else:
-                                if st.button(
-                                    "🔍 Start AI-analyse verlieslatende projecten",
-                                    key="proj_ai_analyse_btn",
-                                    type="primary",
-                                ):
-                                    project_lines = []
-                                    for s in sorted(neg_projects, key=lambda x: x["Resultaat"]):
-                                        marge_str = (
-                                            f"{s['Marge %']:.1f}%"
-                                            if s.get("Marge %") is not None else "geen omzet"
-                                        )
-                                        project_lines.append(
-                                            f"- **{s['Project']}**: "
-                                            f"Opbrengst €{s['Opbrengst']:,.0f} | "
-                                            f"Kosten €{s['Kosten']:,.0f} | "
-                                            f"Resultaat €{s['Resultaat']:,.0f} | "
-                                            f"Marge {marge_str}"
-                                        )
-                                    project_context = "\n".join(project_lines)
+                            if st.button(
+                                "Start AI-analyse verlieslatende projecten",
+                                key="proj_ai_analyse_btn",
+                                type="primary",
+                            ):
+                                project_lines = []
+                                for s in sorted(neg_projects, key=lambda x: x["Resultaat"]):
+                                    marge_str = (
+                                        f"{s['Marge %']:.1f}%"
+                                        if s.get("Marge %") is not None else "geen omzet"
+                                    )
+                                    project_lines.append(
+                                        f"- **{s['Project']}**: "
+                                        f"Opbrengst \u20ac{s['Opbrengst']:,.0f} | "
+                                        f"Kosten \u20ac{s['Kosten']:,.0f} | "
+                                        f"Resultaat \u20ac{s['Resultaat']:,.0f} | "
+                                        f"Marge {marge_str}"
+                                    )
+                                project_context = "\n".join(project_lines)
 
-                                    pos_projects = [
-                                        s for s in all_summaries if s.get("Resultaat", 0) >= 0
-                                    ]
-                                    valid_pos = [s for s in pos_projects if s.get("Marge %")]
-                                    benchmark_str = (
-                                        f"Ter referentie: de {len(pos_projects)} winstgevende "
-                                        f"projecten hebben een gemiddelde marge van "
-                                        f"{sum(s['Marge %'] for s in valid_pos) / len(valid_pos):.1f}%."
-                                        if valid_pos else ""
+                                pos_projects = [
+                                    s for s in all_summaries if s.get("Resultaat", 0) >= 0
+                                ]
+                                valid_pos = [s for s in pos_projects if s.get("Marge %")]
+                                benchmark_str = (
+                                    f"Ter referentie: de {len(pos_projects)} winstgevende "
+                                    f"projecten hebben een gemiddelde marge van "
+                                    f"{sum(s['Marge %'] for s in valid_pos) / len(valid_pos):.1f}%."
+                                    if valid_pos else ""
+                                )
+
+                                messages = [
+                                    {
+                                        "role": "system",
+                                        "content": (
+                                            "Je bent een ervaren financieel controller voor LAB Groep, "
+                                            "een bedrijf dat projecten uitvoert op het gebied van "
+                                            "verf en behang. Je analyseert projectmarges en geeft "
+                                            "concrete, praktische aanbevelingen in het Nederlands. "
+                                            "Wees specifiek en actionable."
+                                        ),
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            f"Analyseer de volgende {len(neg_projects)} verlieslatende "
+                                            f"projecten uit het analytische plan '{selected_plan_name}':"
+                                            f"\n\n{project_context}\n\n{benchmark_str}\n\n"
+                                            "Geef per project:\n"
+                                            "1. De meest waarschijnlijke oorzaak van het verlies\n"
+                                            "2. Concrete actie(s) om de marge te verbeteren\n"
+                                            "3. Urgentiescore: Kritiek (>\u20ac5k verlies) / Hoog / Gemiddeld\n\n"
+                                            "Sluit af met:\n"
+                                            "- Een prioriteitenlijst (welk project eerst aanpakken)\n"
+                                            "- Structurele aanbevelingen om margerisico te voorkomen"
+                                        ),
+                                    },
+                                ]
+
+                                with st.spinner("AI analyseert de verlieslatende projecten..."):
+                                    ai_response, ai_error = call_openai(
+                                        messages, model="gpt-4o-mini"
                                     )
 
-                                    messages = [
-                                        {
-                                            "role": "system",
-                                            "content": (
-                                                "Je bent een ervaren financieel controller voor LAB Groep, "
-                                                "een bedrijf dat projecten uitvoert op het gebied van "
-                                                "verf en behang. Je analyseert projectmarges en geeft "
-                                                "concrete, praktische aanbevelingen in het Nederlands. "
-                                                "Wees specifiek en actionable."
-                                            ),
-                                        },
-                                        {
-                                            "role": "user",
-                                            "content": (
-                                                f"Analyseer de volgende {len(neg_projects)} verlieslatende "
-                                                f"projecten uit het analytische plan '{selected_plan_name}':"
-                                                f"\n\n{project_context}\n\n{benchmark_str}\n\n"
-                                                "Geef per project:\n"
-                                                "1. De meest waarschijnlijke oorzaak van het verlies\n"
-                                                "2. Concrete actie(s) om de marge te verbeteren\n"
-                                                "3. Urgentiescore: 🔴 Kritiek (>€5k verlies of marge "
-                                                "<-20%) / 🟠 Hoog / 🟡 Gemiddeld\n\n"
-                                                "Sluit af met:\n"
-                                                "- Een **prioriteitenlijst** (welk project eerst "
-                                                "aanpakken en waarom)\n"
-                                                "- **Structurele aanbevelingen** om margerisico bij "
-                                                "toekomstige projecten te voorkomen"
-                                            ),
-                                        },
-                                    ]
+                                if ai_error:
+                                    st.error(f"AI-fout: {ai_error}")
+                                elif ai_response:
+                                    st.markdown(ai_response)
 
-                                    with st.spinner("AI analyseert de verlieslatende projecten..."):
-                                        ai_response, ai_error = call_openai(
-                                            messages, model="gpt-4o-mini"
+                # ================================================================
+                # SECTIE 2: PROJECTDETAIL (alleen als projecten geselecteerd)
+                # ================================================================
+                if selected_project_labels:
+                    st.markdown("---")
+                    st.subheader(
+                        f"Projectdetail \u2013 {len(selected_project_labels)} "
+                        f"project{'en' if len(selected_project_labels) != 1 else ''} geselecteerd"
+                    )
+
+                    PAYMENT_LABELS_P = {
+                        "not_paid":   "Niet betaald",
+                        "partial":    "Deels betaald",
+                        "paid":       "Betaald",
+                        "reversed":   "Teruggedraaid",
+                        "in_payment": "In verwerking",
+                    }
+
+                    for proj_label in selected_project_labels:
+                        proj_account_id = account_label_to_id[proj_label]
+
+                        with st.expander(f"**{proj_label}**", expanded=True):
+
+                            # Marge KPIs
+                            with st.spinner(f"Boekingsdata laden..."):
+                                alines = get_analytic_lines(proj_account_id)
+
+                            if alines:
+                                p_revenue = sum(l.get("amount", 0) for l in alines
+                                                if (l.get("amount") or 0) > 0)
+                                p_costs   = abs(sum(l.get("amount", 0) for l in alines
+                                                    if (l.get("amount") or 0) < 0))
+                                p_result  = p_revenue - p_costs
+                                p_margin  = p_result / p_revenue * 100 if p_revenue else 0
+                                p_dates   = sorted(l["date"] for l in alines if l.get("date"))
+
+                                kc1, kc2, kc3, kc4 = st.columns(4)
+                                kc1.metric("Opbrengsten",    f"\u20ac{p_revenue:,.0f}")
+                                kc2.metric("Kosten",         f"\u20ac{p_costs:,.0f}")
+                                kc3.metric("Resultaat",      f"\u20ac{p_result:,.0f}",
+                                           delta=f"{p_margin:.1f}% marge",
+                                           delta_color="normal" if p_result >= 0 else "inverse")
+                                kc4.metric("Boekingsregels", str(len(alines)))
+                                if p_dates:
+                                    st.caption(
+                                        f"Eerste boeking: {p_dates[0]} \u00b7 "
+                                        f"Laatste boeking: {p_dates[-1]}"
+                                    )
+                            else:
+                                st.info("Geen analytische boekingen gevonden voor dit project.")
+
+                            st.markdown("---")
+
+                            # Facturen in/uit
+                            with st.spinner("Facturen laden..."):
+                                all_inv = get_analytic_all_invoices(proj_account_id)
+
+                            if not all_inv:
+                                st.info(
+                                    "Geen facturen gevonden. Controleer of factuurregels "
+                                    "analytisch zijn toegewezen aan dit project."
+                                )
+                            else:
+                                out_inv = sorted(
+                                    [i for i in all_inv if i.get("move_type")
+                                     in ("out_invoice", "out_refund")],
+                                    key=lambda x: x.get("invoice_date", ""), reverse=True
+                                )
+                                in_inv = sorted(
+                                    [i for i in all_inv if i.get("move_type")
+                                     in ("in_invoice", "in_refund")],
+                                    key=lambda x: x.get("invoice_date", ""), reverse=True
+                                )
+
+                                def _inv_row_p(i):
+                                    return {
+                                        "Factuurnr":  i.get("name", ""),
+                                        "Datum":      i.get("invoice_date", ""),
+                                        "Relatie":    i["partner_id"][1] if i.get("partner_id") else "",
+                                        "Excl. BTW":  i.get("amount_untaxed", 0),
+                                        "Openstaand": i.get("amount_residual", 0),
+                                        "Status":     PAYMENT_LABELS_P.get(
+                                            i.get("payment_state", ""), i.get("payment_state", "")
+                                        ),
+                                    }
+
+                                col_out, col_in = st.columns(2)
+
+                                with col_out:
+                                    st.markdown(f"**Verkoopfacturen ({len(out_inv)})**")
+                                    if out_inv:
+                                        df_out_p = pd.DataFrame([_inv_row_p(i) for i in out_inv])
+                                        st.metric(
+                                            "Totaal omzet",
+                                            f"\u20ac{df_out_p['Excl. BTW'].sum():,.0f}",
+                                            delta=(
+                                                f"\u20ac{df_out_p['Openstaand'].sum():,.0f} open"
+                                                if df_out_p["Openstaand"].sum() > 0 else None
+                                            ),
+                                            delta_color="inverse" if df_out_p["Openstaand"].sum() > 0 else "off",
                                         )
+                                        st.dataframe(
+                                            df_out_p.style.format({
+                                                "Excl. BTW":  "\u20ac{:,.2f}",
+                                                "Openstaand": "\u20ac{:,.2f}",
+                                            }),
+                                            use_container_width=True, hide_index=True,
+                                        )
+                                        csv_out = df_out_p.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            "Download verkoop CSV",
+                                            data=csv_out,
+                                            file_name=f"verkoop_{proj_account_id}.csv",
+                                            mime="text/csv",
+                                            key=f"dl_out_{proj_account_id}",
+                                        )
+                                    else:
+                                        st.info("Geen verkoopfacturen gevonden.")
 
-                                    if ai_error:
-                                        st.error(f"AI-fout: {ai_error}")
-                                    elif ai_response:
-                                        st.markdown(ai_response)
-
+                                with col_in:
+                                    st.markdown(f"**Inkoopfacturen ({len(in_inv)})**")
+                                    if in_inv:
+                                        df_in_p = pd.DataFrame([_inv_row_p(i) for i in in_inv])
+                                        st.metric(
+                                            "Totaal inkoop",
+                                            f"\u20ac{df_in_p['Excl. BTW'].sum():,.0f}",
+                                        )
+                                        st.dataframe(
+                                            df_in_p.style.format({
+                                                "Excl. BTW":  "\u20ac{:,.2f}",
+                                                "Openstaand": "\u20ac{:,.2f}",
+                                            }),
+                                            use_container_width=True, hide_index=True,
+                                        )
+                                        csv_in = df_in_p.to_csv(index=False).encode("utf-8")
+                                        st.download_button(
+                                            "Download inkoop CSV",
+                                            data=csv_in,
+                                            file_name=f"inkoop_{proj_account_id}.csv",
+                                            mime="text/csv",
+                                            key=f"dl_in_{proj_account_id}",
+                                        )
+                                    else:
+                                        st.info("Geen inkoopfacturen gevonden.")
 
 
 if __name__ == "__main__":
