@@ -7628,6 +7628,267 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
             st.markdown("---")
 
             # =================================================================
+            # MAANDCHECKLIST
+            # =================================================================
+            st.subheader("Maandchecklist")
+            st.caption(f"Afsluitchecklist voor {period_label} — automatische controles vanuit Odoo")
+
+            with st.spinner("Checklist controleren..."):
+
+                # -- Check 1: Niet-verwerkte bankmutaties --
+                bank_recon_domain = [
+                    ("date", ">=", period_start),
+                    ("date", "<=", period_end),
+                    ("is_reconciled", "=", False),
+                ]
+                if fc_company_id:
+                    bank_recon_domain.append(("company_id", "=", fc_company_id))
+                unreconciled_bank = odoo_call(
+                    "account.bank.statement.line", "search_read",
+                    bank_recon_domain,
+                    ["date", "payment_ref", "amount", "company_id"],
+                    limit=500
+                ) or []
+
+                # -- Check 2: Tussenrekeningen (490-499) saldo --
+                tussen_domain = [
+                    ("date", "<=", period_end),
+                    ("parent_state", "=", "posted"),
+                    ("account_id.code", ">=", "490000"),
+                    ("account_id.code", "<", "500000"),
+                ]
+                if fc_company_id:
+                    tussen_domain.append(("company_id", "=", fc_company_id))
+                tussen_raw = odoo_read_group("account.move.line", tussen_domain, ["balance:sum"], [])
+                tussen_balance = sum(r.get("balance", 0) for r in tussen_raw)
+
+                # -- Check 3: Loonjournaalposten (454-456 rekeningen) --
+                loon_domain = [
+                    ("date", ">=", period_start),
+                    ("date", "<=", period_end),
+                    ("parent_state", "=", "posted"),
+                    ("account_id.code", ">=", "454000"),
+                    ("account_id.code", "<", "456000"),
+                ]
+                if fc_company_id:
+                    loon_domain.append(("company_id", "=", fc_company_id))
+                loon_raw = odoo_read_group("account.move.line", loon_domain, ["balance:sum"], [])
+                loon_amount = abs(sum(r.get("balance", 0) for r in loon_raw))
+
+                # -- Check 4: Conceptfacturen binnen cut-off m+7 --
+                cutoff_date = (datetime.strptime(period_end, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d")
+                draft_inv_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", cutoff_date),
+                    ("state", "=", "draft"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                ]
+                if fc_company_id:
+                    draft_inv_domain.append(("company_id", "=", fc_company_id))
+                draft_invoices = odoo_call(
+                    "account.move", "search_read",
+                    draft_inv_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=200
+                ) or []
+
+                # -- Check 6: Openstaande IC facturen ouder dan periode --
+                ic_open_domain = [
+                    ("invoice_date", "<", period_start),
+                    ("state", "=", "posted"),
+                    ("payment_state", "in", ["not_paid", "partial"]),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                ]
+                if fc_company_id:
+                    ic_open_domain.append(("company_id", "=", fc_company_id))
+                ic_open_all = odoo_call(
+                    "account.move", "search_read",
+                    ic_open_domain,
+                    ["name", "invoice_date", "partner_id", "amount_residual", "company_id"],
+                    limit=500
+                ) or []
+                # Filter op IC partners (partner naam bevat "LAB")
+                ic_open_invoices = [
+                    inv for inv in ic_open_all
+                    if inv.get("partner_id") and "lab" in str(inv["partner_id"][1]).lower()
+                ]
+
+                # -- Check 7/10: R/C saldo (alle entiteiten) --
+                rc_data_check = get_rc_balances()
+                rc_total = sum(r.get("current_statement_balance", 0) for r in rc_data_check) if rc_data_check else None
+
+                # -- Check 8: IC merkrechten factuur --
+                merk_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", period_end),
+                    ("state", "=", "posted"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                    ("invoice_line_ids.name", "ilike", "merkrecht"),
+                ]
+                if fc_company_id:
+                    merk_domain.append(("company_id", "=", fc_company_id))
+                merk_invoices = odoo_call(
+                    "account.move", "search_read",
+                    merk_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=50
+                ) or []
+
+                # -- Check 9: Donatie facturen --
+                donatie_domain = [
+                    ("invoice_date", ">=", period_start),
+                    ("invoice_date", "<=", period_end),
+                    ("state", "=", "posted"),
+                    ("move_type", "in", ["out_invoice", "in_invoice"]),
+                    ("invoice_line_ids.name", "ilike", "donatie"),
+                ]
+                if fc_company_id:
+                    donatie_domain.append(("company_id", "=", fc_company_id))
+                donatie_invoices = odoo_call(
+                    "account.move", "search_read",
+                    donatie_domain,
+                    ["name", "invoice_date", "partner_id", "amount_total", "company_id"],
+                    limit=50
+                ) or []
+
+            # Bouw checklist items
+            checklist_items = [
+                {
+                    "nr": 1,
+                    "label": "Alle bankmutaties verwerkt",
+                    "auto": True,
+                    "ok": len(unreconciled_bank) == 0,
+                    "detail": f"{len(unreconciled_bank)} niet-verwerkte bankmutaties gevonden" if unreconciled_bank else "Alle bankmutaties verwerkt",
+                    "severity": "critical" if unreconciled_bank else "ok",
+                    "records": unreconciled_bank[:5],
+                },
+                {
+                    "nr": 2,
+                    "label": "Tussenrekeningen lopen allemaal af",
+                    "auto": True,
+                    "ok": abs(tussen_balance) < 1.0,
+                    "detail": f"Saldo tussenrekeningen (490-499): €{tussen_balance:,.2f}" if abs(tussen_balance) >= 1.0 else "Tussenrekeningen: €0,00",
+                    "severity": "warning" if abs(tussen_balance) >= 1.0 else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 3,
+                    "label": "Loonjournaalposten geboekt",
+                    "auto": True,
+                    "ok": loon_amount > 0,
+                    "detail": f"Loonrekeningen (454-455): €{loon_amount:,.0f} geboekt" if loon_amount > 0 else "Geen loonjournaalposten gevonden op 454-455",
+                    "severity": "warning" if loon_amount == 0 else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 4,
+                    "label": f"Alle facturen verwerkt (cut-off: {cutoff_date})",
+                    "auto": True,
+                    "ok": len(draft_invoices) == 0,
+                    "detail": f"{len(draft_invoices)} conceptfacturen met datum ≤ {cutoff_date}" if draft_invoices else f"Geen conceptfacturen vóór {cutoff_date}",
+                    "severity": "warning" if draft_invoices else "ok",
+                    "records": draft_invoices[:5],
+                },
+                {
+                    "nr": 5,
+                    "label": "Ontbrekende facturen voor kosten (bv. inhuur) voorzien",
+                    "auto": False,
+                    "ok": None,
+                    "detail": "Handmatige controle — bevestig manueel",
+                    "severity": "manual",
+                    "records": [],
+                },
+                {
+                    "nr": 6,
+                    "label": "Afboeken IC facturen openstaand (t/m vorige periode)",
+                    "auto": True,
+                    "ok": len(ic_open_invoices) == 0,
+                    "detail": f"{len(ic_open_invoices)} openstaande IC facturen ouder dan {period_start}" if ic_open_invoices else "Geen openstaande IC facturen",
+                    "severity": "warning" if ic_open_invoices else "ok",
+                    "records": ic_open_invoices[:5],
+                },
+                {
+                    "nr": 7,
+                    "label": "Onderlinge R/C posities afgestemd",
+                    "auto": True,
+                    "ok": rc_total is not None and abs(rc_total) < 1.0,
+                    "detail": f"Totaal R/C saldo: €{rc_total:,.2f}" if rc_total is not None else "R/C data niet beschikbaar",
+                    "severity": "warning" if (rc_total is None or abs(rc_total or 0) >= 1.0) else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 8,
+                    "label": "IC factuur merkrechten (LCTW → LS) geboekt",
+                    "auto": True,
+                    "ok": len(merk_invoices) > 0,
+                    "detail": f"{len(merk_invoices)} merkrechten factuur/facturen aangetroffen" if merk_invoices else "Geen merkrechten factuur gevonden in periode",
+                    "severity": "warning" if not merk_invoices else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 9,
+                    "label": "Donatie facturen LS / LC geboekt",
+                    "auto": True,
+                    "ok": len(donatie_invoices) > 0,
+                    "detail": f"{len(donatie_invoices)} donatiefactuur/facturen aangetroffen" if donatie_invoices else "Geen donatiefacturen gevonden in periode",
+                    "severity": "warning" if not donatie_invoices else "ok",
+                    "records": [],
+                },
+                {
+                    "nr": 10,
+                    "label": "IC posities debiteuren / crediteuren afgestemd",
+                    "auto": True,
+                    "ok": rc_total is not None and abs(rc_total) < 1.0,
+                    "detail": f"R/C netto saldo alle entiteiten: €{rc_total:,.2f}" if rc_total is not None else "R/C data niet beschikbaar",
+                    "severity": "warning" if (rc_total is None or abs(rc_total or 0) >= 1.0) else "ok",
+                    "records": [],
+                },
+            ]
+
+            # Statistieken
+            cl_auto_ok = sum(1 for i in checklist_items if i["auto"] and i["ok"] is True)
+            cl_auto_warn = sum(1 for i in checklist_items if i["auto"] and i["ok"] is False)
+            cl_manual = sum(1 for i in checklist_items if not i["auto"])
+
+            cl_s1, cl_s2, cl_s3 = st.columns(3)
+            with cl_s1:
+                st.metric("Automatisch OK", cl_auto_ok)
+            with cl_s2:
+                st.metric("Aandacht vereist", cl_auto_warn)
+            with cl_s3:
+                st.metric("Handmatig", cl_manual)
+
+            st.markdown("")
+
+            # Render checklist regels
+            for item in checklist_items:
+                c_label, c_detail = st.columns([4, 5])
+                with c_label:
+                    if not item["auto"]:
+                        man_key = f"cl_manual_{item['nr']}_{close_year}_{close_month}"
+                        st.checkbox(f"{item['nr']}. {item['label']}", key=man_key)
+                    elif item["ok"]:
+                        st.markdown(f"✅ **{item['nr']}. {item['label']}**")
+                    elif item["severity"] == "critical":
+                        st.markdown(f"🚨 **{item['nr']}. {item['label']}**")
+                    else:
+                        st.markdown(f"⚠️ **{item['nr']}. {item['label']}**")
+                with c_detail:
+                    st.caption(item["detail"])
+                    if item["records"]:
+                        with st.expander("Details", expanded=False):
+                            for rec in item["records"]:
+                                partner = ""
+                                if rec.get("partner_id") and isinstance(rec["partner_id"], list):
+                                    partner = rec["partner_id"][1]
+                                date_val = rec.get("invoice_date") or rec.get("date", "")
+                                amount_val = rec.get("amount_total") or rec.get("amount_residual") or rec.get("amount", 0)
+                                rec_name = rec.get("name") or rec.get("payment_ref", "—")
+                                st.markdown(f"- {date_val} | {rec_name} | {partner} | €{amount_val:,.0f}")
+
+            st.markdown("---")
+
+            # =================================================================
             # COST COMPONENT DETAILS
             # =================================================================
             st.subheader("💼 Kostencomponenten Analyse")
