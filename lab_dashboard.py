@@ -7377,6 +7377,7 @@ Focus op wat actionable is voor pricing en margeverbetering. Antwoord in het Ned
                 ))
 
             # Check 4: Large unreconciled items (>90 days old)
+            from datetime import timedelta
             old_date_threshold = datetime.now() - timedelta(days=90)
             old_receivables = [r for r in unreconciled_rec
                              if r.get("date") and datetime.strptime(r["date"], "%Y-%m-%d") < old_date_threshold]
