@@ -9555,7 +9555,12 @@ Gegenereerd door LAB Groep Financial Dashboard
                 # SECTIE 2: FACTUREN OVERZICHT (alle projecten in plan)
                 # ================================================================
                 st.markdown("---")
-                st.subheader("Facturen – Overzicht alle projecten")
+                _fov_title = (
+                    f"Facturen – {len(selected_project_labels)} project{'en' if len(selected_project_labels) != 1 else ''} geselecteerd"
+                    if selected_project_labels
+                    else "Facturen – Overzicht alle projecten"
+                )
+                st.subheader(_fov_title)
 
                 if st.session_state.get("_fov_plan_id") != selected_plan_id:
                     st.session_state["_fov_loaded"] = False
@@ -9639,6 +9644,8 @@ Gegenereerd door LAB Groep Financial Dashboard
                                 key="fov_status_sel",
                             )
                         _df_fov_show = _df_fov.copy()
+                        if selected_project_labels:
+                            _df_fov_show = _df_fov_show[_df_fov_show["Project"].isin(selected_project_labels)]
                         if _fov_type != "Alle":
                             _df_fov_show = _df_fov_show[_df_fov_show["Type"] == _fov_type]
                         if _fov_status != "Alle":
