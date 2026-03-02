@@ -1779,16 +1779,28 @@ def get_analytic_all_invoices(analytic_account_id):
 
     Wordt gebruikt voor de detail drill-down in het Margerisico overzicht.
     """
+    # Vind factuurregels via account.analytic.line (betrouwbaar)
+    alines = odoo_call(
+        "account.analytic.line", "search_read",
+        [["account_id", "=", analytic_account_id]],
+        ["move_line_id"],
+        limit=10000
+    )
+    ml_ids = list({a["move_line_id"][0] for a in alines
+                   if a.get("move_line_id")})
+    if not ml_ids:
+        return []
+
     lines = odoo_call(
         "account.move.line", "search_read",
         [
+            ["id", "in", ml_ids],
             ["move_id.move_type", "in",
              ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
             ["move_id.state", "=", "posted"],
-            ["analytic_distribution", "ilike", str(analytic_account_id)],
         ],
         ["move_id"],
-        limit=5000,
+        limit=len(ml_ids) + 100,
         include_archived=True
     )
     if not lines:
@@ -1818,17 +1830,30 @@ def get_analytic_invoices_with_share(analytic_account_id):
     """
     import json as _json
 
-    # Stap 1: factuurregels ophalen met analytic_distribution en regelbedrag
+    # Stap 1a: vind factuurregels via account.analytic.line (betrouwbaar,
+    #          werkt ook als ilike niet ondersteund is op jsonb-velden)
+    alines = odoo_call(
+        "account.analytic.line", "search_read",
+        [["account_id", "=", analytic_account_id]],
+        ["move_line_id"],
+        limit=10000
+    )
+    ml_ids = list({a["move_line_id"][0] for a in alines
+                   if a.get("move_line_id")})
+    if not ml_ids:
+        return []
+
+    # Stap 1b: haal factuurregels op met analytic_distribution en regelbedrag
     lines = odoo_call(
         "account.move.line", "search_read",
         [
+            ["id", "in", ml_ids],
             ["move_id.move_type", "in",
              ["out_invoice", "out_refund", "in_invoice", "in_refund"]],
             ["move_id.state", "=", "posted"],
-            ["analytic_distribution", "ilike", str(analytic_account_id)],
         ],
         ["move_id", "price_subtotal", "analytic_distribution"],
-        limit=5000,
+        limit=len(ml_ids) + 100,
         include_archived=True
     )
     if not lines:
