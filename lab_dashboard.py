@@ -117,7 +117,7 @@ st.set_page_config(
 
 # Odoo configuratie
 ODOO_URL = "https://lab.odoo.works/jsonrpc"
-ODOO_DB = "bluezebra-works-nl-vestingh-production-13415483"
+ODOO_DB = "lab.odoo.works"
 ODOO_UID = 37
 
 # API Key - probeer secrets, anders gebruik session state (input in main)
