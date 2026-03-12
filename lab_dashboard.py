@@ -1,6 +1,12 @@
 """
-LAB Groep Financial Dashboard v19
+LAB Groep Financial Dashboard v20
 =================================
+Wijzigingen t.o.v. v19:
+- 🔐 Workflow en export uitgebreid
+  * Budgetimport-lock: eerst mapping afronden, daarna vrijgeven per jaar
+  * Auto-map preview met confidence-kleurcodering en low-confidence filters
+  * Variatierapport export naar Excel en PDF
+
 Wijzigingen t.o.v. v18:
 - 🧮 Nieuwe rapportagepagina toegevoegd
   * Rekeningmapping op geaggregeerd W&V niveau (incl. bulk)
@@ -102,7 +108,7 @@ import subprocess
 import sys
 
 def install_packages():
-    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'openpyxl']
+    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'openpyxl', 'reportlab']
     for package in packages:
         try:
             __import__(package.replace('-', '_'))
@@ -2180,6 +2186,7 @@ MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # Budget and balance mapping storage paths
 BUDGET_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_data.json")
 BALANCE_MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "balance_mapping.json")
+BUDGET_WORKFLOW_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_workflow.json")
 
 # ---------------------------------------------------------------------------
 # P&L structuur uitbreiding op geaggregeerd rapportageniveau
@@ -3363,50 +3370,69 @@ def render_draggable_mapping_tool(company_id, year):
     if proposals:
         st.markdown("**Auto-map voorstel (W&V)**")
         st.caption(f"{len(proposals)} niet-gemapte rekening(en) met voorstel")
-        df_prop = pd.DataFrame([
-            {
-                "Rekening": p["account_code"],
-                "Naam": p["account_name"],
-                "Doelcategorie": p["target_name"],
-                "Confidence": p["confidence"],
-                "Uitleg": p["reason"],
-            }
-            for p in proposals
-        ])
-        st.dataframe(df_prop, use_container_width=True, hide_index=True)
 
-        proposal_labels = [
-            f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:40]} → {p['target_name']}"
-            for p in proposals
+        filt_col1, filt_col2 = st.columns([1, 1])
+        with filt_col1:
+            min_conf_pnl = st.slider("Min confidence", 0, 100, 0, key="pnl_conf_threshold")
+        with filt_col2:
+            show_low_only_pnl = st.checkbox("Toon alleen lage confidence (<65)", key="pnl_low_only")
+
+        display_proposals = [
+            p for p in proposals
+            if p["confidence"] >= min_conf_pnl and (not show_low_only_pnl or p["confidence"] < 65)
         ]
-        label_to_key = {label: proposals[i]["proposal_key"] for i, label in enumerate(proposal_labels)}
-        default_labels = [proposal_labels[i] for i, p in enumerate(proposals) if p["confidence"] >= 70]
+        if not display_proposals:
+            st.info("Geen voorstellen binnen de gekozen confidence-filter.")
+        else:
+            df_prop = pd.DataFrame([
+                {
+                    "Rekening": p["account_code"],
+                    "Naam": p["account_name"],
+                    "Doelcategorie": p["target_name"],
+                    "Confidence": p["confidence"],
+                    "Band": get_confidence_band(p["confidence"])[0],
+                    "Uitleg": p["reason"],
+                }
+                for p in display_proposals
+            ])
+            st.dataframe(
+                df_prop.style.applymap(style_confidence_cell, subset=["Confidence"]),
+                use_container_width=True,
+                hide_index=True
+            )
 
-        selected_labels = st.multiselect(
-            "Selecteer voorstellen om toe te passen",
-            options=proposal_labels,
-            default=default_labels,
-            key="pnl_auto_selected"
-        )
-        selected_keys = {label_to_key[label] for label in selected_labels}
+            proposal_labels = [
+                f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:40]} → {p['target_name']}"
+                for p in display_proposals
+            ]
+            label_to_key = {label: display_proposals[i]["proposal_key"] for i, label in enumerate(proposal_labels)}
+            default_labels = [proposal_labels[i] for i, p in enumerate(display_proposals) if p["confidence"] >= 70]
 
-        act_col1, act_col2 = st.columns([1, 1])
-        with act_col1:
-            if st.button("✅ Pas geselecteerde voorstellen toe", key="apply_auto_map_pnl", type="primary"):
-                selected_props = [p for p in proposals if p["proposal_key"] in selected_keys]
-                applied, skipped = apply_auto_mapping_proposals(
-                    mapping=mapping,
-                    proposals=selected_props,
-                    category_keys=get_leaf_report_category_keys(),
-                )
-                st.session_state.draggable_mapping = mapping
-                st.session_state.pnl_auto_proposals = []
-                st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
-                st.rerun()
-        with act_col2:
-            if st.button("🗑️ Verberg voorstel", key="clear_auto_map_pnl"):
-                st.session_state.pnl_auto_proposals = []
-                st.rerun()
+            selected_labels = st.multiselect(
+                "Selecteer voorstellen om toe te passen",
+                options=proposal_labels,
+                default=default_labels,
+                key="pnl_auto_selected"
+            )
+            selected_keys = {label_to_key[label] for label in selected_labels}
+
+            act_col1, act_col2 = st.columns([1, 1])
+            with act_col1:
+                if st.button("✅ Pas geselecteerde voorstellen toe", key="apply_auto_map_pnl", type="primary"):
+                    selected_props = [p for p in display_proposals if p["proposal_key"] in selected_keys]
+                    applied, skipped = apply_auto_mapping_proposals(
+                        mapping=mapping,
+                        proposals=selected_props,
+                        category_keys=get_leaf_report_category_keys(),
+                    )
+                    st.session_state.draggable_mapping = mapping
+                    st.session_state.pnl_auto_proposals = []
+                    st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                    st.rerun()
+            with act_col2:
+                if st.button("🗑️ Verberg voorstel", key="clear_auto_map_pnl"):
+                    st.session_state.pnl_auto_proposals = []
+                    st.rerun()
     st.markdown("---")
 
     # Get list of already assigned account codes (including pending changes in edit mode)
@@ -3942,6 +3968,28 @@ def _ensure_mapping_shape(mapping):
     return mapping
 
 
+def get_confidence_band(score):
+    """Return label + color bucket for confidence score."""
+    if score >= 85:
+        return "Hoog", "green"
+    if score >= 65:
+        return "Middel", "orange"
+    return "Laag", "red"
+
+
+def style_confidence_cell(score):
+    """Styler helper for confidence coloring."""
+    try:
+        val = float(score)
+    except Exception:
+        return ""
+    if val >= 85:
+        return "background-color: #d4edda; color: #155724; font-weight: 600;"
+    if val >= 65:
+        return "background-color: #fff3cd; color: #856404; font-weight: 600;"
+    return "background-color: #f8d7da; color: #721c24; font-weight: 600;"
+
+
 def _rule_match_details(account_code, account_name, rule):
     """Return confidence + explanation for a rule match."""
     code = str(account_code or "").strip()
@@ -4111,6 +4159,152 @@ def save_budget_entries(entries):
         return True, "Budget opgeslagen"
     except Exception as e:
         return False, f"Opslaan budget mislukt: {e}"
+
+
+def load_budget_workflow_state():
+    """Load workflow lock state for budget release."""
+    try:
+        if os.path.exists(BUDGET_WORKFLOW_STORAGE_FILE):
+            with open(BUDGET_WORKFLOW_STORAGE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"Error loading budget workflow state: {e}")
+    return {"released_years": {}}
+
+
+def save_budget_workflow_state(state):
+    """Persist workflow lock state."""
+    try:
+        payload = dict(state or {})
+        payload["last_modified"] = datetime.now().isoformat()
+        payload.setdefault("released_years", {})
+        with open(BUDGET_WORKFLOW_STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True, "Workflowstatus opgeslagen"
+    except Exception as e:
+        return False, f"Opslaan workflowstatus mislukt: {e}"
+
+
+def is_budget_released_for_year(year):
+    """Check if budget import is released for a year."""
+    state = load_budget_workflow_state()
+    return bool(state.get("released_years", {}).get(str(year), False))
+
+
+def set_budget_release_for_year(year, released):
+    """Set release lock/unlock for a budget year."""
+    state = load_budget_workflow_state()
+    state.setdefault("released_years", {})
+    state["released_years"][str(year)] = bool(released)
+    return save_budget_workflow_state(state)
+
+
+def get_pnl_mapping_completion_status(company_id, year):
+    """Compute simple mapping-completion metrics for workflow gate."""
+    mapping = _ensure_mapping_shape(get_draggable_mapping())
+    leaf_keys = get_leaf_report_category_keys()
+
+    mapped_categories = [k for k in leaf_keys if mapping["categories"].get(k)]
+    mapped_count = len(mapped_categories)
+    total_leaf_count = len(leaf_keys)
+    coverage_pct = (mapped_count / total_leaf_count * 100) if total_leaf_count else 0
+
+    # Use available accounts in current scope to estimate mapped/unmapped load.
+    available_accounts = get_all_accounts_with_details(company_id, year)
+    assigned_codes = set()
+    for codes in mapping["categories"].values():
+        assigned_codes.update(codes)
+    unmapped_count = len([a for a in available_accounts if a["code"] not in assigned_codes])
+
+    # Gate threshold: at least 60% of leaf categories mapped
+    gate_ready = coverage_pct >= 60
+
+    return {
+        "mapped_count": mapped_count,
+        "total_leaf_count": total_leaf_count,
+        "coverage_pct": coverage_pct,
+        "unmapped_count": unmapped_count,
+        "gate_ready": gate_ready,
+    }
+
+
+def build_variance_export_excel_bytes(df_month, df_matrix, metadata):
+    """Build Excel export for variance report."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pd.DataFrame([metadata]).to_excel(writer, sheet_name="Meta", index=False)
+        df_month.to_excel(writer, sheet_name="Variantie_Maand", index=False)
+        df_matrix.to_excel(writer, sheet_name="Variantie_Matrix", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_variance_export_pdf_bytes(df_month, metadata):
+    """Build compact PDF export for variance report."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title = f"Variantie Rapport — {metadata.get('year')} — {metadata.get('scope')}"
+    story.append(Paragraph(title, styles["Title"]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"Maand: {metadata.get('month_label')}", styles["Normal"]))
+    story.append(Paragraph(f"Intercompany eliminatie: {metadata.get('exclude_intercompany')}", styles["Normal"]))
+    story.append(Spacer(1, 12))
+
+    export_cols = [
+        "Regel", "Actual maand", "Budget maand", "Variantie maand", "Variantie maand %",
+        "Actual YTD", "Budget YTD", "Variantie YTD", "Variantie YTD %"
+    ]
+    table_df = df_month.copy()
+    if "Confidence" in table_df.columns:
+        table_df = table_df.drop(columns=["Confidence"])
+    for col in export_cols:
+        if col not in table_df.columns:
+            table_df[col] = ""
+    table_df = table_df[export_cols]
+
+    # Keep PDF readable: include first 35 lines (top-level report usually fits)
+    table_df = table_df.head(35)
+
+    header = list(table_df.columns)
+    body = []
+    for _, row in table_df.iterrows():
+        body.append([
+            str(row["Regel"]),
+            f"{row['Actual maand']:,.0f}",
+            f"{row['Budget maand']:,.0f}",
+            f"{row['Variantie maand']:,.0f}",
+            f"{row['Variantie maand %']:+.1f}%",
+            f"{row['Actual YTD']:,.0f}",
+            f"{row['Budget YTD']:,.0f}",
+            f"{row['Variantie YTD']:,.0f}",
+            f"{row['Variantie YTD %']:+.1f}%",
+        ])
+
+    table = Table([header] + body, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a5f")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(table)
+    doc.build(story)
+    output.seek(0)
+    return output.getvalue()
 
 
 def build_budget_template_dataframe(year, company_ids=None):
@@ -4557,50 +4751,68 @@ def render_balance_mapping_tool(company_id, year):
     bal_proposals = st.session_state.get("balance_auto_proposals", [])
     if bal_proposals:
         st.markdown("**Auto-map voorstel (Balans)**")
-        bal_df = pd.DataFrame([
-            {
-                "Rekening": p["account_code"],
-                "Naam": p["account_name"],
-                "Doelcategorie": p["target_name"],
-                "Confidence": p["confidence"],
-                "Uitleg": p["reason"],
-            }
-            for p in bal_proposals
-        ])
-        st.dataframe(bal_df, use_container_width=True, hide_index=True)
+        b_f1, b_f2 = st.columns([1, 1])
+        with b_f1:
+            min_conf_bal = st.slider("Min confidence (balans)", 0, 100, 0, key="bal_conf_threshold")
+        with b_f2:
+            show_low_only_bal = st.checkbox("Toon alleen lage confidence balans (<65)", key="bal_low_only")
 
-        bal_labels = [
-            f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:36]} → {p['target_name']}"
-            for p in bal_proposals
+        display_bal_proposals = [
+            p for p in bal_proposals
+            if p["confidence"] >= min_conf_bal and (not show_low_only_bal or p["confidence"] < 65)
         ]
-        bal_label_to_key = {label: bal_proposals[i]["proposal_key"] for i, label in enumerate(bal_labels)}
-        bal_default = [bal_labels[i] for i, p in enumerate(bal_proposals) if p["confidence"] >= 70]
+        if not display_bal_proposals:
+            st.info("Geen balansvoorstellen binnen de gekozen confidence-filter.")
+        else:
+            bal_df = pd.DataFrame([
+                {
+                    "Rekening": p["account_code"],
+                    "Naam": p["account_name"],
+                    "Doelcategorie": p["target_name"],
+                    "Confidence": p["confidence"],
+                    "Band": get_confidence_band(p["confidence"])[0],
+                    "Uitleg": p["reason"],
+                }
+                for p in display_bal_proposals
+            ])
+            st.dataframe(
+                bal_df.style.applymap(style_confidence_cell, subset=["Confidence"]),
+                use_container_width=True,
+                hide_index=True
+            )
 
-        selected_bal_labels = st.multiselect(
-            "Selecteer balansvoorstellen om toe te passen",
-            options=bal_labels,
-            default=bal_default,
-            key="balance_auto_selected",
-        )
-        selected_bal_keys = {bal_label_to_key[label] for label in selected_bal_labels}
+            bal_labels = [
+                f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:36]} → {p['target_name']}"
+                for p in display_bal_proposals
+            ]
+            bal_label_to_key = {label: display_bal_proposals[i]["proposal_key"] for i, label in enumerate(bal_labels)}
+            bal_default = [bal_labels[i] for i, p in enumerate(display_bal_proposals) if p["confidence"] >= 70]
 
-        bal_act1, bal_act2 = st.columns([1, 1])
-        with bal_act1:
-            if st.button("✅ Pas geselecteerde balansvoorstellen toe", key="apply_auto_map_balance", type="primary"):
-                selected_props = [p for p in bal_proposals if p["proposal_key"] in selected_bal_keys]
-                applied, skipped = apply_auto_mapping_proposals(
-                    mapping=mapping,
-                    proposals=selected_props,
-                    category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
-                )
-                st.session_state.balance_mapping = mapping
-                st.session_state.balance_auto_proposals = []
-                st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
-                st.rerun()
-        with bal_act2:
-            if st.button("🗑️ Verberg balansvoorstel", key="clear_auto_map_balance"):
-                st.session_state.balance_auto_proposals = []
-                st.rerun()
+            selected_bal_labels = st.multiselect(
+                "Selecteer balansvoorstellen om toe te passen",
+                options=bal_labels,
+                default=bal_default,
+                key="balance_auto_selected",
+            )
+            selected_bal_keys = {bal_label_to_key[label] for label in selected_bal_labels}
+
+            bal_act1, bal_act2 = st.columns([1, 1])
+            with bal_act1:
+                if st.button("✅ Pas geselecteerde balansvoorstellen toe", key="apply_auto_map_balance", type="primary"):
+                    selected_props = [p for p in display_bal_proposals if p["proposal_key"] in selected_bal_keys]
+                    applied, skipped = apply_auto_mapping_proposals(
+                        mapping=mapping,
+                        proposals=selected_props,
+                        category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+                    )
+                    st.session_state.balance_mapping = mapping
+                    st.session_state.balance_auto_proposals = []
+                    st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                    st.rerun()
+            with bal_act2:
+                if st.button("🗑️ Verberg balansvoorstel", key="clear_auto_map_balance"):
+                    st.session_state.balance_auto_proposals = []
+                    st.rerun()
     st.markdown("---")
 
     col_add, col_prefix = st.columns(2)
@@ -5041,6 +5253,40 @@ def render_variance_analysis_tab(selected_year, report_company_id=None, exclude_
         use_container_width=True,
         hide_index=True
     )
+
+    st.markdown("---")
+    st.markdown("#### Export variatierapport")
+    scope_label = "Geconsolideerd" if report_company_id is None else COMPANIES.get(report_company_id, str(report_company_id))
+    export_month_df = df_month.drop(columns=["_subtotal"]).copy()
+    metadata = {
+        "year": selected_year,
+        "month_label": selected_month_label,
+        "scope": scope_label,
+        "exclude_intercompany": "ja" if exclude_intercompany else "nee",
+    }
+    excel_bytes = build_variance_export_excel_bytes(export_month_df, df_matrix, metadata)
+
+    ex_col1, ex_col2 = st.columns(2)
+    with ex_col1:
+        st.download_button(
+            "📊 Download variatie (Excel)",
+            data=excel_bytes,
+            file_name=f"variantie_{selected_year}_{selected_month:02d}_{scope_label.replace(' ', '_').lower()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="variance_export_excel"
+        )
+    with ex_col2:
+        try:
+            pdf_bytes = build_variance_export_pdf_bytes(export_month_df, metadata)
+            st.download_button(
+                "🧾 Download variatie (PDF)",
+                data=pdf_bytes,
+                file_name=f"variantie_{selected_year}_{selected_month:02d}_{scope_label.replace(' ', '_').lower()}.pdf",
+                mime="application/pdf",
+                key="variance_export_pdf"
+            )
+        except Exception as e:
+            st.caption(f"PDF export momenteel niet beschikbaar: {e}")
 
     st.markdown("---")
     category_choice = st.selectbox(
@@ -6739,6 +6985,41 @@ def main():
                 help="Sluit transacties met intercompany partners uit in de actuals."
             )
 
+        # Workflow lock: eerst mapping afronden, dan budget vrijgeven
+        with st.spinner("Workflowstatus bepalen..."):
+            mapping_status = get_pnl_mapping_completion_status(report_company_id, selected_year)
+        budget_released = is_budget_released_for_year(selected_year)
+
+        wf_col1, wf_col2, wf_col3, wf_col4 = st.columns([1, 1, 1, 2])
+        wf_col1.metric("Gemapte regels", f"{mapping_status['mapped_count']}/{mapping_status['total_leaf_count']}")
+        wf_col2.metric("Dekking", f"{mapping_status['coverage_pct']:.0f}%")
+        wf_col3.metric("Nog ongemapt", mapping_status["unmapped_count"])
+
+        with wf_col4:
+            if budget_released:
+                st.success(f"✅ Budgetimport vrijgegeven voor {selected_year}")
+                if st.button("🔒 Vergrendel budgetimport opnieuw", key="lock_budget_workflow"):
+                    ok, msg = set_budget_release_for_year(selected_year, False)
+                    if ok:
+                        st.success("Budgetimport opnieuw vergrendeld.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            else:
+                st.warning(f"🔒 Budgetimport vergrendeld voor {selected_year}")
+                gate_ok = mapping_status["gate_ready"]
+                help_text = None if gate_ok else "Minimaal 60% van de rapportregels moet gemapt zijn."
+                if st.button("🔓 Geef budgetimport vrij", key="unlock_budget_workflow", disabled=not gate_ok, help=help_text):
+                    ok, msg = set_budget_release_for_year(selected_year, True)
+                    if ok:
+                        st.success("Budgetimport vrijgegeven.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+        st.caption("Workflow: 1) mapping afronden 2) budgetimport vrijgeven 3) variantie analyseren.")
+        st.markdown("---")
+
         tab_map, tab_budget, tab_variance, tab_balance_map, tab_balance_report = st.tabs([
             "🧭 Rekeningmapping W&V",
             "📥 Budget import",
@@ -6752,9 +7033,14 @@ def main():
             render_draggable_mapping_tool(report_company_id, selected_year)
 
         with tab_budget:
-            render_budget_import_tab(selected_year)
+            if not budget_released:
+                st.warning("Budgetimport is vergrendeld. Rond eerst mapping af en geef import vrij via de workflow-balk bovenaan.")
+            else:
+                render_budget_import_tab(selected_year)
 
         with tab_variance:
+            if not budget_released:
+                st.info("Variantie kan al bekeken worden, maar budgetimport is nog vergrendeld.")
             render_variance_analysis_tab(
                 selected_year=selected_year,
                 report_company_id=report_company_id,
