@@ -1,6 +1,19 @@
 """
-LAB Groep Financial Dashboard v18
+LAB Groep Financial Dashboard v20
 =================================
+Wijzigingen t.o.v. v19:
+- 🔐 Workflow en export uitgebreid
+  * Budgetimport-lock: eerst mapping afronden, daarna vrijgeven per jaar
+  * Auto-map preview met confidence-kleurcodering en low-confidence filters
+  * Variatierapport export naar Excel en PDF
+
+Wijzigingen t.o.v. v18:
+- 🧮 Nieuwe rapportagepagina toegevoegd
+  * Rekeningmapping op geaggregeerd W&V niveau (incl. bulk)
+  * Budget importtemplate + upload op rapportregelniveau per bedrijf
+  * Maandelijkse actual vs budget variantieanalyse op hetzelfde niveau
+  * Aparte balansmapping en balansrapport in Activa/Passiva structuur
+
 Wijzigingen t.o.v. v17:
 - 🧹 Navigatie opgeschoond
   * Cashflow prognose feature verwijderd
@@ -95,7 +108,7 @@ import subprocess
 import sys
 
 def install_packages():
-    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'openpyxl']
+    packages = ['plotly', 'pandas', 'requests', 'folium', 'streamlit-folium', 'openpyxl', 'reportlab']
     for package in packages:
         try:
             __import__(package.replace('-', '_'))
@@ -113,6 +126,7 @@ import json
 from datetime import datetime, timedelta
 from functools import lru_cache
 import base64
+import re
 
 # =============================================================================
 # CONFIGURATIE
@@ -2169,6 +2183,222 @@ REPORT_CATEGORIES = {
 # Mapping storage file path
 MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "account_mapping.json")
 
+# Budget and balance mapping storage paths
+BUDGET_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_data.json")
+BALANCE_MAPPING_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "balance_mapping.json")
+BUDGET_WORKFLOW_STORAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_workflow.json")
+
+# ---------------------------------------------------------------------------
+# P&L structuur uitbreiding op geaggregeerd rapportageniveau
+# ---------------------------------------------------------------------------
+REPORT_CATEGORIES.update({
+    "advies": {
+        "name": "Advies",
+        "section": "revenue",
+        "order": 6,
+        "sign_flip": True,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "sociale_lasten": {
+        "name": "Sociale lasten",
+        "section": "operating_expenses",
+        "order": 10.5,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "pensioenlasten": {
+        "name": "Pensioenlasten",
+        "section": "operating_expenses",
+        "order": 10.6,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "merkrechten_donaties": {
+        "name": "Merkrechten & Donaties",
+        "section": "operating_expenses",
+        "order": 14.5,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "kasverschil": {
+        "name": "Kasverschil",
+        "section": "operating_expenses",
+        "order": 19.5,
+        "sign_flip": False,
+        "account_patterns": [],
+        "is_subtotal": False
+    },
+    "netto_omzet_resultaat": {
+        "name": "Netto-omzetresultaat",
+        "section": "result",
+        "order": 21,
+        "is_subtotal": True,
+        "calculation": "bruto_omzet_resultaat - totaal_operationele_kosten"
+    }
+})
+
+# Harmoniseer benamingen met gewenste rapportstructuur
+REPORT_CATEGORIES["overige_personele_kosten"]["name"] = "Overige personeelskosten"
+REPORT_CATEGORIES["management_fee"]["name"] = "Managementvergoeding"
+REPORT_CATEGORIES["bruto_omzet_resultaat"]["name"] = "Bruto-omzetresultaat"
+REPORT_CATEGORIES["totaal_operationele_kosten"]["name"] = "Totaal Kosten"
+
+# Werk subtotalen bij met nieuwe categorieën
+REPORT_CATEGORIES["bruto_omzet_resultaat"]["calculation"] = (
+    "netto_omzet - kostprijs_omzet - prijsverschillen - overige_inkoopkosten - voorraadaanpassingen + advies"
+)
+REPORT_CATEGORIES["totaal_operationele_kosten"]["calculation"] = (
+    "lonen_salarissen + sociale_lasten + pensioenlasten + overige_personele_kosten + "
+    "huisvestingskosten + verkoopkosten + merkrechten_donaties + automatiseringskosten + "
+    "vervoerskosten + kantoorkosten + admin_accountantskosten + algemene_kosten + "
+    "management_fee + kasverschil"
+)
+REPORT_CATEGORIES["resultaat_voor_belasting"]["calculation"] = "netto_omzet_resultaat - totaal_overige_lasten"
+
+# Structuur voor mapping UI op geaggregeerd niveau
+PNL_MAPPING_STRUCTURE = [
+    {"key": "netto_omzet", "name": "Netto-omzet", "level": 0, "expandable": True},
+    {"key": "kostprijs_omzet", "name": "Kostprijs van de omzet", "level": 0, "expandable": True},
+    {"key": "prijsverschillen", "name": "Prijsverschillen", "level": 0, "expandable": True},
+    {"key": "overige_inkoopkosten", "name": "Overige inkoopkosten", "level": 0, "expandable": True},
+    {"key": "voorraadaanpassingen", "name": "Voorraadaanpassingen", "level": 0, "expandable": True},
+    {"key": "advies", "name": "Advies", "level": 0, "expandable": True},
+    {"key": None, "name": "Bruto Marge %", "level": 1, "is_subtotal": True},
+    {"key": None, "name": "Bruto Marge inkoop %", "level": 1, "is_subtotal": True},
+    {"key": None, "name": "Totaal Bruto-omzetresultaat", "level": 0, "is_subtotal": True},
+    {"key": None, "name": "Kosten", "level": 0, "is_header": True},
+    {"key": "lonen_salarissen", "name": "Lonen en salarissen", "level": 1, "expandable": True},
+    {"key": "sociale_lasten", "name": "Sociale lasten", "level": 1, "expandable": True},
+    {"key": "pensioenlasten", "name": "Pensioenlasten", "level": 1, "expandable": True},
+    {"key": "overige_personele_kosten", "name": "Overige personeelskosten", "level": 1, "expandable": True},
+    {"key": "huisvestingskosten", "name": "Huisvestingskosten", "level": 1, "expandable": True},
+    {"key": "verkoopkosten", "name": "Verkoopkosten", "level": 1, "expandable": True},
+    {"key": "merkrechten_donaties", "name": "Merkrechten & Donaties", "level": 1, "expandable": True},
+    {"key": "automatiseringskosten", "name": "Automatiseringskosten", "level": 1, "expandable": True},
+    {"key": "vervoerskosten", "name": "Vervoerskosten", "level": 1, "expandable": True},
+    {"key": "kantoorkosten", "name": "Kantoorkosten", "level": 1, "expandable": True},
+    {"key": "admin_accountantskosten", "name": "Administratie & Accountantskosten", "level": 1, "expandable": True},
+    {"key": "algemene_kosten", "name": "Algemene kosten", "level": 1, "expandable": True},
+    {"key": "management_fee", "name": "Managementvergoeding", "level": 1, "expandable": True},
+    {"key": "kasverschil", "name": "Kasverschil", "level": 1, "expandable": True},
+    {"key": None, "name": "Totaal Kosten", "level": 0, "is_subtotal": True},
+    {"key": None, "name": "Netto-omzetresultaat", "level": 0, "is_subtotal": True},
+    {"key": "financieel_resultaat", "name": "Financieel resultaat", "level": 0, "expandable": True},
+    {"key": "afschrijvingen", "name": "Afschrijvingen", "level": 0, "expandable": True},
+    {"key": "belastingen", "name": "Belastingen", "level": 0, "expandable": True},
+]
+
+# Balance leaf categories for Activa/Passiva structuur
+BALANCE_CATEGORY_DEFINITIONS = {
+    # ACTIVA
+    "goodwill": {"name": "Goodwill", "section": "activa", "group": "immateriele_vaste_activa", "order": 1, "sign_flip": False},
+    "concessies_vergunningen_ie": {"name": "Concessies, vergunningen en intellectuele eigendommen", "section": "activa", "group": "immateriele_vaste_activa", "order": 2, "sign_flip": False},
+    "kosten_van_ontwikkeling": {"name": "Kosten van ontwikkeling", "section": "activa", "group": "immateriele_vaste_activa", "order": 3, "sign_flip": False},
+    "gebouwen_verbouwing": {"name": "Gebouwen & Verbouwing", "section": "activa", "group": "materiele_vaste_activa", "order": 4, "sign_flip": False},
+    "machines_installaties": {"name": "Machines en Installaties", "section": "activa", "group": "materiele_vaste_activa", "order": 5, "sign_flip": False},
+    "inventaris": {"name": "Inventaris", "section": "activa", "group": "materiele_vaste_activa", "order": 6, "sign_flip": False},
+    "vervoermiddelen": {"name": "Vervoermiddelen", "section": "activa", "group": "materiele_vaste_activa", "order": 7, "sign_flip": False},
+    "financiele_vaste_activa": {"name": "Financiële Vaste Activa", "section": "activa", "group": "vaste_activa_overig", "order": 8, "sign_flip": False},
+    "gereed_product_handelsgoederen": {"name": "Gereed product en handelsgoederen", "section": "activa", "group": "voorraden", "order": 9, "sign_flip": False},
+    "vooruitbetaald_voorraden": {"name": "Vooruitbetaald op voorraden", "section": "activa", "group": "voorraden", "order": 10, "sign_flip": False},
+    "handelsdebiteuren": {"name": "Handelsdebiteuren", "section": "activa", "group": "vorderingen", "order": 11, "sign_flip": False},
+    "vorderingen_op_groepsmaatschappijen": {"name": "Vorderingen op groepsmaatschappijen", "section": "activa", "group": "vorderingen", "order": 12, "sign_flip": False},
+    "belasting_premies_sociale_zekerheid_activa": {"name": "Belasting en premies sociale zekerheid", "section": "activa", "group": "vorderingen", "order": 13, "sign_flip": False},
+    "overige_vorderingen": {"name": "Overige vorderingen", "section": "activa", "group": "vorderingen", "order": 14, "sign_flip": False},
+    "overlopende_activa": {"name": "Overlopende activa", "section": "activa", "group": "vorderingen", "order": 15, "sign_flip": False},
+    "liquide_middelen": {"name": "Liquide Middelen", "section": "activa", "group": "liquide_middelen", "order": 16, "sign_flip": False},
+    # PASSIVA
+    "gestort_opgevraagd_kapitaal": {"name": "Gestort en Opgevraagd Kapitaal", "section": "passiva", "group": "eigen_vermogen", "order": 101, "sign_flip": True},
+    "agio": {"name": "Agio", "section": "passiva", "group": "eigen_vermogen", "order": 102, "sign_flip": True},
+    "herwaarderingsreserve": {"name": "Herwaarderingsreserve", "section": "passiva", "group": "eigen_vermogen", "order": 103, "sign_flip": True},
+    "wettelijke_statutaire_reserves": {"name": "Wettelijke en statutaire reserves", "section": "passiva", "group": "eigen_vermogen", "order": 104, "sign_flip": True},
+    "overige_reserves": {"name": "Overige Reserves", "section": "passiva", "group": "eigen_vermogen", "order": 105, "sign_flip": True},
+    "onverdeelde_winst": {"name": "Onverdeelde Winst", "section": "passiva", "group": "eigen_vermogen", "order": 106, "sign_flip": True},
+    "voorzieningen": {"name": "Voorzieningen", "section": "passiva", "group": "schulden_voorzieningen", "order": 107, "sign_flip": True},
+    "schulden_aan_kredietinstellingen": {"name": "Schulden aan kredietinstellingen", "section": "passiva", "group": "langlopende_schulden", "order": 108, "sign_flip": True},
+    "schulden_aan_groepsmaatschappijen": {"name": "Schulden aan groepsmaatschappijen", "section": "passiva", "group": "kortlopende_schulden", "order": 109, "sign_flip": True},
+    "aflossingsverplichtingen": {"name": "Aflossingsverplichtingen", "section": "passiva", "group": "kortlopende_schulden", "order": 110, "sign_flip": True},
+    "crediteuren": {"name": "Crediteuren", "section": "passiva", "group": "kortlopende_schulden", "order": 111, "sign_flip": True},
+    "omzetbelasting": {"name": "Omzetbelasting", "section": "passiva", "group": "belasting_premies_passiva", "order": 112, "sign_flip": True},
+    "premies_pensioen": {"name": "Premies Pensioen", "section": "passiva", "group": "belasting_premies_passiva", "order": 113, "sign_flip": True},
+    "loonheffing": {"name": "Loonheffing", "section": "passiva", "group": "belasting_premies_passiva", "order": 114, "sign_flip": True},
+    "vennootschapsbelasting": {"name": "Vennootschapsbelasting", "section": "passiva", "group": "belasting_premies_passiva", "order": 115, "sign_flip": True},
+    "overige_schulden": {"name": "Overige schulden", "section": "passiva", "group": "kortlopende_schulden", "order": 116, "sign_flip": True},
+    "overlopende_passiva": {"name": "Overlopende passiva", "section": "passiva", "group": "kortlopende_schulden", "order": 117, "sign_flip": True},
+}
+
+MONTH_LABELS_NL = {
+    1: "Jan", 2: "Feb", 3: "Mrt", 4: "Apr", 5: "Mei", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt", 11: "Nov", 12: "Dec"
+}
+
+# Rule-based auto-mapping (prefix + optional naam-woorden)
+PNL_AUTO_MAPPING_RULES = [
+    {"category": "netto_omzet", "prefixes": ["80", "81", "82", "83", "84", "85"], "keywords": []},
+    {"category": "kostprijs_omzet", "prefixes": ["70", "71", "72", "73", "74", "75"], "keywords": []},
+    {"category": "prijsverschillen", "prefixes": [], "keywords": ["prijsverschil"]},
+    {"category": "overige_inkoopkosten", "prefixes": [], "keywords": ["inkoop", "grondstof", "handelsgoederen"]},
+    {"category": "voorraadaanpassingen", "prefixes": [], "keywords": ["voorraad", "voorraadaanpassing"]},
+    {"category": "advies", "prefixes": [], "keywords": ["advies"]},
+    {"category": "lonen_salarissen", "prefixes": ["620", "621"], "keywords": ["loon", "salaris", "brutoloon"]},
+    {"category": "sociale_lasten", "prefixes": ["622"], "keywords": ["sociale lasten", "sociale zekerheid", "svw", "zvw"]},
+    {"category": "pensioenlasten", "prefixes": ["623"], "keywords": ["pensioen"]},
+    {"category": "overige_personele_kosten", "prefixes": ["624"], "keywords": ["personeel", "wkr", "reiskosten"]},
+    {"category": "huisvestingskosten", "prefixes": ["41"], "keywords": ["huur", "huisvesting", "energie"]},
+    {"category": "verkoopkosten", "prefixes": ["44"], "keywords": ["verkoop", "marketing", "reclame"]},
+    {"category": "merkrechten_donaties", "prefixes": [], "keywords": ["merkrecht", "donatie"]},
+    {"category": "automatiseringskosten", "prefixes": [], "keywords": ["ict", "automatisering", "software", "licentie", "it "]},
+    {"category": "vervoerskosten", "prefixes": ["42"], "keywords": ["vervoer", "transport", "auto"]},
+    {"category": "kantoorkosten", "prefixes": ["43"], "keywords": ["kantoor", "print", "telefoon"]},
+    {"category": "admin_accountantskosten", "prefixes": [], "keywords": ["accountant", "administratie", "juridisch"]},
+    {"category": "algemene_kosten", "prefixes": ["45", "46"], "keywords": ["algemene kosten", "overige bedrijfskosten"]},
+    {"category": "management_fee", "prefixes": [], "keywords": ["management fee", "managementvergoeding"]},
+    {"category": "kasverschil", "prefixes": [], "keywords": ["kasverschil"]},
+    {"category": "financieel_resultaat", "prefixes": ["47", "65"], "keywords": ["rente", "financieel"]},
+    {"category": "afschrijvingen", "prefixes": ["48", "63"], "keywords": ["afschrijving"]},
+    {"category": "belastingen", "prefixes": ["49", "67"], "keywords": ["belasting", "vennootschapsbelasting"]},
+]
+
+BALANCE_AUTO_MAPPING_RULES = [
+    {"category": "goodwill", "prefixes": [], "keywords": ["goodwill"]},
+    {"category": "concessies_vergunningen_ie", "prefixes": [], "keywords": ["concess", "vergunning", "intellect"]},
+    {"category": "kosten_van_ontwikkeling", "prefixes": [], "keywords": ["ontwikkeling"]},
+    {"category": "gebouwen_verbouwing", "prefixes": [], "keywords": ["gebouw", "verbouwing"]},
+    {"category": "machines_installaties", "prefixes": [], "keywords": ["machine", "installatie"]},
+    {"category": "inventaris", "prefixes": [], "keywords": ["inventaris"]},
+    {"category": "vervoermiddelen", "prefixes": [], "keywords": ["vervoermiddel", "auto"]},
+    {"category": "financiele_vaste_activa", "prefixes": [], "keywords": ["financiele vaste activa", "deelneming"]},
+    {"category": "gereed_product_handelsgoederen", "prefixes": [], "keywords": ["gereed product", "handelsgoederen", "voorraad"]},
+    {"category": "vooruitbetaald_voorraden", "prefixes": [], "keywords": ["vooruitbetaald"]},
+    {"category": "handelsdebiteuren", "prefixes": [], "keywords": ["debiteur"]},
+    {"category": "vorderingen_op_groepsmaatschappijen", "prefixes": [], "keywords": ["vordering", "groepsmaatschappij"]},
+    {"category": "belasting_premies_sociale_zekerheid_activa", "prefixes": [], "keywords": ["belasting", "premies sociale zekerheid"]},
+    {"category": "overige_vorderingen", "prefixes": [], "keywords": ["overige vorderingen"]},
+    {"category": "overlopende_activa", "prefixes": [], "keywords": ["overlopende activa"]},
+    {"category": "liquide_middelen", "prefixes": ["10", "11"], "keywords": ["bank", "kas", "liquide"]},
+    {"category": "gestort_opgevraagd_kapitaal", "prefixes": [], "keywords": ["kapitaal"]},
+    {"category": "agio", "prefixes": [], "keywords": ["agio"]},
+    {"category": "herwaarderingsreserve", "prefixes": [], "keywords": ["herwaarderingsreserve"]},
+    {"category": "wettelijke_statutaire_reserves", "prefixes": [], "keywords": ["wettelijke", "statutaire reserves"]},
+    {"category": "overige_reserves", "prefixes": [], "keywords": ["overige reserves"]},
+    {"category": "onverdeelde_winst", "prefixes": [], "keywords": ["onverdeelde winst", "resultaat"]},
+    {"category": "voorzieningen", "prefixes": [], "keywords": ["voorziening"]},
+    {"category": "schulden_aan_kredietinstellingen", "prefixes": [], "keywords": ["kredietinstelling", "lening"]},
+    {"category": "schulden_aan_groepsmaatschappijen", "prefixes": [], "keywords": ["schuld", "groepsmaatschappij", "r/c"]},
+    {"category": "aflossingsverplichtingen", "prefixes": [], "keywords": ["aflossing"]},
+    {"category": "crediteuren", "prefixes": [], "keywords": ["crediteur"]},
+    {"category": "omzetbelasting", "prefixes": [], "keywords": ["omzetbelasting", "btw"]},
+    {"category": "premies_pensioen", "prefixes": [], "keywords": ["premies pensioen"]},
+    {"category": "loonheffing", "prefixes": [], "keywords": ["loonheffing"]},
+    {"category": "vennootschapsbelasting", "prefixes": [], "keywords": ["vennootschapsbelasting"]},
+    {"category": "overige_schulden", "prefixes": [], "keywords": ["overige schulden"]},
+    {"category": "overlopende_passiva", "prefixes": [], "keywords": ["overlopende passiva"]},
+]
+
 # New forecast expense categories based on REPORT_CATEGORIES
 # These match the draggable mapping tool structure
 FORECAST_EXPENSE_CATEGORIES = {
@@ -3119,6 +3349,92 @@ def render_draggable_mapping_tool(company_id, year):
                 st.rerun()
         return
 
+    if "pnl_auto_proposals" not in st.session_state:
+        st.session_state.pnl_auto_proposals = []
+
+    auto_col1, auto_col2 = st.columns([1.4, 2.6])
+    with auto_col1:
+        if st.button("🔍 Auto-map preview", key="preview_auto_map_pnl"):
+            st.session_state.pnl_auto_proposals = build_auto_mapping_proposals(
+                mapping=mapping,
+                accounts=available_accounts,
+                rules=PNL_AUTO_MAPPING_RULES,
+                category_keys=get_leaf_report_category_keys(),
+                target_name_lookup={k: v.get("name", k) for k, v in REPORT_CATEGORIES.items()},
+            )
+            st.session_state.pnl_auto_selected = []
+    with auto_col2:
+        st.caption("Toont voorstel + confidence score. Pas pas toe na controle.")
+
+    proposals = st.session_state.get("pnl_auto_proposals", [])
+    if proposals:
+        st.markdown("**Auto-map voorstel (W&V)**")
+        st.caption(f"{len(proposals)} niet-gemapte rekening(en) met voorstel")
+
+        filt_col1, filt_col2 = st.columns([1, 1])
+        with filt_col1:
+            min_conf_pnl = st.slider("Min confidence", 0, 100, 0, key="pnl_conf_threshold")
+        with filt_col2:
+            show_low_only_pnl = st.checkbox("Toon alleen lage confidence (<65)", key="pnl_low_only")
+
+        display_proposals = [
+            p for p in proposals
+            if p["confidence"] >= min_conf_pnl and (not show_low_only_pnl or p["confidence"] < 65)
+        ]
+        if not display_proposals:
+            st.info("Geen voorstellen binnen de gekozen confidence-filter.")
+        else:
+            df_prop = pd.DataFrame([
+                {
+                    "Rekening": p["account_code"],
+                    "Naam": p["account_name"],
+                    "Doelcategorie": p["target_name"],
+                    "Confidence": p["confidence"],
+                    "Band": get_confidence_band(p["confidence"])[0],
+                    "Uitleg": p["reason"],
+                }
+                for p in display_proposals
+            ])
+            st.dataframe(
+                df_prop.style.applymap(style_confidence_cell, subset=["Confidence"]),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            proposal_labels = [
+                f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:40]} → {p['target_name']}"
+                for p in display_proposals
+            ]
+            label_to_key = {label: display_proposals[i]["proposal_key"] for i, label in enumerate(proposal_labels)}
+            default_labels = [proposal_labels[i] for i, p in enumerate(display_proposals) if p["confidence"] >= 70]
+
+            selected_labels = st.multiselect(
+                "Selecteer voorstellen om toe te passen",
+                options=proposal_labels,
+                default=default_labels,
+                key="pnl_auto_selected"
+            )
+            selected_keys = {label_to_key[label] for label in selected_labels}
+
+            act_col1, act_col2 = st.columns([1, 1])
+            with act_col1:
+                if st.button("✅ Pas geselecteerde voorstellen toe", key="apply_auto_map_pnl", type="primary"):
+                    selected_props = [p for p in display_proposals if p["proposal_key"] in selected_keys]
+                    applied, skipped = apply_auto_mapping_proposals(
+                        mapping=mapping,
+                        proposals=selected_props,
+                        category_keys=get_leaf_report_category_keys(),
+                    )
+                    st.session_state.draggable_mapping = mapping
+                    st.session_state.pnl_auto_proposals = []
+                    st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                    st.rerun()
+            with act_col2:
+                if st.button("🗑️ Verberg voorstel", key="clear_auto_map_pnl"):
+                    st.session_state.pnl_auto_proposals = []
+                    st.rerun()
+    st.markdown("---")
+
     # Get list of already assigned account codes (including pending changes in edit mode)
     assigned_codes = set()
     for cat_key, cat_accounts in mapping.get("categories", {}).items():
@@ -3160,37 +3476,7 @@ def render_draggable_mapping_tool(company_id, year):
         search_cat = st.text_input("🔍 Zoek categorie...", key="search_category", placeholder="Zoek op naam...")
 
         # Define the hierarchical report structure
-        report_structure = [
-            {"key": "netto_omzet", "name": "Revenue (Netto Omzet)", "level": 0, "expandable": True},
-            {"key": "kostprijs_omzet", "name": "Cost of Goods Sold", "level": 0, "expandable": True},
-            {"key": None, "name": "Other Operating Income", "level": 1, "is_header": True},
-            {"key": "overige_inkoopkosten", "name": "Overige Inkoopkosten", "level": 1, "expandable": True},
-            {"key": "prijsverschillen", "name": "Prijsverschillen", "level": 1, "expandable": True},
-            {"key": "voorraadaanpassingen", "name": "Voorraadaanpassingen", "level": 1, "expandable": True},
-            {"key": None, "name": "Personnel", "level": 1, "is_header": True},
-            {"key": "lonen_salarissen", "name": "Lonen & Salarissen", "level": 1, "expandable": True},
-            {"key": "overige_personele_kosten", "name": "Overige Personele Kosten", "level": 1, "expandable": True},
-            {"key": "management_fee", "name": "Management Fee", "level": 1, "expandable": True},
-            {"key": None, "name": "Housing", "level": 1, "is_header": True},
-            {"key": "huisvestingskosten", "name": "Huisvestingskosten", "level": 1, "expandable": True},
-            {"key": None, "name": "Office", "level": 1, "is_header": True},
-            {"key": "kantoorkosten", "name": "Kantoorkosten", "level": 1, "expandable": True},
-            {"key": None, "name": "Car / Transport", "level": 1, "is_header": True},
-            {"key": "vervoerskosten", "name": "Vervoerskosten", "level": 1, "expandable": True},
-            {"key": None, "name": "Development / Marketing", "level": 1, "is_header": True},
-            {"key": "verkoopkosten", "name": "Verkoopkosten", "level": 1, "expandable": True},
-            {"key": None, "name": "Automation", "level": 1, "is_header": True},
-            {"key": "automatiseringskosten", "name": "Automatiseringskosten", "level": 1, "expandable": True},
-            {"key": None, "name": "General", "level": 1, "is_header": True},
-            {"key": "algemene_kosten", "name": "Algemene Kosten", "level": 1, "expandable": True},
-            {"key": "admin_accountantskosten", "name": "Administratie & Accountantskosten", "level": 1, "expandable": True},
-            {"key": None, "name": "General Expenses", "level": 1, "is_subtotal": True},
-            {"key": None, "name": "EBITDA", "level": 1, "is_subtotal": True},
-            {"key": "financieel_resultaat", "name": "Financial Result", "level": 0, "expandable": True},
-            {"key": "afschrijvingen", "name": "Depreciations", "level": 0, "expandable": True},
-            {"key": "belastingen", "name": "Taxes", "level": 0, "expandable": True},
-            {"key": None, "name": "Net Result", "level": 1, "is_subtotal": True},
-        ]
+        report_structure = PNL_MAPPING_STRUCTURE
 
         # Render each row in the report structure
         for item in report_structure:
@@ -3565,23 +3851,1464 @@ def calculate_report_with_mapping(company_id, year, mapping=None):
             continue
 
         # Parse and evaluate the calculation
-        try:
-            # Replace category names with their values
-            expr = calculation
-            for key in results.keys():
-                expr = expr.replace(key, str(results.get(key, 0)))
-
-            # Safely evaluate the expression
-            # Only allow basic math operations
-            allowed_chars = set("0123456789.+-*/()")
-            clean_expr = "".join(c for c in expr if c in allowed_chars or c == " ")
-            results[cat_key] = eval(clean_expr)
-        except Exception as e:
-            print(f"Error calculating subtotal {cat_key}: {e}")
-            results[cat_key] = 0
+        results[cat_key] = _evaluate_calculation(calculation, results)
 
     return results
 
+
+def get_leaf_report_category_keys():
+    """Return report categories that require direct account mapping (non-subtotals)."""
+    return [k for k, v in REPORT_CATEGORIES.items() if not v.get("is_subtotal", False)]
+
+
+def get_sorted_report_categories(include_subtotals=True):
+    """Return ordered list of category keys based on configured order."""
+    keys = []
+    for key, info in sorted(REPORT_CATEGORIES.items(), key=lambda item: item[1].get("order", 999)):
+        if include_subtotals or not info.get("is_subtotal", False):
+            keys.append(key)
+    return keys
+
+
+def _evaluate_calculation(calculation, values_by_key):
+    """
+    Safely evaluate subtotal expressions against a dict with category values.
+    """
+    expr = calculation
+    for key, value in values_by_key.items():
+        expr = re.sub(rf"\b{re.escape(key)}\b", str(value), expr)
+
+    allowed_chars = set("0123456789.+-*/() ")
+    clean_expr = "".join(ch for ch in expr if ch in allowed_chars)
+    try:
+        return float(eval(clean_expr))
+    except Exception:
+        return 0.0
+
+
+def _month_to_int(raw_month):
+    """Parse month from int/string/date-like labels (supports EN/NL labels)."""
+    if raw_month is None:
+        return None
+
+    if isinstance(raw_month, int):
+        return raw_month if 1 <= raw_month <= 12 else None
+
+    s = str(raw_month).strip()
+    if not s:
+        return None
+
+    if s.isdigit():
+        m = int(s)
+        return m if 1 <= m <= 12 else None
+
+    # ISO-like values e.g. 2026-03
+    if re.match(r"^\d{4}-\d{2}", s):
+        try:
+            m = int(s[5:7])
+            return m if 1 <= m <= 12 else None
+        except Exception:
+            pass
+
+    name_map = {
+        "january": 1, "januari": 1,
+        "february": 2, "februari": 2,
+        "march": 3, "maart": 3,
+        "april": 4,
+        "may": 5, "mei": 5,
+        "june": 6, "juni": 6,
+        "july": 7, "juli": 7,
+        "august": 8, "augustus": 8,
+        "september": 9,
+        "october": 10, "oktober": 10,
+        "november": 11,
+        "december": 12,
+    }
+
+    parts = re.split(r"[\s\-/_,]+", s.lower())
+    for part in parts:
+        if part in name_map:
+            return name_map[part]
+
+    return None
+
+
+def _parse_amount(raw_value):
+    """Parse numeric amounts from NL/EN formatted strings."""
+    if raw_value is None or (isinstance(raw_value, float) and pd.isna(raw_value)):
+        return None
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+
+    s = str(raw_value).strip().replace("€", "").replace(" ", "")
+    if not s:
+        return None
+
+    if "," in s and "." in s:
+        # decide decimal separator by last occurrence
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _ensure_mapping_shape(mapping):
+    """Ensure loaded mapping contains all expected report category containers."""
+    if "categories" not in mapping or not isinstance(mapping["categories"], dict):
+        mapping["categories"] = {}
+    for cat_key in get_leaf_report_category_keys():
+        mapping["categories"].setdefault(cat_key, [])
+    return mapping
+
+
+def get_confidence_band(score):
+    """Return label + color bucket for confidence score."""
+    if score >= 85:
+        return "Hoog", "green"
+    if score >= 65:
+        return "Middel", "orange"
+    return "Laag", "red"
+
+
+def style_confidence_cell(score):
+    """Styler helper for confidence coloring."""
+    try:
+        val = float(score)
+    except Exception:
+        return ""
+    if val >= 85:
+        return "background-color: #d4edda; color: #155724; font-weight: 600;"
+    if val >= 65:
+        return "background-color: #fff3cd; color: #856404; font-weight: 600;"
+    return "background-color: #f8d7da; color: #721c24; font-weight: 600;"
+
+
+def _rule_match_details(account_code, account_name, rule):
+    """Return confidence + explanation for a rule match."""
+    code = str(account_code or "").strip()
+    name_lower = str(account_name or "").lower()
+    prefixes = rule.get("prefixes", [])
+    keywords = [k.lower() for k in rule.get("keywords", [])]
+
+    prefix_hits = [p for p in prefixes if code.startswith(p)]
+    keyword_hits = [k for k in keywords if k in name_lower]
+
+    # Rule does not match at all
+    if not prefix_hits and not keyword_hits:
+        return {"matched": False, "confidence": 0, "reason": "", "prefix_hits": [], "keyword_hits": []}
+
+    confidence = 0
+    if prefix_hits:
+        confidence += min(72, 48 + 8 * (len(prefix_hits) - 1))
+    if keyword_hits:
+        confidence += min(62, 38 + 10 * (len(keyword_hits) - 1))
+    if prefix_hits and keyword_hits:
+        confidence += 14
+    confidence = min(99, max(30, confidence))
+
+    reason_parts = []
+    if prefix_hits:
+        reason_parts.append(f"prefix: {', '.join(prefix_hits)}")
+    if keyword_hits:
+        reason_parts.append(f"naam: {', '.join(keyword_hits[:3])}")
+
+    return {
+        "matched": True,
+        "confidence": confidence,
+        "reason": " | ".join(reason_parts),
+        "prefix_hits": prefix_hits,
+        "keyword_hits": keyword_hits,
+    }
+
+
+def build_auto_mapping_proposals(mapping, accounts, rules, category_keys, target_name_lookup=None):
+    """
+    Build auto-mapping proposals with confidence scores (preview mode).
+    - Keeps 1-op-1 by considering only currently unassigned accounts
+    - Chooses best scoring rule per account
+    """
+    mapping.setdefault("categories", {})
+    for key in category_keys:
+        mapping["categories"].setdefault(key, [])
+
+    assigned_codes = set()
+    for key in category_keys:
+        for code in mapping["categories"].get(key, []):
+            assigned_codes.add(code)
+
+    proposals = []
+    for acc in sorted(accounts, key=lambda a: a.get("code", "")):
+        code = acc.get("code", "")
+        name = acc.get("name", "")
+        if code in assigned_codes:
+            continue
+
+        candidates = []
+        for rule in rules:
+            target = rule.get("category")
+            if target not in category_keys:
+                continue
+
+            details = _rule_match_details(code, name, rule)
+            if not details["matched"]:
+                continue
+            candidates.append({
+                "target": target,
+                "confidence": details["confidence"],
+                "reason": details["reason"],
+            })
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        best = candidates[0]
+        alternatives = [c for c in candidates[1:] if c["confidence"] >= best["confidence"] - 5 and c["target"] != best["target"]]
+
+        ambiguity_penalty = 12 if alternatives else 0
+        final_confidence = max(20, best["confidence"] - ambiguity_penalty)
+        alt_targets = [a["target"] for a in alternatives[:3]]
+        if target_name_lookup:
+            alt_label = ", ".join([target_name_lookup.get(t, t) for t in alt_targets]) if alt_targets else ""
+        else:
+            alt_label = ", ".join([REPORT_CATEGORIES.get(t, {}).get("name", t) for t in alt_targets]) if alt_targets else ""
+        reason = best["reason"]
+        if alt_label:
+            reason = f"{reason} | alternatief: {alt_label}"
+
+        proposals.append({
+            "proposal_key": f"{code}|{best['target']}",
+            "account_code": code,
+            "account_name": name,
+            "target_category": best["target"],
+            "target_name": (
+                target_name_lookup.get(best["target"], best["target"])
+                if target_name_lookup
+                else REPORT_CATEGORIES.get(best["target"], {}).get("name", best["target"])
+            ),
+            "confidence": final_confidence,
+            "reason": reason,
+        })
+
+    proposals.sort(key=lambda p: (-p["confidence"], p["account_code"]))
+    return proposals
+
+
+def apply_auto_mapping_proposals(mapping, proposals, category_keys):
+    """
+    Apply selected proposals to mapping (1-op-1 safe).
+    Returns tuple: (applied_count, skipped_count)
+    """
+    mapping.setdefault("categories", {})
+    for key in category_keys:
+        mapping["categories"].setdefault(key, [])
+
+    assigned_codes = set()
+    for key in category_keys:
+        assigned_codes.update(mapping["categories"].get(key, []))
+
+    applied = 0
+    skipped = 0
+    for prop in proposals:
+        code = prop.get("account_code")
+        target = prop.get("target_category")
+        if not code or target not in category_keys:
+            skipped += 1
+            continue
+        if code in assigned_codes:
+            skipped += 1
+            continue
+        mapping["categories"][target].append(code)
+        assigned_codes.add(code)
+        applied += 1
+
+    return applied, skipped
+
+
+def load_budget_entries():
+    """Load persisted budget entries."""
+    try:
+        if os.path.exists(BUDGET_STORAGE_FILE):
+            with open(BUDGET_STORAGE_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload.get("entries", [])
+            if isinstance(payload, list):
+                return payload
+    except Exception as e:
+        print(f"Error loading budget entries: {e}")
+    return []
+
+
+def save_budget_entries(entries):
+    """Persist budget entries to disk."""
+    try:
+        payload = {
+            "last_modified": datetime.now().isoformat(),
+            "entries": entries,
+        }
+        with open(BUDGET_STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True, "Budget opgeslagen"
+    except Exception as e:
+        return False, f"Opslaan budget mislukt: {e}"
+
+
+def load_budget_workflow_state():
+    """Load workflow lock state for budget release."""
+    try:
+        if os.path.exists(BUDGET_WORKFLOW_STORAGE_FILE):
+            with open(BUDGET_WORKFLOW_STORAGE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"Error loading budget workflow state: {e}")
+    return {"released_years": {}}
+
+
+def save_budget_workflow_state(state):
+    """Persist workflow lock state."""
+    try:
+        payload = dict(state or {})
+        payload["last_modified"] = datetime.now().isoformat()
+        payload.setdefault("released_years", {})
+        with open(BUDGET_WORKFLOW_STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True, "Workflowstatus opgeslagen"
+    except Exception as e:
+        return False, f"Opslaan workflowstatus mislukt: {e}"
+
+
+def is_budget_released_for_year(year):
+    """Check if budget import is released for a year."""
+    state = load_budget_workflow_state()
+    return bool(state.get("released_years", {}).get(str(year), False))
+
+
+def set_budget_release_for_year(year, released):
+    """Set release lock/unlock for a budget year."""
+    state = load_budget_workflow_state()
+    state.setdefault("released_years", {})
+    state["released_years"][str(year)] = bool(released)
+    return save_budget_workflow_state(state)
+
+
+def get_pnl_mapping_completion_status(company_id, year):
+    """Compute simple mapping-completion metrics for workflow gate."""
+    mapping = _ensure_mapping_shape(get_draggable_mapping())
+    leaf_keys = get_leaf_report_category_keys()
+
+    mapped_categories = [k for k in leaf_keys if mapping["categories"].get(k)]
+    mapped_count = len(mapped_categories)
+    total_leaf_count = len(leaf_keys)
+    coverage_pct = (mapped_count / total_leaf_count * 100) if total_leaf_count else 0
+
+    # Use available accounts in current scope to estimate mapped/unmapped load.
+    available_accounts = get_all_accounts_with_details(company_id, year)
+    assigned_codes = set()
+    for codes in mapping["categories"].values():
+        assigned_codes.update(codes)
+    unmapped_count = len([a for a in available_accounts if a["code"] not in assigned_codes])
+
+    # Gate threshold: at least 60% of leaf categories mapped
+    gate_ready = coverage_pct >= 60
+
+    return {
+        "mapped_count": mapped_count,
+        "total_leaf_count": total_leaf_count,
+        "coverage_pct": coverage_pct,
+        "unmapped_count": unmapped_count,
+        "gate_ready": gate_ready,
+    }
+
+
+def build_variance_export_excel_bytes(df_month, df_matrix, metadata):
+    """Build Excel export for variance report."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pd.DataFrame([metadata]).to_excel(writer, sheet_name="Meta", index=False)
+        df_month.to_excel(writer, sheet_name="Variantie_Maand", index=False)
+        df_matrix.to_excel(writer, sheet_name="Variantie_Matrix", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_variance_export_pdf_bytes(df_month, metadata):
+    """Build compact PDF export for variance report."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    story = []
+
+    title = f"Variantie Rapport — {metadata.get('year')} — {metadata.get('scope')}"
+    story.append(Paragraph(title, styles["Title"]))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"Maand: {metadata.get('month_label')}", styles["Normal"]))
+    story.append(Paragraph(f"Intercompany eliminatie: {metadata.get('exclude_intercompany')}", styles["Normal"]))
+    story.append(Spacer(1, 12))
+
+    export_cols = [
+        "Regel", "Actual maand", "Budget maand", "Variantie maand", "Variantie maand %",
+        "Actual YTD", "Budget YTD", "Variantie YTD", "Variantie YTD %"
+    ]
+    table_df = df_month.copy()
+    if "Confidence" in table_df.columns:
+        table_df = table_df.drop(columns=["Confidence"])
+    for col in export_cols:
+        if col not in table_df.columns:
+            table_df[col] = ""
+    table_df = table_df[export_cols]
+
+    # Keep PDF readable: include first 35 lines (top-level report usually fits)
+    table_df = table_df.head(35)
+
+    header = list(table_df.columns)
+    body = []
+    for _, row in table_df.iterrows():
+        body.append([
+            str(row["Regel"]),
+            f"{row['Actual maand']:,.0f}",
+            f"{row['Budget maand']:,.0f}",
+            f"{row['Variantie maand']:,.0f}",
+            f"{row['Variantie maand %']:+.1f}%",
+            f"{row['Actual YTD']:,.0f}",
+            f"{row['Budget YTD']:,.0f}",
+            f"{row['Variantie YTD']:,.0f}",
+            f"{row['Variantie YTD %']:+.1f}%",
+        ])
+
+    table = Table([header] + body, repeatRows=1)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a5f")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(table)
+    doc.build(story)
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_budget_template_dataframe(year, company_ids=None):
+    """Create a budget template at report-line level per company/month."""
+    rows = []
+    if company_ids is None:
+        company_ids = list(COMPANIES.keys())
+
+    leaf_keys = get_leaf_report_category_keys()
+    for comp_id in company_ids:
+        comp_name = COMPANIES.get(comp_id, f"Company {comp_id}")
+        for month in range(1, 13):
+            for cat_key in leaf_keys:
+                rows.append({
+                    "year": year,
+                    "company_id": comp_id,
+                    "company_name": comp_name,
+                    "month": month,
+                    "month_label": MONTH_LABELS_NL[month],
+                    "category_key": cat_key,
+                    "category_name": REPORT_CATEGORIES[cat_key]["name"],
+                    "amount": 0.0,
+                })
+    return pd.DataFrame(rows)
+
+
+def build_budget_template_excel(year, company_ids=None):
+    """Create Excel template with instructions + masterdata + budget input."""
+    template_df = build_budget_template_dataframe(year, company_ids=company_ids)
+
+    instructions_df = pd.DataFrame([
+        {"kolom": "year", "verplicht": "ja", "omschrijving": "Kalenderjaar (bijv. 2026)", "voorbeeld": year},
+        {"kolom": "company_id", "verplicht": "ja (of company_name)", "omschrijving": "Bedrijfs-ID", "voorbeeld": 1},
+        {"kolom": "company_name", "verplicht": "ja (of company_id)", "omschrijving": "Bedrijfsnaam", "voorbeeld": "LAB Conceptstore"},
+        {"kolom": "month", "verplicht": "ja", "omschrijving": "Maandnummer 1-12", "voorbeeld": 1},
+        {"kolom": "category_key", "verplicht": "ja (of category_name)", "omschrijving": "Interne rapportregelcode", "voorbeeld": "netto_omzet"},
+        {"kolom": "category_name", "verplicht": "ja (of category_key)", "omschrijving": "Rapportregelnaam", "voorbeeld": "Netto Omzet"},
+        {"kolom": "amount", "verplicht": "ja", "omschrijving": "Budgetbedrag (positief tonen in rapport)", "voorbeeld": 125000},
+    ])
+
+    companies_df = pd.DataFrame([
+        {"company_id": cid, "company_name": cname}
+        for cid, cname in COMPANIES.items()
+        if company_ids is None or cid in company_ids
+    ])
+    categories_df = pd.DataFrame([
+        {"category_key": key, "category_name": REPORT_CATEGORIES[key]["name"]}
+        for key in get_leaf_report_category_keys()
+    ])
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        instructions_df.to_excel(writer, sheet_name="Instructions", index=False)
+        companies_df.to_excel(writer, sheet_name="Companies", index=False)
+        categories_df.to_excel(writer, sheet_name="Categories", index=False)
+        template_df.to_excel(writer, sheet_name="BudgetInput", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def _normalize_company_id(raw_company):
+    """Translate uploaded company field (id/name) to company_id."""
+    if raw_company is None or (isinstance(raw_company, float) and pd.isna(raw_company)):
+        return None
+
+    if isinstance(raw_company, (int, float)):
+        cid = int(raw_company)
+        return cid if cid in COMPANIES else None
+
+    company_str = str(raw_company).strip()
+    if not company_str:
+        return None
+    if company_str.isdigit():
+        cid = int(company_str)
+        return cid if cid in COMPANIES else None
+
+    company_str_lower = company_str.lower()
+    for cid, cname in COMPANIES.items():
+        if cname.lower() == company_str_lower:
+            return cid
+    return None
+
+
+def _normalize_category_key(raw_category):
+    """Translate uploaded category key/name to internal category key."""
+    if raw_category is None or (isinstance(raw_category, float) and pd.isna(raw_category)):
+        return None
+    value = str(raw_category).strip()
+    if not value:
+        return None
+
+    # Direct key match
+    if value in REPORT_CATEGORIES and not REPORT_CATEGORIES[value].get("is_subtotal", False):
+        return value
+
+    # Case-insensitive key match
+    for key in get_leaf_report_category_keys():
+        if key.lower() == value.lower():
+            return key
+
+    # Name match
+    value_lower = value.lower()
+    for key, info in REPORT_CATEGORIES.items():
+        if info.get("is_subtotal", False):
+            continue
+        if info.get("name", "").lower() == value_lower:
+            return key
+
+    return None
+
+
+def parse_budget_upload_dataframe(df, default_company_id=None):
+    """
+    Validate and normalize uploaded budget data.
+    Expected columns:
+    - year
+    - company_id/company/company_name/entiteit
+    - month
+    - category_key/category_name/regel/regelcode
+    - amount/bedrag
+    """
+    normalized_cols = {str(c).strip().lower(): c for c in df.columns}
+
+    def pick_column(candidates):
+        for c in candidates:
+            if c in normalized_cols:
+                return normalized_cols[c]
+        return None
+
+    col_year = pick_column(["year", "jaar"])
+    col_company = pick_column(["company_id", "company", "company_name", "entiteit", "bedrijf"])
+    col_month = pick_column(["month", "maand"])
+    col_category = pick_column(["category_key", "category_name", "regelcode", "regel", "categorie"])
+    col_amount = pick_column(["amount", "bedrag", "waarde", "value"])
+
+    missing = []
+    if col_year is None:
+        missing.append("year")
+    if col_company is None and default_company_id is None:
+        missing.append("company")
+    if col_month is None:
+        missing.append("month")
+    if col_category is None:
+        missing.append("category")
+    if col_amount is None:
+        missing.append("amount")
+
+    if missing:
+        return [], [f"Ontbrekende kolommen: {', '.join(missing)}"]
+
+    parsed_entries = []
+    errors = []
+    for idx, row in df.iterrows():
+        line_nr = idx + 2
+
+        try:
+            year = int(row[col_year])
+        except Exception:
+            errors.append(f"Rij {line_nr}: ongeldig jaar '{row[col_year]}'")
+            continue
+
+        if col_company is None and default_company_id is not None:
+            company_id = int(default_company_id)
+        else:
+            company_id = _normalize_company_id(row[col_company])
+            if company_id is None:
+                errors.append(f"Rij {line_nr}: onbekend bedrijf '{row[col_company]}'")
+                continue
+
+        month = _month_to_int(row[col_month])
+        if month is None:
+            errors.append(f"Rij {line_nr}: ongeldige maand '{row[col_month]}'")
+            continue
+
+        category_key = _normalize_category_key(row[col_category])
+        if category_key is None:
+            errors.append(f"Rij {line_nr}: onbekende rapportregel '{row[col_category]}'")
+            continue
+
+        amount = _parse_amount(row[col_amount])
+        if amount is None:
+            errors.append(f"Rij {line_nr}: ongeldig bedrag '{row[col_amount]}'")
+            continue
+
+        parsed_entries.append({
+            "year": year,
+            "company_id": company_id,
+            "month": month,
+            "category_key": category_key,
+            "amount": float(amount),
+        })
+
+    return parsed_entries, errors
+
+
+def merge_budget_entries(existing_entries, new_entries, replace_scope="none"):
+    """
+    Merge uploaded entries into existing budget store.
+    replace_scope:
+    - none: upsert only on exact key
+    - year_company: replace existing for uploaded (year, company_id) buckets first
+    """
+    merged = [dict(e) for e in existing_entries]
+    if replace_scope == "year_company":
+        scopes = {(e["year"], e["company_id"]) for e in new_entries}
+        merged = [e for e in merged if (e.get("year"), e.get("company_id")) not in scopes]
+
+    index_map = {
+        (e.get("year"), e.get("company_id"), e.get("month"), e.get("category_key")): i
+        for i, e in enumerate(merged)
+    }
+
+    for entry in new_entries:
+        key = (entry["year"], entry["company_id"], entry["month"], entry["category_key"])
+        if key in index_map:
+            merged[index_map[key]]["amount"] = float(entry["amount"])
+        else:
+            merged.append(entry)
+            index_map[key] = len(merged) - 1
+
+    return merged
+
+
+def _add_report_subtotals_monthly(base_monthly):
+    """Calculate subtotal categories for monthly arrays."""
+    results = {k: v[:] for k, v in base_monthly.items()}
+
+    subtotal_keys = [
+        key for key in get_sorted_report_categories(include_subtotals=True)
+        if REPORT_CATEGORIES[key].get("is_subtotal", False)
+    ]
+    for subtotal_key in subtotal_keys:
+        calc = REPORT_CATEGORIES[subtotal_key].get("calculation", "")
+        series = []
+        for month_idx in range(12):
+            month_values = {
+                k: (results.get(k, [0.0] * 12)[month_idx] if isinstance(results.get(k), list) else 0.0)
+                for k in REPORT_CATEGORIES.keys()
+            }
+            series.append(_evaluate_calculation(calc, month_values))
+        results[subtotal_key] = series
+    return results
+
+
+def get_budget_monthly_values(year, company_id=None):
+    """Return monthly budget values by report category for a year/company scope."""
+    entries = load_budget_entries()
+    base_monthly = {k: [0.0] * 12 for k in get_leaf_report_category_keys()}
+
+    for e in entries:
+        if int(e.get("year", 0)) != int(year):
+            continue
+        if company_id and int(e.get("company_id", 0)) != int(company_id):
+            continue
+
+        cat = e.get("category_key")
+        month = int(e.get("month", 0))
+        amount = float(e.get("amount", 0.0))
+        if cat in base_monthly and 1 <= month <= 12:
+            base_monthly[cat][month - 1] += amount
+
+    return _add_report_subtotals_monthly(base_monthly)
+
+
+def calculate_monthly_report_with_mapping(company_id, year, mapping=None, exclude_intercompany=False):
+    """
+    Calculate monthly actuals per mapped report category.
+    Supports company scope and consolidated scope (company_id=None).
+    """
+    if mapping is None:
+        mapping = get_draggable_mapping()
+    mapping = _ensure_mapping_shape(mapping)
+    categories = mapping.get("categories", {})
+
+    base_monthly = {k: [0.0] * 12 for k in get_leaf_report_category_keys()}
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+
+    for cat_key in get_leaf_report_category_keys():
+        cat_info = REPORT_CATEGORIES.get(cat_key, {})
+        account_codes = categories.get(cat_key, [])
+        if not account_codes:
+            continue
+
+        for code in account_codes:
+            domain = [
+                ["date", ">=", start_date],
+                ["date", "<=", end_date],
+                ["parent_state", "=", "posted"],
+                ["account_id.code", "=like", f"{code}%"]
+            ]
+            if company_id:
+                domain.append(["company_id", "=", company_id])
+            if exclude_intercompany and INTERCOMPANY_PARTNERS:
+                domain.append(["partner_id", "not in", INTERCOMPANY_PARTNERS])
+
+            monthly_rows = odoo_read_group(
+                "account.move.line",
+                domain,
+                ["balance:sum"],
+                ["date:month"]
+            )
+            for item in monthly_rows:
+                month = _month_to_int(item.get("date:month"))
+                if not month:
+                    continue
+                balance = item.get("balance:sum", item.get("balance", 0)) or 0
+                if cat_info.get("sign_flip", False):
+                    balance = -balance
+                base_monthly[cat_key][month - 1] += balance
+
+    return _add_report_subtotals_monthly(base_monthly)
+
+
+def load_balance_mapping():
+    """Load persisted balance mapping."""
+    try:
+        if os.path.exists(BALANCE_MAPPING_STORAGE_FILE):
+            with open(BALANCE_MAPPING_STORAGE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Error loading balance mapping: {e}")
+    return {}
+
+
+def save_balance_mapping(mapping_data):
+    """Save balance mapping to disk."""
+    try:
+        payload = {
+            "last_modified": datetime.now().isoformat(),
+            "categories": mapping_data.get("categories", {}),
+        }
+        with open(BALANCE_MAPPING_STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True, "Balans-mapping opgeslagen"
+    except Exception as e:
+        return False, f"Opslaan balans-mapping mislukt: {e}"
+
+
+def get_balance_mapping():
+    """Get balance mapping from session_state or storage."""
+    if "balance_mapping" not in st.session_state:
+        loaded = load_balance_mapping()
+        categories = loaded.get("categories", {}) if isinstance(loaded, dict) else {}
+        for key in BALANCE_CATEGORY_DEFINITIONS.keys():
+            categories.setdefault(key, [])
+        st.session_state.balance_mapping = {"categories": categories}
+    else:
+        for key in BALANCE_CATEGORY_DEFINITIONS.keys():
+            st.session_state.balance_mapping["categories"].setdefault(key, [])
+    return st.session_state.balance_mapping
+
+
+def _move_account_to_balance_category(mapping, account_code, target_category):
+    """Ensure 1-op-1 mapping by moving account to target category."""
+    for cat_key, codes in mapping["categories"].items():
+        if account_code in codes:
+            mapping["categories"][cat_key] = [c for c in codes if c != account_code]
+    if account_code not in mapping["categories"][target_category]:
+        mapping["categories"][target_category].append(account_code)
+
+
+def calculate_balance_snapshot_with_mapping(as_of_date, company_id=None, mapping=None, exclude_intercompany=False):
+    """Calculate balance values per mapped balance leaf category."""
+    if mapping is None:
+        mapping = get_balance_mapping()
+    categories = mapping.get("categories", {})
+
+    if hasattr(as_of_date, "strftime"):
+        date_str = as_of_date.strftime("%Y-%m-%d")
+    else:
+        date_str = str(as_of_date)
+
+    results = {k: 0.0 for k in BALANCE_CATEGORY_DEFINITIONS.keys()}
+    for cat_key, info in BALANCE_CATEGORY_DEFINITIONS.items():
+        account_codes = categories.get(cat_key, [])
+        if not account_codes:
+            continue
+
+        total = 0.0
+        for code in account_codes:
+            domain = [
+                ["date", "<=", date_str],
+                ["parent_state", "=", "posted"],
+                ["account_id.code", "=like", f"{code}%"]
+            ]
+            if company_id:
+                domain.append(["company_id", "=", company_id])
+            if exclude_intercompany and INTERCOMPANY_PARTNERS:
+                domain.append(["partner_id", "not in", INTERCOMPANY_PARTNERS])
+
+            data = odoo_read_group(
+                "account.move.line",
+                domain,
+                ["balance:sum"],
+                []
+            )
+            if data:
+                balance = data[0].get("balance:sum", data[0].get("balance", 0)) or 0
+                if info.get("sign_flip", False):
+                    balance = -balance
+                total += balance
+        results[cat_key] = total
+    return results
+
+
+def render_balance_mapping_tool(company_id, year):
+    """Simple bulk mapping UI for balance Activa/Passiva categories."""
+    mapping = get_balance_mapping()
+    categories = mapping["categories"]
+
+    with st.spinner("Balansrekeningen ophalen..."):
+        available_accounts = get_all_accounts_with_details(company_id, year)
+    if not available_accounts:
+        st.warning("Geen rekeningen gevonden voor balans-mapping.")
+        return
+
+    assigned_codes = set()
+    for codes in categories.values():
+        assigned_codes.update(codes)
+    unassigned_accounts = [acc for acc in available_accounts if acc["code"] not in assigned_codes]
+    account_lookup = {acc["code"]: acc for acc in available_accounts}
+
+    st.markdown("### 🏛️ Balans Mapping (Activa/Passiva)")
+    st.caption("1-op-1 mapping: een rekening kan maar in één balansregel staan.")
+
+    if "balance_auto_proposals" not in st.session_state:
+        st.session_state.balance_auto_proposals = []
+
+    auto_b_col1, auto_b_col2 = st.columns([1.4, 2.6])
+    with auto_b_col1:
+        if st.button("🔍 Auto-map balans preview", key="preview_auto_map_balance"):
+            st.session_state.balance_auto_proposals = build_auto_mapping_proposals(
+                mapping=mapping,
+                accounts=available_accounts,
+                rules=BALANCE_AUTO_MAPPING_RULES,
+                category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+                target_name_lookup={k: v["name"] for k, v in BALANCE_CATEGORY_DEFINITIONS.items()},
+            )
+            st.session_state.balance_auto_selected = []
+    with auto_b_col2:
+        st.caption("Toont voorstellen met confidence score. Pas daarna geselecteerd toe.")
+
+    bal_proposals = st.session_state.get("balance_auto_proposals", [])
+    if bal_proposals:
+        st.markdown("**Auto-map voorstel (Balans)**")
+        b_f1, b_f2 = st.columns([1, 1])
+        with b_f1:
+            min_conf_bal = st.slider("Min confidence (balans)", 0, 100, 0, key="bal_conf_threshold")
+        with b_f2:
+            show_low_only_bal = st.checkbox("Toon alleen lage confidence balans (<65)", key="bal_low_only")
+
+        display_bal_proposals = [
+            p for p in bal_proposals
+            if p["confidence"] >= min_conf_bal and (not show_low_only_bal or p["confidence"] < 65)
+        ]
+        if not display_bal_proposals:
+            st.info("Geen balansvoorstellen binnen de gekozen confidence-filter.")
+        else:
+            bal_df = pd.DataFrame([
+                {
+                    "Rekening": p["account_code"],
+                    "Naam": p["account_name"],
+                    "Doelcategorie": p["target_name"],
+                    "Confidence": p["confidence"],
+                    "Band": get_confidence_band(p["confidence"])[0],
+                    "Uitleg": p["reason"],
+                }
+                for p in display_bal_proposals
+            ])
+            st.dataframe(
+                bal_df.style.applymap(style_confidence_cell, subset=["Confidence"]),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            bal_labels = [
+                f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:36]} → {p['target_name']}"
+                for p in display_bal_proposals
+            ]
+            bal_label_to_key = {label: display_bal_proposals[i]["proposal_key"] for i, label in enumerate(bal_labels)}
+            bal_default = [bal_labels[i] for i, p in enumerate(display_bal_proposals) if p["confidence"] >= 70]
+
+            selected_bal_labels = st.multiselect(
+                "Selecteer balansvoorstellen om toe te passen",
+                options=bal_labels,
+                default=bal_default,
+                key="balance_auto_selected",
+            )
+            selected_bal_keys = {bal_label_to_key[label] for label in selected_bal_labels}
+
+            bal_act1, bal_act2 = st.columns([1, 1])
+            with bal_act1:
+                if st.button("✅ Pas geselecteerde balansvoorstellen toe", key="apply_auto_map_balance", type="primary"):
+                    selected_props = [p for p in display_bal_proposals if p["proposal_key"] in selected_bal_keys]
+                    applied, skipped = apply_auto_mapping_proposals(
+                        mapping=mapping,
+                        proposals=selected_props,
+                        category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+                    )
+                    st.session_state.balance_mapping = mapping
+                    st.session_state.balance_auto_proposals = []
+                    st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                    st.rerun()
+            with bal_act2:
+                if st.button("🗑️ Verberg balansvoorstel", key="clear_auto_map_balance"):
+                    st.session_state.balance_auto_proposals = []
+                    st.rerun()
+    st.markdown("---")
+
+    col_add, col_prefix = st.columns(2)
+    with col_add:
+        category_options = sorted(
+            BALANCE_CATEGORY_DEFINITIONS.keys(),
+            key=lambda k: BALANCE_CATEGORY_DEFINITIONS[k]["order"]
+        )
+        target_category = st.selectbox(
+            "Doel balansregel",
+            category_options,
+            format_func=lambda k: BALANCE_CATEGORY_DEFINITIONS[k]["name"],
+            key="bal_target_category",
+        )
+        selected_unassigned = st.multiselect(
+            "Selecteer niet-gemapte rekeningen",
+            options=[a["display"] for a in unassigned_accounts],
+            key="bal_select_unassigned",
+        )
+        if st.button("➕ Voeg selectie toe", key="bal_add_selected", type="primary") and selected_unassigned:
+            for item in selected_unassigned:
+                code = item.split(" - ")[0]
+                _move_account_to_balance_category(mapping, code, target_category)
+            st.session_state.balance_mapping = mapping
+            st.success(f"{len(selected_unassigned)} rekening(en) toegewezen.")
+            st.rerun()
+
+    with col_prefix:
+        prefix_input = st.text_input(
+            "Bulk op prefix (komma-gescheiden)",
+            key="bal_prefix_input",
+            placeholder="Bijv. 100,101,102"
+        )
+        if st.button("⚡ Wijs prefixen toe", key="bal_assign_prefix"):
+            prefixes = [p.strip() for p in prefix_input.split(",") if p.strip()]
+            matched_codes = [a["code"] for a in unassigned_accounts if any(a["code"].startswith(p) for p in prefixes)]
+            if not matched_codes:
+                st.info("Geen niet-gemapte rekeningen gevonden voor deze prefixen.")
+            else:
+                for code in matched_codes:
+                    _move_account_to_balance_category(mapping, code, target_category)
+                st.session_state.balance_mapping = mapping
+                st.success(f"{len(matched_codes)} rekening(en) via prefix toegewezen.")
+                st.rerun()
+
+    st.markdown("---")
+    left_col, right_col = st.columns([2, 1])
+    with left_col:
+        for cat_key in sorted(BALANCE_CATEGORY_DEFINITIONS.keys(), key=lambda k: BALANCE_CATEGORY_DEFINITIONS[k]["order"]):
+            cat_name = BALANCE_CATEGORY_DEFINITIONS[cat_key]["name"]
+            section = BALANCE_CATEGORY_DEFINITIONS[cat_key]["section"].upper()
+            codes = categories.get(cat_key, [])
+            with st.expander(f"[{section}] {cat_name} ({len(codes)})", expanded=False):
+                if not codes:
+                    st.caption("Geen rekeningen gekoppeld.")
+                for idx, code in enumerate(codes):
+                    acc_name = account_lookup.get(code, {}).get("name", "Onbekend")
+                    c1, c2 = st.columns([6, 1])
+                    with c1:
+                        st.caption(f"`{code}` - {acc_name}")
+                    with c2:
+                        if st.button("✕", key=f"bal_rm_{cat_key}_{idx}"):
+                            categories[cat_key] = [c for c in categories[cat_key] if c != code]
+                            st.session_state.balance_mapping = mapping
+                            st.rerun()
+
+    with right_col:
+        st.markdown("**Niet-gemapt (preview)**")
+        st.caption(f"{len(unassigned_accounts)} rekeningen")
+        for acc in unassigned_accounts[:30]:
+            st.caption(f"`{acc['code']}` {acc['name'][:28]}")
+        if len(unassigned_accounts) > 30:
+            st.caption(f"... en {len(unassigned_accounts) - 30} meer")
+
+    st.markdown("---")
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("💾 Opslaan balans-mapping", key="bal_save_mapping", type="primary"):
+            ok, msg = save_balance_mapping(st.session_state.balance_mapping)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    with b2:
+        if st.button("🔄 Reset balans-mapping", key="bal_reset_mapping"):
+            st.session_state.balance_mapping = {
+                "categories": {k: [] for k in BALANCE_CATEGORY_DEFINITIONS.keys()}
+            }
+            if os.path.exists(BALANCE_MAPPING_STORAGE_FILE):
+                os.remove(BALANCE_MAPPING_STORAGE_FILE)
+            st.success("Balans-mapping gereset.")
+            st.rerun()
+
+
+def render_structured_balance_report(as_of_date, company_id=None, exclude_intercompany=False):
+    """Render mapped balance in Activa/Passiva format."""
+    values = calculate_balance_snapshot_with_mapping(
+        as_of_date=as_of_date,
+        company_id=company_id,
+        exclude_intercompany=exclude_intercompany
+    )
+
+    def sum_keys(keys):
+        return sum(values.get(k, 0.0) for k in keys)
+
+    # ACTIVA groups
+    immaterieel = ["goodwill", "concessies_vergunningen_ie", "kosten_van_ontwikkeling"]
+    materieel = ["gebouwen_verbouwing", "machines_installaties", "inventaris", "vervoermiddelen"]
+    financieel_vast = ["financiele_vaste_activa"]
+    voorraden = ["gereed_product_handelsgoederen", "vooruitbetaald_voorraden"]
+    vorderingen = [
+        "handelsdebiteuren", "vorderingen_op_groepsmaatschappijen",
+        "belasting_premies_sociale_zekerheid_activa", "overige_vorderingen", "overlopende_activa"
+    ]
+    liquide = ["liquide_middelen"]
+
+    # PASSIVA groups
+    eigen_vermogen = [
+        "gestort_opgevraagd_kapitaal", "agio", "herwaarderingsreserve",
+        "wettelijke_statutaire_reserves", "overige_reserves", "onverdeelde_winst"
+    ]
+    voorzieningen = ["voorzieningen"]
+    langlopende = ["schulden_aan_kredietinstellingen"]
+    belasting_premies = ["omzetbelasting", "premies_pensioen", "loonheffing", "vennootschapsbelasting"]
+    kortlopende = [
+        "schulden_aan_groepsmaatschappijen", "aflossingsverplichtingen", "crediteuren",
+        "overige_schulden", "overlopende_passiva"
+    ]
+
+    col_a, col_p = st.columns(2)
+    with col_a:
+        st.subheader("ACTIVA")
+        st.markdown("**Immateriële vaste activa**")
+        for key in immaterieel:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Immateriële vaste activa: €{sum_keys(immaterieel):,.2f}**")
+
+        st.markdown("**Materiële vaste activa**")
+        for key in materieel:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Materiële vaste activa: €{sum_keys(materieel):,.2f}**")
+
+        st.caption(f"Financiële Vaste Activa: €{sum_keys(financieel_vast):,.2f}")
+        totaal_vaste_activa = sum_keys(immaterieel + materieel + financieel_vast)
+        st.markdown(f"**Totaal VASTE ACTIVA: €{totaal_vaste_activa:,.2f}**")
+
+        st.markdown("**VLOTTENDE ACTIVA**")
+        st.markdown("**Voorraden**")
+        for key in voorraden:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Voorraden: €{sum_keys(voorraden):,.2f}**")
+
+        st.markdown("**Vorderingen**")
+        for key in vorderingen:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Vorderingen: €{sum_keys(vorderingen):,.2f}**")
+
+        for key in liquide:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        totaal_vlottende_activa = sum_keys(voorraden + vorderingen + liquide)
+        st.markdown(f"**Totaal VLOTTENDE ACTIVA: €{totaal_vlottende_activa:,.2f}**")
+        totaal_activa = totaal_vaste_activa + totaal_vlottende_activa
+        st.markdown(f"### Totaal ACTIVA: €{totaal_activa:,.2f}")
+
+    with col_p:
+        st.subheader("PASSIVA")
+        st.markdown("**EIGEN VERMOGEN**")
+        for key in eigen_vermogen:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal EIGEN VERMOGEN: €{sum_keys(eigen_vermogen):,.2f}**")
+
+        st.markdown("**SCHULDEN**")
+        for key in voorzieningen:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown("**Langlopende schulden**")
+        for key in langlopende:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Langlopende schulden: €{sum_keys(langlopende):,.2f}**")
+
+        st.markdown("**Kortlopende Schulden**")
+        for key in ["schulden_aan_groepsmaatschappijen", "aflossingsverplichtingen", "crediteuren"]:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+
+        st.markdown("**Belasting en Premies sociale zekerheid**")
+        for key in belasting_premies:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+        st.markdown(f"**Totaal Belasting en Premies sociale zekerheid: €{sum_keys(belasting_premies):,.2f}**")
+
+        for key in ["overige_schulden", "overlopende_passiva"]:
+            st.caption(f"{BALANCE_CATEGORY_DEFINITIONS[key]['name']}: €{values.get(key, 0):,.2f}")
+
+        totaal_kortlopend = sum_keys(kortlopende + belasting_premies)
+        st.markdown(f"**Totaal Kortlopende Schulden: €{totaal_kortlopend:,.2f}**")
+        totaal_schulden = sum_keys(voorzieningen + langlopende) + totaal_kortlopend
+        st.markdown(f"**Totaal SCHULDEN: €{totaal_schulden:,.2f}**")
+        totaal_passiva = sum_keys(eigen_vermogen) + totaal_schulden
+        st.markdown(f"### Totaal PASSIVA: €{totaal_passiva:,.2f}")
+
+    st.markdown("---")
+    verschil = (sum_keys(immaterieel + materieel + financieel_vast + voorraden + vorderingen + liquide)
+                - (sum_keys(eigen_vermogen) + sum_keys(voorzieningen + langlopende + kortlopende + belasting_premies)))
+    if abs(verschil) < 1:
+        st.success(f"✅ Balans in evenwicht (verschil: €{verschil:,.2f})")
+    else:
+        st.warning(f"⚠️ Balansverschil: €{verschil:,.2f}")
+
+
+def render_budget_import_tab(selected_year):
+    """UI for downloading budget template and importing budget lines."""
+    st.markdown("### 📥 Budget inlezen op rapportregelniveau")
+    st.caption("Verplicht: year, month, category (key/naam), amount. Bedrijf kan in bestand of via import-scope.")
+
+    tpl_col1, tpl_col2 = st.columns([1.2, 2.8])
+    with tpl_col1:
+        template_scope = st.radio(
+            "Template scope",
+            ["Alle bedrijven", "Eén bedrijf"],
+            key="budget_template_scope"
+        )
+    with tpl_col2:
+        template_company_id = None
+        if template_scope == "Eén bedrijf":
+            template_company_name = st.selectbox(
+                "Template bedrijf",
+                options=list(COMPANIES.values()),
+                key="budget_template_company"
+            )
+            template_company_id = [cid for cid, cname in COMPANIES.items() if cname == template_company_name][0]
+
+    template_company_ids = [template_company_id] if template_company_id else None
+    template_df = build_budget_template_dataframe(selected_year, company_ids=template_company_ids)
+    template_csv = template_df.to_csv(index=False, sep=";").encode("utf-8")
+    template_xlsx = build_budget_template_excel(selected_year, company_ids=template_company_ids)
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "📄 Download template (CSV)",
+            data=template_csv,
+            file_name=f"budget_template_{selected_year}.csv",
+            mime="text/csv",
+            key="budget_template_download_csv",
+        )
+    with dl2:
+        st.download_button(
+            "📘 Download template (Excel met tabs)",
+            data=template_xlsx,
+            file_name=f"budget_template_{selected_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="budget_template_download_xlsx",
+        )
+
+    uploaded = st.file_uploader(
+        "Upload budgetbestand (CSV of Excel)",
+        type=["csv", "xlsx", "xls"],
+        key="budget_upload_file"
+    )
+
+    import_scope_col1, import_scope_col2 = st.columns([1.2, 2.8])
+    with import_scope_col1:
+        import_scope = st.radio(
+            "Importscope",
+            ["Bedrijf in bestand", "Geforceerd één bedrijf"],
+            key="budget_import_scope"
+        )
+    with import_scope_col2:
+        forced_company_id = None
+        if import_scope == "Geforceerd één bedrijf":
+            forced_company_name = st.selectbox(
+                "Doelbedrijf voor alle regels in upload",
+                options=list(COMPANIES.values()),
+                key="budget_forced_company"
+            )
+            forced_company_id = [cid for cid, cname in COMPANIES.items() if cname == forced_company_name][0]
+
+    replace_scope = st.selectbox(
+        "Importmodus",
+        options=["Upsert (bestaande regels overschrijven op sleutel)", "Vervang per jaar+bedrijf in upload"],
+        key="budget_import_mode",
+    )
+
+    if uploaded is not None:
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                import_df = pd.read_csv(uploaded, sep=None, engine="python")
+            else:
+                import_df = pd.read_excel(uploaded)
+            st.write(f"Voorbeeld ({min(len(import_df), 20)} rijen):")
+            st.dataframe(import_df.head(20), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Bestand kon niet worden gelezen: {e}")
+            return
+
+        if st.button("⬆️ Verwerk budgetimport", key="budget_import_btn", type="primary"):
+            parsed_entries, errors = parse_budget_upload_dataframe(
+                import_df,
+                default_company_id=forced_company_id
+            )
+            if errors:
+                st.error("Import validatie-fouten gevonden:")
+                for err in errors[:40]:
+                    st.caption(f"- {err}")
+                if len(errors) > 40:
+                    st.caption(f"... en {len(errors) - 40} extra fouten")
+                return
+
+            existing_entries = load_budget_entries()
+            merged_entries = merge_budget_entries(
+                existing_entries,
+                parsed_entries,
+                replace_scope="year_company" if replace_scope.startswith("Vervang") else "none"
+            )
+            ok, msg = save_budget_entries(merged_entries)
+            if ok:
+                st.success(f"{msg} ({len(parsed_entries)} regels verwerkt)")
+            else:
+                st.error(msg)
+
+    # Current year summary
+    entries = [e for e in load_budget_entries() if int(e.get("year", 0)) == int(selected_year)]
+    if entries:
+        st.markdown("---")
+        st.markdown("### 📊 Ingelezen budgetsamenvatting")
+        summary_rows = []
+        for comp_id, comp_name in COMPANIES.items():
+            total = sum(float(e.get("amount", 0)) for e in entries if int(e.get("company_id", 0)) == comp_id)
+            count = sum(1 for e in entries if int(e.get("company_id", 0)) == comp_id)
+            summary_rows.append({"Bedrijf": comp_name, "Regels": count, "Budget Totaal": total})
+        df_summary = pd.DataFrame(summary_rows)
+        st.dataframe(
+            df_summary.style.format({"Budget Totaal": "€{:,.0f}"}),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info(f"Nog geen budgetregels gevonden voor {selected_year}.")
+
+
+def render_variance_analysis_tab(selected_year, report_company_id=None, exclude_intercompany=True):
+    """UI for monthly variance analysis (Actual vs Budget) on mapped level."""
+    st.markdown("### 📊 Variantieanalyse per maand (zelfde aggregatieniveau)")
+
+    if report_company_id is None and exclude_intercompany:
+        st.info("Intercompany-eliminatie is toegepast op actuals. Budgetregels blijven zoals ingelezen.")
+
+    with st.spinner("Actuals en budget laden..."):
+        actual = calculate_monthly_report_with_mapping(
+            company_id=report_company_id,
+            year=selected_year,
+            exclude_intercompany=exclude_intercompany,
+        )
+        budget = get_budget_monthly_values(
+            year=selected_year,
+            company_id=report_company_id,
+        )
+
+    month_options = [f"{MONTH_LABELS_NL[m]} ({m})" for m in range(1, 13)]
+    selected_month_label = st.selectbox("Maand", month_options, index=datetime.now().month - 1, key="var_month_select")
+    selected_month = int(selected_month_label.split("(")[1].replace(")", ""))
+    month_idx = selected_month - 1
+
+    rows = []
+    for cat_key in get_sorted_report_categories(include_subtotals=True):
+        name = REPORT_CATEGORIES[cat_key]["name"]
+        act_series = actual.get(cat_key, [0.0] * 12)
+        bud_series = budget.get(cat_key, [0.0] * 12)
+        act_val = act_series[month_idx]
+        bud_val = bud_series[month_idx]
+        var_val = act_val - bud_val
+        var_pct = (var_val / bud_val * 100) if bud_val else 0.0
+        act_ytd = sum(act_series[:month_idx + 1])
+        bud_ytd = sum(bud_series[:month_idx + 1])
+        var_ytd = act_ytd - bud_ytd
+        var_ytd_pct = (var_ytd / bud_ytd * 100) if bud_ytd else 0.0
+        rows.append({
+            "Regel": name,
+            "Actual maand": act_val,
+            "Budget maand": bud_val,
+            "Variantie maand": var_val,
+            "Variantie maand %": var_pct,
+            "Actual YTD": act_ytd,
+            "Budget YTD": bud_ytd,
+            "Variantie YTD": var_ytd,
+            "Variantie YTD %": var_ytd_pct,
+            "_subtotal": REPORT_CATEGORIES[cat_key].get("is_subtotal", False)
+        })
+
+    df_month = pd.DataFrame(rows)
+    netto_key = "Netto-omzetresultaat"
+    if netto_key in df_month["Regel"].values:
+        net_row = df_month[df_month["Regel"] == netto_key].iloc[0]
+        total_actual = net_row["Actual maand"]
+        total_budget = net_row["Budget maand"]
+        total_actual_ytd = net_row["Actual YTD"]
+        total_budget_ytd = net_row["Budget YTD"]
+    else:
+        total_actual = df_month["Actual maand"].sum()
+        total_budget = df_month["Budget maand"].sum()
+        total_actual_ytd = df_month["Actual YTD"].sum()
+        total_budget_ytd = df_month["Budget YTD"].sum()
+
+    total_var = total_actual - total_budget
+    total_var_ytd = total_actual_ytd - total_budget_ytd
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Actual maand", f"€{total_actual:,.0f}")
+    m2.metric("Budget maand", f"€{total_budget:,.0f}")
+    m3.metric("Variantie maand", f"€{total_var:,.0f}", delta=f"{(total_var / total_budget * 100):+.1f}%" if total_budget else None)
+    m4.metric("Variantie YTD", f"€{total_var_ytd:,.0f}", delta=f"{(total_var_ytd / total_budget_ytd * 100):+.1f}%" if total_budget_ytd else None)
+
+    st.dataframe(
+        df_month.drop(columns=["_subtotal"]).style.format({
+            "Actual maand": "€{:,.0f}",
+            "Budget maand": "€{:,.0f}",
+            "Variantie maand": "€{:,.0f}",
+            "Variantie maand %": "{:+.1f}%",
+            "Actual YTD": "€{:,.0f}",
+            "Budget YTD": "€{:,.0f}",
+            "Variantie YTD": "€{:,.0f}",
+            "Variantie YTD %": "{:+.1f}%"
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+    st.markdown("#### Variantiematrix per maand")
+    matrix_rows = []
+    for cat_key in get_sorted_report_categories(include_subtotals=True):
+        row = {"Regel": REPORT_CATEGORIES[cat_key]["name"]}
+        for m in range(1, 13):
+            var_val = actual.get(cat_key, [0.0] * 12)[m - 1] - budget.get(cat_key, [0.0] * 12)[m - 1]
+            row[MONTH_LABELS_NL[m]] = var_val
+        matrix_rows.append(row)
+    df_matrix = pd.DataFrame(matrix_rows)
+    st.dataframe(
+        df_matrix.style.format({MONTH_LABELS_NL[m]: "€{:,.0f}" for m in range(1, 13)}),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+    st.markdown("#### Export variatierapport")
+    scope_label = "Geconsolideerd" if report_company_id is None else COMPANIES.get(report_company_id, str(report_company_id))
+    export_month_df = df_month.drop(columns=["_subtotal"]).copy()
+    metadata = {
+        "year": selected_year,
+        "month_label": selected_month_label,
+        "scope": scope_label,
+        "exclude_intercompany": "ja" if exclude_intercompany else "nee",
+    }
+    excel_bytes = build_variance_export_excel_bytes(export_month_df, df_matrix, metadata)
+
+    ex_col1, ex_col2 = st.columns(2)
+    with ex_col1:
+        st.download_button(
+            "📊 Download variatie (Excel)",
+            data=excel_bytes,
+            file_name=f"variantie_{selected_year}_{selected_month:02d}_{scope_label.replace(' ', '_').lower()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="variance_export_excel"
+        )
+    with ex_col2:
+        try:
+            pdf_bytes = build_variance_export_pdf_bytes(export_month_df, metadata)
+            st.download_button(
+                "🧾 Download variatie (PDF)",
+                data=pdf_bytes,
+                file_name=f"variantie_{selected_year}_{selected_month:02d}_{scope_label.replace(' ', '_').lower()}.pdf",
+                mime="application/pdf",
+                key="variance_export_pdf"
+            )
+        except Exception as e:
+            st.caption(f"PDF export momenteel niet beschikbaar: {e}")
+
+    st.markdown("---")
+    category_choice = st.selectbox(
+        "Grafiek voor rapportregel",
+        options=get_sorted_report_categories(include_subtotals=True),
+        format_func=lambda k: REPORT_CATEGORIES[k]["name"],
+        key="variance_graph_category",
+    )
+    graph_df = pd.DataFrame({
+        "Maand": [MONTH_LABELS_NL[m] for m in range(1, 13)],
+        "Actual": actual.get(category_choice, [0.0] * 12),
+        "Budget": budget.get(category_choice, [0.0] * 12),
+    })
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Budget", x=graph_df["Maand"], y=graph_df["Budget"], marker_color="#87CEEB"))
+    fig.add_trace(go.Bar(name="Actual", x=graph_df["Maand"], y=graph_df["Actual"], marker_color="#1e3a5f"))
+    fig.update_layout(
+        barmode="group",
+        height=380,
+        title=f"Actual vs Budget — {REPORT_CATEGORIES[category_choice]['name']}"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_base_year_data(company_id, base_year, revenue_patterns=None, cogs_patterns=None, expense_categories=None):
@@ -3916,9 +5643,11 @@ def main():
     NAV_ITEMS = [
         "Overzicht",
         "Bank",
+        "Facturen",
         "Producten",
         "Klantenkaart",
         "Kosten",
+        "Rapportage",
         "Balans",
         "AI Chat",
         "LAB Projects",
@@ -3926,9 +5655,11 @@ def main():
     NAV_LABELS = {
         "Overzicht": "📊 Overzicht",
         "Bank": "🏦 Bank",
+        "Facturen": "🧾 Facturen",
         "Producten": "📦 Producten",
         "Klantenkaart": "🗺️ Klantenkaart",
         "Kosten": "💸 Kosten",
+        "Rapportage": "🧮 Rapportage",
         "Balans": "⚖️ Balans",
         "AI Chat": "💬 AI Chat",
         "LAB Projects": "🧩 LAB Projects",
@@ -5219,6 +6950,119 @@ def main():
         else:
             st.info("Geen kostendata beschikbaar")
     
+    # =========================================================================
+    # PAGINA: RAPPORTAGE (MAPPING + BUDGET + VARIANTIE + BALANSSTRUCTUUR)
+    # =========================================================================
+    elif selected_nav == "Rapportage":
+        st.header("Rapportage & Budget")
+
+        scope_col1, scope_col2, scope_col3 = st.columns([1.3, 1.3, 2])
+        with scope_col1:
+            report_scope = st.radio(
+                "Scope",
+                ["Per bedrijf", "Geconsolideerd"],
+                horizontal=True,
+                key="report_scope_mode"
+            )
+        with scope_col2:
+            if report_scope == "Per bedrijf":
+                default_company_name = selected_entity if selected_entity != "Alle bedrijven" else list(COMPANIES.values())[0]
+                company_name = st.selectbox(
+                    "Bedrijf",
+                    options=list(COMPANIES.values()),
+                    index=list(COMPANIES.values()).index(default_company_name) if default_company_name in COMPANIES.values() else 0,
+                    key="report_scope_company"
+                )
+                report_company_id = [cid for cid, cname in COMPANIES.items() if cname == company_name][0]
+            else:
+                st.caption("Consolidatie over alle bedrijven")
+                report_company_id = None
+        with scope_col3:
+            report_exclude_ic = st.checkbox(
+                "Intercompany elimineren (actuals)",
+                value=True,
+                key="report_exclude_ic",
+                help="Sluit transacties met intercompany partners uit in de actuals."
+            )
+
+        # Workflow lock: eerst mapping afronden, dan budget vrijgeven
+        with st.spinner("Workflowstatus bepalen..."):
+            mapping_status = get_pnl_mapping_completion_status(report_company_id, selected_year)
+        budget_released = is_budget_released_for_year(selected_year)
+
+        wf_col1, wf_col2, wf_col3, wf_col4 = st.columns([1, 1, 1, 2])
+        wf_col1.metric("Gemapte regels", f"{mapping_status['mapped_count']}/{mapping_status['total_leaf_count']}")
+        wf_col2.metric("Dekking", f"{mapping_status['coverage_pct']:.0f}%")
+        wf_col3.metric("Nog ongemapt", mapping_status["unmapped_count"])
+
+        with wf_col4:
+            if budget_released:
+                st.success(f"✅ Budgetimport vrijgegeven voor {selected_year}")
+                if st.button("🔒 Vergrendel budgetimport opnieuw", key="lock_budget_workflow"):
+                    ok, msg = set_budget_release_for_year(selected_year, False)
+                    if ok:
+                        st.success("Budgetimport opnieuw vergrendeld.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            else:
+                st.warning(f"🔒 Budgetimport vergrendeld voor {selected_year}")
+                gate_ok = mapping_status["gate_ready"]
+                help_text = None if gate_ok else "Minimaal 60% van de rapportregels moet gemapt zijn."
+                if st.button("🔓 Geef budgetimport vrij", key="unlock_budget_workflow", disabled=not gate_ok, help=help_text):
+                    ok, msg = set_budget_release_for_year(selected_year, True)
+                    if ok:
+                        st.success("Budgetimport vrijgegeven.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+        st.caption("Workflow: 1) mapping afronden 2) budgetimport vrijgeven 3) variantie analyseren.")
+        st.markdown("---")
+
+        tab_map, tab_budget, tab_variance, tab_balance_map, tab_balance_report = st.tabs([
+            "🧭 Rekeningmapping W&V",
+            "📥 Budget import",
+            "📊 Variantie per maand",
+            "🏛️ Balansmapping",
+            "⚖️ Balansrapport (Activa/Passiva)"
+        ])
+
+        with tab_map:
+            st.caption("Map rekeningen 1-op-1 naar rapportregels op geaggregeerd niveau.")
+            render_draggable_mapping_tool(report_company_id, selected_year)
+
+        with tab_budget:
+            if not budget_released:
+                st.warning("Budgetimport is vergrendeld. Rond eerst mapping af en geef import vrij via de workflow-balk bovenaan.")
+            else:
+                render_budget_import_tab(selected_year)
+
+        with tab_variance:
+            if not budget_released:
+                st.info("Variantie kan al bekeken worden, maar budgetimport is nog vergrendeld.")
+            render_variance_analysis_tab(
+                selected_year=selected_year,
+                report_company_id=report_company_id,
+                exclude_intercompany=report_exclude_ic
+            )
+
+        with tab_balance_map:
+            render_balance_mapping_tool(report_company_id, selected_year)
+
+        with tab_balance_report:
+            balance_date_struct = st.date_input(
+                "Peildatum balansrapport",
+                value=datetime.now().date(),
+                max_value=datetime.now().date(),
+                key="balance_struct_date"
+            )
+            render_structured_balance_report(
+                as_of_date=balance_date_struct,
+                company_id=report_company_id,
+                exclude_intercompany=report_exclude_ic
+            )
+
     # =========================================================================
     # PAGINA: BALANS
     # =========================================================================
