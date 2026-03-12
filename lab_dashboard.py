@@ -2329,6 +2329,69 @@ MONTH_LABELS_NL = {
     7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt", 11: "Nov", 12: "Dec"
 }
 
+# Rule-based auto-mapping (prefix + optional naam-woorden)
+PNL_AUTO_MAPPING_RULES = [
+    {"category": "netto_omzet", "prefixes": ["80", "81", "82", "83", "84", "85"], "keywords": []},
+    {"category": "kostprijs_omzet", "prefixes": ["70", "71", "72", "73", "74", "75"], "keywords": []},
+    {"category": "prijsverschillen", "prefixes": [], "keywords": ["prijsverschil"]},
+    {"category": "overige_inkoopkosten", "prefixes": [], "keywords": ["inkoop", "grondstof", "handelsgoederen"]},
+    {"category": "voorraadaanpassingen", "prefixes": [], "keywords": ["voorraad", "voorraadaanpassing"]},
+    {"category": "advies", "prefixes": [], "keywords": ["advies"]},
+    {"category": "lonen_salarissen", "prefixes": ["620", "621"], "keywords": ["loon", "salaris", "brutoloon"]},
+    {"category": "sociale_lasten", "prefixes": ["622"], "keywords": ["sociale lasten", "sociale zekerheid", "svw", "zvw"]},
+    {"category": "pensioenlasten", "prefixes": ["623"], "keywords": ["pensioen"]},
+    {"category": "overige_personele_kosten", "prefixes": ["624"], "keywords": ["personeel", "wkr", "reiskosten"]},
+    {"category": "huisvestingskosten", "prefixes": ["41"], "keywords": ["huur", "huisvesting", "energie"]},
+    {"category": "verkoopkosten", "prefixes": ["44"], "keywords": ["verkoop", "marketing", "reclame"]},
+    {"category": "merkrechten_donaties", "prefixes": [], "keywords": ["merkrecht", "donatie"]},
+    {"category": "automatiseringskosten", "prefixes": [], "keywords": ["ict", "automatisering", "software", "licentie", "it "]},
+    {"category": "vervoerskosten", "prefixes": ["42"], "keywords": ["vervoer", "transport", "auto"]},
+    {"category": "kantoorkosten", "prefixes": ["43"], "keywords": ["kantoor", "print", "telefoon"]},
+    {"category": "admin_accountantskosten", "prefixes": [], "keywords": ["accountant", "administratie", "juridisch"]},
+    {"category": "algemene_kosten", "prefixes": ["45", "46"], "keywords": ["algemene kosten", "overige bedrijfskosten"]},
+    {"category": "management_fee", "prefixes": [], "keywords": ["management fee", "managementvergoeding"]},
+    {"category": "kasverschil", "prefixes": [], "keywords": ["kasverschil"]},
+    {"category": "financieel_resultaat", "prefixes": ["47", "65"], "keywords": ["rente", "financieel"]},
+    {"category": "afschrijvingen", "prefixes": ["48", "63"], "keywords": ["afschrijving"]},
+    {"category": "belastingen", "prefixes": ["49", "67"], "keywords": ["belasting", "vennootschapsbelasting"]},
+]
+
+BALANCE_AUTO_MAPPING_RULES = [
+    {"category": "goodwill", "prefixes": [], "keywords": ["goodwill"]},
+    {"category": "concessies_vergunningen_ie", "prefixes": [], "keywords": ["concess", "vergunning", "intellect"]},
+    {"category": "kosten_van_ontwikkeling", "prefixes": [], "keywords": ["ontwikkeling"]},
+    {"category": "gebouwen_verbouwing", "prefixes": [], "keywords": ["gebouw", "verbouwing"]},
+    {"category": "machines_installaties", "prefixes": [], "keywords": ["machine", "installatie"]},
+    {"category": "inventaris", "prefixes": [], "keywords": ["inventaris"]},
+    {"category": "vervoermiddelen", "prefixes": [], "keywords": ["vervoermiddel", "auto"]},
+    {"category": "financiele_vaste_activa", "prefixes": [], "keywords": ["financiele vaste activa", "deelneming"]},
+    {"category": "gereed_product_handelsgoederen", "prefixes": [], "keywords": ["gereed product", "handelsgoederen", "voorraad"]},
+    {"category": "vooruitbetaald_voorraden", "prefixes": [], "keywords": ["vooruitbetaald"]},
+    {"category": "handelsdebiteuren", "prefixes": [], "keywords": ["debiteur"]},
+    {"category": "vorderingen_op_groepsmaatschappijen", "prefixes": [], "keywords": ["vordering", "groepsmaatschappij"]},
+    {"category": "belasting_premies_sociale_zekerheid_activa", "prefixes": [], "keywords": ["belasting", "premies sociale zekerheid"]},
+    {"category": "overige_vorderingen", "prefixes": [], "keywords": ["overige vorderingen"]},
+    {"category": "overlopende_activa", "prefixes": [], "keywords": ["overlopende activa"]},
+    {"category": "liquide_middelen", "prefixes": ["10", "11"], "keywords": ["bank", "kas", "liquide"]},
+    {"category": "gestort_opgevraagd_kapitaal", "prefixes": [], "keywords": ["kapitaal"]},
+    {"category": "agio", "prefixes": [], "keywords": ["agio"]},
+    {"category": "herwaarderingsreserve", "prefixes": [], "keywords": ["herwaarderingsreserve"]},
+    {"category": "wettelijke_statutaire_reserves", "prefixes": [], "keywords": ["wettelijke", "statutaire reserves"]},
+    {"category": "overige_reserves", "prefixes": [], "keywords": ["overige reserves"]},
+    {"category": "onverdeelde_winst", "prefixes": [], "keywords": ["onverdeelde winst", "resultaat"]},
+    {"category": "voorzieningen", "prefixes": [], "keywords": ["voorziening"]},
+    {"category": "schulden_aan_kredietinstellingen", "prefixes": [], "keywords": ["kredietinstelling", "lening"]},
+    {"category": "schulden_aan_groepsmaatschappijen", "prefixes": [], "keywords": ["schuld", "groepsmaatschappij", "r/c"]},
+    {"category": "aflossingsverplichtingen", "prefixes": [], "keywords": ["aflossing"]},
+    {"category": "crediteuren", "prefixes": [], "keywords": ["crediteur"]},
+    {"category": "omzetbelasting", "prefixes": [], "keywords": ["omzetbelasting", "btw"]},
+    {"category": "premies_pensioen", "prefixes": [], "keywords": ["premies pensioen"]},
+    {"category": "loonheffing", "prefixes": [], "keywords": ["loonheffing"]},
+    {"category": "vennootschapsbelasting", "prefixes": [], "keywords": ["vennootschapsbelasting"]},
+    {"category": "overige_schulden", "prefixes": [], "keywords": ["overige schulden"]},
+    {"category": "overlopende_passiva", "prefixes": [], "keywords": ["overlopende passiva"]},
+]
+
 # New forecast expense categories based on REPORT_CATEGORIES
 # These match the draggable mapping tool structure
 FORECAST_EXPENSE_CATEGORIES = {
@@ -3279,6 +3342,22 @@ def render_draggable_mapping_tool(company_id, year):
                 st.rerun()
         return
 
+    auto_col1, auto_col2 = st.columns([1.4, 2.6])
+    with auto_col1:
+        if st.button("⚡ Auto-map (adviesregels)", key="auto_map_pnl"):
+            mapped_count = apply_auto_mapping_rules(
+                mapping=mapping,
+                accounts=available_accounts,
+                rules=PNL_AUTO_MAPPING_RULES,
+                category_keys=get_leaf_report_category_keys(),
+            )
+            st.session_state.draggable_mapping = mapping
+            st.success(f"{mapped_count} rekening(en) automatisch toegewezen.")
+            st.rerun()
+    with auto_col2:
+        st.caption("Gebaseerd op rekeningprefix + naamherkenning. Controleer daarna handmatig.")
+    st.markdown("---")
+
     # Get list of already assigned account codes (including pending changes in edit mode)
     assigned_codes = set()
     for cat_key, cat_accounts in mapping.get("categories", {}).items():
@@ -3812,6 +3891,61 @@ def _ensure_mapping_shape(mapping):
     return mapping
 
 
+def _account_matches_rule(account_code, account_name, rule):
+    """Check if account matches rule by prefix and/or keyword."""
+    code = str(account_code or "").strip()
+    name = str(account_name or "").lower()
+    prefixes = rule.get("prefixes", [])
+    keywords = [k.lower() for k in rule.get("keywords", [])]
+
+    prefix_hit = any(code.startswith(prefix) for prefix in prefixes) if prefixes else False
+    keyword_hit = any(keyword in name for keyword in keywords) if keywords else False
+
+    if prefixes and keywords:
+        return prefix_hit or keyword_hit
+    if prefixes:
+        return prefix_hit
+    if keywords:
+        return keyword_hit
+    return False
+
+
+def apply_auto_mapping_rules(mapping, accounts, rules, category_keys):
+    """
+    Apply auto-mapping rules.
+    - keeps 1-op-1 mapping
+    - only assigns currently unassigned accounts
+    Returns number of assigned accounts.
+    """
+    mapping.setdefault("categories", {})
+    for key in category_keys:
+        mapping["categories"].setdefault(key, [])
+
+    assigned_codes = set()
+    for key in category_keys:
+        for code in mapping["categories"].get(key, []):
+            assigned_codes.add(code)
+
+    auto_assigned = 0
+    for acc in sorted(accounts, key=lambda a: a.get("code", "")):
+        code = acc.get("code", "")
+        name = acc.get("name", "")
+        if code in assigned_codes:
+            continue
+
+        for rule in rules:
+            target = rule.get("category")
+            if target not in category_keys:
+                continue
+            if _account_matches_rule(code, name, rule):
+                mapping["categories"][target].append(code)
+                assigned_codes.add(code)
+                auto_assigned += 1
+                break
+
+    return auto_assigned
+
+
 def load_budget_entries():
     """Load persisted budget entries."""
     try:
@@ -3841,11 +3975,15 @@ def save_budget_entries(entries):
         return False, f"Opslaan budget mislukt: {e}"
 
 
-def build_budget_template_dataframe(year):
+def build_budget_template_dataframe(year, company_ids=None):
     """Create a budget template at report-line level per company/month."""
     rows = []
+    if company_ids is None:
+        company_ids = list(COMPANIES.keys())
+
     leaf_keys = get_leaf_report_category_keys()
-    for comp_id, comp_name in COMPANIES.items():
+    for comp_id in company_ids:
+        comp_name = COMPANIES.get(comp_id, f"Company {comp_id}")
         for month in range(1, 13):
             for cat_key in leaf_keys:
                 rows.append({
@@ -3859,6 +3997,40 @@ def build_budget_template_dataframe(year):
                     "amount": 0.0,
                 })
     return pd.DataFrame(rows)
+
+
+def build_budget_template_excel(year, company_ids=None):
+    """Create Excel template with instructions + masterdata + budget input."""
+    template_df = build_budget_template_dataframe(year, company_ids=company_ids)
+
+    instructions_df = pd.DataFrame([
+        {"kolom": "year", "verplicht": "ja", "omschrijving": "Kalenderjaar (bijv. 2026)", "voorbeeld": year},
+        {"kolom": "company_id", "verplicht": "ja (of company_name)", "omschrijving": "Bedrijfs-ID", "voorbeeld": 1},
+        {"kolom": "company_name", "verplicht": "ja (of company_id)", "omschrijving": "Bedrijfsnaam", "voorbeeld": "LAB Conceptstore"},
+        {"kolom": "month", "verplicht": "ja", "omschrijving": "Maandnummer 1-12", "voorbeeld": 1},
+        {"kolom": "category_key", "verplicht": "ja (of category_name)", "omschrijving": "Interne rapportregelcode", "voorbeeld": "netto_omzet"},
+        {"kolom": "category_name", "verplicht": "ja (of category_key)", "omschrijving": "Rapportregelnaam", "voorbeeld": "Netto Omzet"},
+        {"kolom": "amount", "verplicht": "ja", "omschrijving": "Budgetbedrag (positief tonen in rapport)", "voorbeeld": 125000},
+    ])
+
+    companies_df = pd.DataFrame([
+        {"company_id": cid, "company_name": cname}
+        for cid, cname in COMPANIES.items()
+        if company_ids is None or cid in company_ids
+    ])
+    categories_df = pd.DataFrame([
+        {"category_key": key, "category_name": REPORT_CATEGORIES[key]["name"]}
+        for key in get_leaf_report_category_keys()
+    ])
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        instructions_df.to_excel(writer, sheet_name="Instructions", index=False)
+        companies_df.to_excel(writer, sheet_name="Companies", index=False)
+        categories_df.to_excel(writer, sheet_name="Categories", index=False)
+        template_df.to_excel(writer, sheet_name="BudgetInput", index=False)
+    output.seek(0)
+    return output.getvalue()
 
 
 def _normalize_company_id(raw_company):
@@ -3912,7 +4084,7 @@ def _normalize_category_key(raw_category):
     return None
 
 
-def parse_budget_upload_dataframe(df):
+def parse_budget_upload_dataframe(df, default_company_id=None):
     """
     Validate and normalize uploaded budget data.
     Expected columns:
@@ -3939,7 +4111,7 @@ def parse_budget_upload_dataframe(df):
     missing = []
     if col_year is None:
         missing.append("year")
-    if col_company is None:
+    if col_company is None and default_company_id is None:
         missing.append("company")
     if col_month is None:
         missing.append("month")
@@ -3962,10 +4134,13 @@ def parse_budget_upload_dataframe(df):
             errors.append(f"Rij {line_nr}: ongeldig jaar '{row[col_year]}'")
             continue
 
-        company_id = _normalize_company_id(row[col_company])
-        if company_id is None:
-            errors.append(f"Rij {line_nr}: onbekend bedrijf '{row[col_company]}'")
-            continue
+        if col_company is None and default_company_id is not None:
+            company_id = int(default_company_id)
+        else:
+            company_id = _normalize_company_id(row[col_company])
+            if company_id is None:
+                errors.append(f"Rij {line_nr}: onbekend bedrijf '{row[col_company]}'")
+                continue
 
         month = _month_to_int(row[col_month])
         if month is None:
@@ -4224,6 +4399,22 @@ def render_balance_mapping_tool(company_id, year):
     st.markdown("### 🏛️ Balans Mapping (Activa/Passiva)")
     st.caption("1-op-1 mapping: een rekening kan maar in één balansregel staan.")
 
+    auto_b_col1, auto_b_col2 = st.columns([1.4, 2.6])
+    with auto_b_col1:
+        if st.button("⚡ Auto-map balans (adviesregels)", key="auto_map_balance"):
+            mapped_count = apply_auto_mapping_rules(
+                mapping=mapping,
+                accounts=available_accounts,
+                rules=BALANCE_AUTO_MAPPING_RULES,
+                category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+            )
+            st.session_state.balance_mapping = mapping
+            st.success(f"{mapped_count} rekening(en) automatisch toegewezen.")
+            st.rerun()
+    with auto_b_col2:
+        st.caption("Gebaseerd op rekeningprefix + naam. Gebruik dit als startpunt en controleer per regel.")
+    st.markdown("---")
+
     col_add, col_prefix = st.columns(2)
     with col_add:
         category_options = sorted(
@@ -4432,23 +4623,71 @@ def render_structured_balance_report(as_of_date, company_id=None, exclude_interc
 def render_budget_import_tab(selected_year):
     """UI for downloading budget template and importing budget lines."""
     st.markdown("### 📥 Budget inlezen op rapportregelniveau")
-    st.caption("Verplicht: year, company (id/naam), month, category (key/naam), amount.")
+    st.caption("Verplicht: year, month, category (key/naam), amount. Bedrijf kan in bestand of via import-scope.")
 
-    template_df = build_budget_template_dataframe(selected_year)
+    tpl_col1, tpl_col2 = st.columns([1.2, 2.8])
+    with tpl_col1:
+        template_scope = st.radio(
+            "Template scope",
+            ["Alle bedrijven", "Eén bedrijf"],
+            key="budget_template_scope"
+        )
+    with tpl_col2:
+        template_company_id = None
+        if template_scope == "Eén bedrijf":
+            template_company_name = st.selectbox(
+                "Template bedrijf",
+                options=list(COMPANIES.values()),
+                key="budget_template_company"
+            )
+            template_company_id = [cid for cid, cname in COMPANIES.items() if cname == template_company_name][0]
+
+    template_company_ids = [template_company_id] if template_company_id else None
+    template_df = build_budget_template_dataframe(selected_year, company_ids=template_company_ids)
     template_csv = template_df.to_csv(index=False, sep=";").encode("utf-8")
-    st.download_button(
-        "📄 Download budget template (CSV)",
-        data=template_csv,
-        file_name=f"budget_template_{selected_year}.csv",
-        mime="text/csv",
-        key="budget_template_download",
-    )
+    template_xlsx = build_budget_template_excel(selected_year, company_ids=template_company_ids)
+
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        st.download_button(
+            "📄 Download template (CSV)",
+            data=template_csv,
+            file_name=f"budget_template_{selected_year}.csv",
+            mime="text/csv",
+            key="budget_template_download_csv",
+        )
+    with dl2:
+        st.download_button(
+            "📘 Download template (Excel met tabs)",
+            data=template_xlsx,
+            file_name=f"budget_template_{selected_year}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="budget_template_download_xlsx",
+        )
 
     uploaded = st.file_uploader(
         "Upload budgetbestand (CSV of Excel)",
         type=["csv", "xlsx", "xls"],
         key="budget_upload_file"
     )
+
+    import_scope_col1, import_scope_col2 = st.columns([1.2, 2.8])
+    with import_scope_col1:
+        import_scope = st.radio(
+            "Importscope",
+            ["Bedrijf in bestand", "Geforceerd één bedrijf"],
+            key="budget_import_scope"
+        )
+    with import_scope_col2:
+        forced_company_id = None
+        if import_scope == "Geforceerd één bedrijf":
+            forced_company_name = st.selectbox(
+                "Doelbedrijf voor alle regels in upload",
+                options=list(COMPANIES.values()),
+                key="budget_forced_company"
+            )
+            forced_company_id = [cid for cid, cname in COMPANIES.items() if cname == forced_company_name][0]
+
     replace_scope = st.selectbox(
         "Importmodus",
         options=["Upsert (bestaande regels overschrijven op sleutel)", "Vervang per jaar+bedrijf in upload"],
@@ -4468,7 +4707,10 @@ def render_budget_import_tab(selected_year):
             return
 
         if st.button("⬆️ Verwerk budgetimport", key="budget_import_btn", type="primary"):
-            parsed_entries, errors = parse_budget_upload_dataframe(import_df)
+            parsed_entries, errors = parse_budget_upload_dataframe(
+                import_df,
+                default_company_id=forced_company_id
+            )
             if errors:
                 st.error("Import validatie-fouten gevonden:")
                 for err in errors[:40]:
@@ -4535,35 +4777,62 @@ def render_variance_analysis_tab(selected_year, report_company_id=None, exclude_
     rows = []
     for cat_key in get_sorted_report_categories(include_subtotals=True):
         name = REPORT_CATEGORIES[cat_key]["name"]
-        act_val = actual.get(cat_key, [0.0] * 12)[month_idx]
-        bud_val = budget.get(cat_key, [0.0] * 12)[month_idx]
+        act_series = actual.get(cat_key, [0.0] * 12)
+        bud_series = budget.get(cat_key, [0.0] * 12)
+        act_val = act_series[month_idx]
+        bud_val = bud_series[month_idx]
         var_val = act_val - bud_val
         var_pct = (var_val / bud_val * 100) if bud_val else 0.0
+        act_ytd = sum(act_series[:month_idx + 1])
+        bud_ytd = sum(bud_series[:month_idx + 1])
+        var_ytd = act_ytd - bud_ytd
+        var_ytd_pct = (var_ytd / bud_ytd * 100) if bud_ytd else 0.0
         rows.append({
             "Regel": name,
-            "Actual": act_val,
-            "Budget": bud_val,
-            "Variantie": var_val,
-            "Variantie %": var_pct,
+            "Actual maand": act_val,
+            "Budget maand": bud_val,
+            "Variantie maand": var_val,
+            "Variantie maand %": var_pct,
+            "Actual YTD": act_ytd,
+            "Budget YTD": bud_ytd,
+            "Variantie YTD": var_ytd,
+            "Variantie YTD %": var_ytd_pct,
             "_subtotal": REPORT_CATEGORIES[cat_key].get("is_subtotal", False)
         })
 
     df_month = pd.DataFrame(rows)
-    total_actual = df_month[df_month["Regel"] == "Netto-omzetresultaat"]["Actual"].sum() if "Netto-omzetresultaat" in df_month["Regel"].values else df_month["Actual"].sum()
-    total_budget = df_month[df_month["Regel"] == "Netto-omzetresultaat"]["Budget"].sum() if "Netto-omzetresultaat" in df_month["Regel"].values else df_month["Budget"].sum()
-    total_var = total_actual - total_budget
+    netto_key = "Netto-omzetresultaat"
+    if netto_key in df_month["Regel"].values:
+        net_row = df_month[df_month["Regel"] == netto_key].iloc[0]
+        total_actual = net_row["Actual maand"]
+        total_budget = net_row["Budget maand"]
+        total_actual_ytd = net_row["Actual YTD"]
+        total_budget_ytd = net_row["Budget YTD"]
+    else:
+        total_actual = df_month["Actual maand"].sum()
+        total_budget = df_month["Budget maand"].sum()
+        total_actual_ytd = df_month["Actual YTD"].sum()
+        total_budget_ytd = df_month["Budget YTD"].sum()
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Actual (selectie)", f"€{total_actual:,.0f}")
-    m2.metric("Budget (selectie)", f"€{total_budget:,.0f}")
-    m3.metric("Variantie", f"€{total_var:,.0f}", delta=f"{(total_var / total_budget * 100):+.1f}%" if total_budget else None)
+    total_var = total_actual - total_budget
+    total_var_ytd = total_actual_ytd - total_budget_ytd
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Actual maand", f"€{total_actual:,.0f}")
+    m2.metric("Budget maand", f"€{total_budget:,.0f}")
+    m3.metric("Variantie maand", f"€{total_var:,.0f}", delta=f"{(total_var / total_budget * 100):+.1f}%" if total_budget else None)
+    m4.metric("Variantie YTD", f"€{total_var_ytd:,.0f}", delta=f"{(total_var_ytd / total_budget_ytd * 100):+.1f}%" if total_budget_ytd else None)
 
     st.dataframe(
         df_month.drop(columns=["_subtotal"]).style.format({
-            "Actual": "€{:,.0f}",
-            "Budget": "€{:,.0f}",
-            "Variantie": "€{:,.0f}",
-            "Variantie %": "{:+.1f}%"
+            "Actual maand": "€{:,.0f}",
+            "Budget maand": "€{:,.0f}",
+            "Variantie maand": "€{:,.0f}",
+            "Variantie maand %": "{:+.1f}%",
+            "Actual YTD": "€{:,.0f}",
+            "Budget YTD": "€{:,.0f}",
+            "Variantie YTD": "€{:,.0f}",
+            "Variantie YTD %": "{:+.1f}%"
         }),
         use_container_width=True,
         hide_index=True
