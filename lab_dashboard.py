@@ -1,6 +1,12 @@
 """
-LAB Groep Financial Dashboard v17
+LAB Groep Financial Dashboard v18
 =================================
+Wijzigingen t.o.v. v17:
+- 🧹 Navigatie opgeschoond
+  * Cashflow prognose feature verwijderd
+  * Maandafsluiting feature verwijderd
+- 🐛 Stabiliteit: voorkomen van fouten door uitgefaseerde rapport-tabs
+
 Wijzigingen t.o.v. v16:
 - 📊 Uitgebreide variantie analyse in Budget 2026 tab
   * Variantie per rubriek (Omzet, Kostprijs, Personeelskosten, etc.)
@@ -4205,10 +4211,8 @@ def main():
         "Producten",
         "Klantenkaart",
         "Kosten",
-        "Cashflow",
         "Balans",
         "AI Chat",
-        "Maandafsluiting",
         "LAB Projects",
     ]
     selected_nav = st.sidebar.radio("Navigatie", NAV_ITEMS, label_visibility="collapsed")
