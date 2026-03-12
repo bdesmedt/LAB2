@@ -3342,20 +3342,71 @@ def render_draggable_mapping_tool(company_id, year):
                 st.rerun()
         return
 
+    if "pnl_auto_proposals" not in st.session_state:
+        st.session_state.pnl_auto_proposals = []
+
     auto_col1, auto_col2 = st.columns([1.4, 2.6])
     with auto_col1:
-        if st.button("⚡ Auto-map (adviesregels)", key="auto_map_pnl"):
-            mapped_count = apply_auto_mapping_rules(
+        if st.button("🔍 Auto-map preview", key="preview_auto_map_pnl"):
+            st.session_state.pnl_auto_proposals = build_auto_mapping_proposals(
                 mapping=mapping,
                 accounts=available_accounts,
                 rules=PNL_AUTO_MAPPING_RULES,
                 category_keys=get_leaf_report_category_keys(),
+                target_name_lookup={k: v.get("name", k) for k, v in REPORT_CATEGORIES.items()},
             )
-            st.session_state.draggable_mapping = mapping
-            st.success(f"{mapped_count} rekening(en) automatisch toegewezen.")
-            st.rerun()
+            st.session_state.pnl_auto_selected = []
     with auto_col2:
-        st.caption("Gebaseerd op rekeningprefix + naamherkenning. Controleer daarna handmatig.")
+        st.caption("Toont voorstel + confidence score. Pas pas toe na controle.")
+
+    proposals = st.session_state.get("pnl_auto_proposals", [])
+    if proposals:
+        st.markdown("**Auto-map voorstel (W&V)**")
+        st.caption(f"{len(proposals)} niet-gemapte rekening(en) met voorstel")
+        df_prop = pd.DataFrame([
+            {
+                "Rekening": p["account_code"],
+                "Naam": p["account_name"],
+                "Doelcategorie": p["target_name"],
+                "Confidence": p["confidence"],
+                "Uitleg": p["reason"],
+            }
+            for p in proposals
+        ])
+        st.dataframe(df_prop, use_container_width=True, hide_index=True)
+
+        proposal_labels = [
+            f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:40]} → {p['target_name']}"
+            for p in proposals
+        ]
+        label_to_key = {label: proposals[i]["proposal_key"] for i, label in enumerate(proposal_labels)}
+        default_labels = [proposal_labels[i] for i, p in enumerate(proposals) if p["confidence"] >= 70]
+
+        selected_labels = st.multiselect(
+            "Selecteer voorstellen om toe te passen",
+            options=proposal_labels,
+            default=default_labels,
+            key="pnl_auto_selected"
+        )
+        selected_keys = {label_to_key[label] for label in selected_labels}
+
+        act_col1, act_col2 = st.columns([1, 1])
+        with act_col1:
+            if st.button("✅ Pas geselecteerde voorstellen toe", key="apply_auto_map_pnl", type="primary"):
+                selected_props = [p for p in proposals if p["proposal_key"] in selected_keys]
+                applied, skipped = apply_auto_mapping_proposals(
+                    mapping=mapping,
+                    proposals=selected_props,
+                    category_keys=get_leaf_report_category_keys(),
+                )
+                st.session_state.draggable_mapping = mapping
+                st.session_state.pnl_auto_proposals = []
+                st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                st.rerun()
+        with act_col2:
+            if st.button("🗑️ Verberg voorstel", key="clear_auto_map_pnl"):
+                st.session_state.pnl_auto_proposals = []
+                st.rerun()
     st.markdown("---")
 
     # Get list of already assigned account codes (including pending changes in edit mode)
@@ -3891,31 +3942,49 @@ def _ensure_mapping_shape(mapping):
     return mapping
 
 
-def _account_matches_rule(account_code, account_name, rule):
-    """Check if account matches rule by prefix and/or keyword."""
+def _rule_match_details(account_code, account_name, rule):
+    """Return confidence + explanation for a rule match."""
     code = str(account_code or "").strip()
-    name = str(account_name or "").lower()
+    name_lower = str(account_name or "").lower()
     prefixes = rule.get("prefixes", [])
     keywords = [k.lower() for k in rule.get("keywords", [])]
 
-    prefix_hit = any(code.startswith(prefix) for prefix in prefixes) if prefixes else False
-    keyword_hit = any(keyword in name for keyword in keywords) if keywords else False
+    prefix_hits = [p for p in prefixes if code.startswith(p)]
+    keyword_hits = [k for k in keywords if k in name_lower]
 
-    if prefixes and keywords:
-        return prefix_hit or keyword_hit
-    if prefixes:
-        return prefix_hit
-    if keywords:
-        return keyword_hit
-    return False
+    # Rule does not match at all
+    if not prefix_hits and not keyword_hits:
+        return {"matched": False, "confidence": 0, "reason": "", "prefix_hits": [], "keyword_hits": []}
+
+    confidence = 0
+    if prefix_hits:
+        confidence += min(72, 48 + 8 * (len(prefix_hits) - 1))
+    if keyword_hits:
+        confidence += min(62, 38 + 10 * (len(keyword_hits) - 1))
+    if prefix_hits and keyword_hits:
+        confidence += 14
+    confidence = min(99, max(30, confidence))
+
+    reason_parts = []
+    if prefix_hits:
+        reason_parts.append(f"prefix: {', '.join(prefix_hits)}")
+    if keyword_hits:
+        reason_parts.append(f"naam: {', '.join(keyword_hits[:3])}")
+
+    return {
+        "matched": True,
+        "confidence": confidence,
+        "reason": " | ".join(reason_parts),
+        "prefix_hits": prefix_hits,
+        "keyword_hits": keyword_hits,
+    }
 
 
-def apply_auto_mapping_rules(mapping, accounts, rules, category_keys):
+def build_auto_mapping_proposals(mapping, accounts, rules, category_keys, target_name_lookup=None):
     """
-    Apply auto-mapping rules.
-    - keeps 1-op-1 mapping
-    - only assigns currently unassigned accounts
-    Returns number of assigned accounts.
+    Build auto-mapping proposals with confidence scores (preview mode).
+    - Keeps 1-op-1 by considering only currently unassigned accounts
+    - Chooses best scoring rule per account
     """
     mapping.setdefault("categories", {})
     for key in category_keys:
@@ -3926,24 +3995,93 @@ def apply_auto_mapping_rules(mapping, accounts, rules, category_keys):
         for code in mapping["categories"].get(key, []):
             assigned_codes.add(code)
 
-    auto_assigned = 0
+    proposals = []
     for acc in sorted(accounts, key=lambda a: a.get("code", "")):
         code = acc.get("code", "")
         name = acc.get("name", "")
         if code in assigned_codes:
             continue
 
+        candidates = []
         for rule in rules:
             target = rule.get("category")
             if target not in category_keys:
                 continue
-            if _account_matches_rule(code, name, rule):
-                mapping["categories"][target].append(code)
-                assigned_codes.add(code)
-                auto_assigned += 1
-                break
 
-    return auto_assigned
+            details = _rule_match_details(code, name, rule)
+            if not details["matched"]:
+                continue
+            candidates.append({
+                "target": target,
+                "confidence": details["confidence"],
+                "reason": details["reason"],
+            })
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda c: c["confidence"], reverse=True)
+        best = candidates[0]
+        alternatives = [c for c in candidates[1:] if c["confidence"] >= best["confidence"] - 5 and c["target"] != best["target"]]
+
+        ambiguity_penalty = 12 if alternatives else 0
+        final_confidence = max(20, best["confidence"] - ambiguity_penalty)
+        alt_targets = [a["target"] for a in alternatives[:3]]
+        if target_name_lookup:
+            alt_label = ", ".join([target_name_lookup.get(t, t) for t in alt_targets]) if alt_targets else ""
+        else:
+            alt_label = ", ".join([REPORT_CATEGORIES.get(t, {}).get("name", t) for t in alt_targets]) if alt_targets else ""
+        reason = best["reason"]
+        if alt_label:
+            reason = f"{reason} | alternatief: {alt_label}"
+
+        proposals.append({
+            "proposal_key": f"{code}|{best['target']}",
+            "account_code": code,
+            "account_name": name,
+            "target_category": best["target"],
+            "target_name": (
+                target_name_lookup.get(best["target"], best["target"])
+                if target_name_lookup
+                else REPORT_CATEGORIES.get(best["target"], {}).get("name", best["target"])
+            ),
+            "confidence": final_confidence,
+            "reason": reason,
+        })
+
+    proposals.sort(key=lambda p: (-p["confidence"], p["account_code"]))
+    return proposals
+
+
+def apply_auto_mapping_proposals(mapping, proposals, category_keys):
+    """
+    Apply selected proposals to mapping (1-op-1 safe).
+    Returns tuple: (applied_count, skipped_count)
+    """
+    mapping.setdefault("categories", {})
+    for key in category_keys:
+        mapping["categories"].setdefault(key, [])
+
+    assigned_codes = set()
+    for key in category_keys:
+        assigned_codes.update(mapping["categories"].get(key, []))
+
+    applied = 0
+    skipped = 0
+    for prop in proposals:
+        code = prop.get("account_code")
+        target = prop.get("target_category")
+        if not code or target not in category_keys:
+            skipped += 1
+            continue
+        if code in assigned_codes:
+            skipped += 1
+            continue
+        mapping["categories"][target].append(code)
+        assigned_codes.add(code)
+        applied += 1
+
+    return applied, skipped
 
 
 def load_budget_entries():
@@ -4399,20 +4537,70 @@ def render_balance_mapping_tool(company_id, year):
     st.markdown("### 🏛️ Balans Mapping (Activa/Passiva)")
     st.caption("1-op-1 mapping: een rekening kan maar in één balansregel staan.")
 
+    if "balance_auto_proposals" not in st.session_state:
+        st.session_state.balance_auto_proposals = []
+
     auto_b_col1, auto_b_col2 = st.columns([1.4, 2.6])
     with auto_b_col1:
-        if st.button("⚡ Auto-map balans (adviesregels)", key="auto_map_balance"):
-            mapped_count = apply_auto_mapping_rules(
+        if st.button("🔍 Auto-map balans preview", key="preview_auto_map_balance"):
+            st.session_state.balance_auto_proposals = build_auto_mapping_proposals(
                 mapping=mapping,
                 accounts=available_accounts,
                 rules=BALANCE_AUTO_MAPPING_RULES,
                 category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+                target_name_lookup={k: v["name"] for k, v in BALANCE_CATEGORY_DEFINITIONS.items()},
             )
-            st.session_state.balance_mapping = mapping
-            st.success(f"{mapped_count} rekening(en) automatisch toegewezen.")
-            st.rerun()
+            st.session_state.balance_auto_selected = []
     with auto_b_col2:
-        st.caption("Gebaseerd op rekeningprefix + naam. Gebruik dit als startpunt en controleer per regel.")
+        st.caption("Toont voorstellen met confidence score. Pas daarna geselecteerd toe.")
+
+    bal_proposals = st.session_state.get("balance_auto_proposals", [])
+    if bal_proposals:
+        st.markdown("**Auto-map voorstel (Balans)**")
+        bal_df = pd.DataFrame([
+            {
+                "Rekening": p["account_code"],
+                "Naam": p["account_name"],
+                "Doelcategorie": p["target_name"],
+                "Confidence": p["confidence"],
+                "Uitleg": p["reason"],
+            }
+            for p in bal_proposals
+        ])
+        st.dataframe(bal_df, use_container_width=True, hide_index=True)
+
+        bal_labels = [
+            f"[{p['confidence']:>2}%] {p['account_code']} - {p['account_name'][:36]} → {p['target_name']}"
+            for p in bal_proposals
+        ]
+        bal_label_to_key = {label: bal_proposals[i]["proposal_key"] for i, label in enumerate(bal_labels)}
+        bal_default = [bal_labels[i] for i, p in enumerate(bal_proposals) if p["confidence"] >= 70]
+
+        selected_bal_labels = st.multiselect(
+            "Selecteer balansvoorstellen om toe te passen",
+            options=bal_labels,
+            default=bal_default,
+            key="balance_auto_selected",
+        )
+        selected_bal_keys = {bal_label_to_key[label] for label in selected_bal_labels}
+
+        bal_act1, bal_act2 = st.columns([1, 1])
+        with bal_act1:
+            if st.button("✅ Pas geselecteerde balansvoorstellen toe", key="apply_auto_map_balance", type="primary"):
+                selected_props = [p for p in bal_proposals if p["proposal_key"] in selected_bal_keys]
+                applied, skipped = apply_auto_mapping_proposals(
+                    mapping=mapping,
+                    proposals=selected_props,
+                    category_keys=list(BALANCE_CATEGORY_DEFINITIONS.keys()),
+                )
+                st.session_state.balance_mapping = mapping
+                st.session_state.balance_auto_proposals = []
+                st.success(f"{applied} toegewezen, {skipped} overgeslagen.")
+                st.rerun()
+        with bal_act2:
+            if st.button("🗑️ Verberg balansvoorstel", key="clear_auto_map_balance"):
+                st.session_state.balance_auto_proposals = []
+                st.rerun()
     st.markdown("---")
 
     col_add, col_prefix = st.columns(2)
