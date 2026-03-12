@@ -3250,7 +3250,8 @@ def render_draggable_mapping_tool(company_id, year):
     then commits all changes at once for better performance.
     """
     # Get current mapping
-    mapping = get_draggable_mapping()
+    mapping = sanitize_pnl_mapping(get_draggable_mapping())
+    st.session_state.draggable_mapping = mapping
 
     # =========================================================================
     # EDIT MODE STATE MANAGEMENT
@@ -3338,10 +3339,10 @@ def render_draggable_mapping_tool(company_id, year):
 
     # Fetch available accounts
     with st.spinner("Rekeningen ophalen..."):
-        available_accounts = get_all_accounts_with_details(company_id, year)
+        available_accounts = filter_accounts_for_pnl(get_all_accounts_with_details(company_id, year))
 
     if not available_accounts:
-        st.warning(f"Geen rekeningen gevonden voor jaar {year}.")
+        st.warning(f"Geen W&V-rekeningen (4*) gevonden voor jaar {year}.")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 Ververs", key="refresh_empty"):
@@ -3364,7 +3365,7 @@ def render_draggable_mapping_tool(company_id, year):
             )
             st.session_state.pnl_auto_selected = []
     with auto_col2:
-        st.caption("Toont voorstel + confidence score. Pas pas toe na controle.")
+        st.caption("Toont voorstel + confidence score. Scope W&V is gefilterd op rekeningen 4* en hoger.")
 
     proposals = st.session_state.get("pnl_auto_proposals", [])
     if proposals:
@@ -3990,6 +3991,55 @@ def style_confidence_cell(score):
     return "background-color: #f8d7da; color: #721c24; font-weight: 600;"
 
 
+def _leading_digit(account_code):
+    """Return first numeric digit from account code, or None."""
+    code = str(account_code or "")
+    for ch in code:
+        if ch.isdigit():
+            return int(ch)
+    return None
+
+
+def is_pnl_account_code(account_code):
+    """W&V scope: only 4* and above."""
+    digit = _leading_digit(account_code)
+    return digit is not None and digit >= 4
+
+
+def is_balance_account_code(account_code):
+    """Balans scope: only up to 3*."""
+    digit = _leading_digit(account_code)
+    return digit is not None and digit <= 3
+
+
+def filter_accounts_for_pnl(accounts):
+    """Filter account list for W&V mapping scope."""
+    return [acc for acc in accounts if is_pnl_account_code(acc.get("code"))]
+
+
+def filter_accounts_for_balance(accounts):
+    """Filter account list for balance mapping scope."""
+    return [acc for acc in accounts if is_balance_account_code(acc.get("code"))]
+
+
+def sanitize_pnl_mapping(mapping):
+    """Drop non-4* mapped accounts from W&V mapping."""
+    mapping.setdefault("categories", {})
+    for cat_key in get_leaf_report_category_keys():
+        mapping["categories"].setdefault(cat_key, [])
+        mapping["categories"][cat_key] = [c for c in mapping["categories"][cat_key] if is_pnl_account_code(c)]
+    return mapping
+
+
+def sanitize_balance_mapping(mapping):
+    """Drop non-0..3* mapped accounts from balance mapping."""
+    mapping.setdefault("categories", {})
+    for cat_key in BALANCE_CATEGORY_DEFINITIONS.keys():
+        mapping["categories"].setdefault(cat_key, [])
+        mapping["categories"][cat_key] = [c for c in mapping["categories"][cat_key] if is_balance_account_code(c)]
+    return mapping
+
+
 def _rule_match_details(account_code, account_name, rule):
     """Return confidence + explanation for a rule match."""
     code = str(account_code or "").strip()
@@ -4203,7 +4253,7 @@ def set_budget_release_for_year(year, released):
 
 def get_pnl_mapping_completion_status(company_id, year):
     """Compute simple mapping-completion metrics for workflow gate."""
-    mapping = _ensure_mapping_shape(get_draggable_mapping())
+    mapping = sanitize_pnl_mapping(_ensure_mapping_shape(get_draggable_mapping()))
     leaf_keys = get_leaf_report_category_keys()
 
     mapped_categories = [k for k in leaf_keys if mapping["categories"].get(k)]
@@ -4212,7 +4262,7 @@ def get_pnl_mapping_completion_status(company_id, year):
     coverage_pct = (mapped_count / total_leaf_count * 100) if total_leaf_count else 0
 
     # Use available accounts in current scope to estimate mapped/unmapped load.
-    available_accounts = get_all_accounts_with_details(company_id, year)
+    available_accounts = filter_accounts_for_pnl(get_all_accounts_with_details(company_id, year))
     assigned_codes = set()
     for codes in mapping["categories"].values():
         assigned_codes.update(codes)
@@ -4576,7 +4626,7 @@ def calculate_monthly_report_with_mapping(company_id, year, mapping=None, exclud
     """
     if mapping is None:
         mapping = get_draggable_mapping()
-    mapping = _ensure_mapping_shape(mapping)
+    mapping = sanitize_pnl_mapping(_ensure_mapping_shape(mapping))
     categories = mapping.get("categories", {})
 
     base_monthly = {k: [0.0] * 12 for k in get_leaf_report_category_keys()}
@@ -4590,6 +4640,8 @@ def calculate_monthly_report_with_mapping(company_id, year, mapping=None, exclud
             continue
 
         for code in account_codes:
+            if not is_pnl_account_code(code):
+                continue
             domain = [
                 ["date", ">=", start_date],
                 ["date", "<=", end_date],
@@ -4671,6 +4723,7 @@ def calculate_balance_snapshot_with_mapping(as_of_date, company_id=None, mapping
     """Calculate balance values per mapped balance leaf category."""
     if mapping is None:
         mapping = get_balance_mapping()
+    mapping = sanitize_balance_mapping(mapping)
     categories = mapping.get("categories", {})
 
     if hasattr(as_of_date, "strftime"):
@@ -4686,6 +4739,8 @@ def calculate_balance_snapshot_with_mapping(as_of_date, company_id=None, mapping
 
         total = 0.0
         for code in account_codes:
+            if not is_balance_account_code(code):
+                continue
             domain = [
                 ["date", "<=", date_str],
                 ["parent_state", "=", "posted"],
@@ -4713,13 +4768,14 @@ def calculate_balance_snapshot_with_mapping(as_of_date, company_id=None, mapping
 
 def render_balance_mapping_tool(company_id, year):
     """Simple bulk mapping UI for balance Activa/Passiva categories."""
-    mapping = get_balance_mapping()
+    mapping = sanitize_balance_mapping(get_balance_mapping())
+    st.session_state.balance_mapping = mapping
     categories = mapping["categories"]
 
     with st.spinner("Balansrekeningen ophalen..."):
-        available_accounts = get_all_accounts_with_details(company_id, year)
+        available_accounts = filter_accounts_for_balance(get_all_accounts_with_details(company_id, year))
     if not available_accounts:
-        st.warning("Geen rekeningen gevonden voor balans-mapping.")
+        st.warning("Geen balansrekeningen (0* t/m 3*) gevonden voor balans-mapping.")
         return
 
     assigned_codes = set()
@@ -4729,7 +4785,7 @@ def render_balance_mapping_tool(company_id, year):
     account_lookup = {acc["code"]: acc for acc in available_accounts}
 
     st.markdown("### 🏛️ Balans Mapping (Activa/Passiva)")
-    st.caption("1-op-1 mapping: een rekening kan maar in één balansregel staan.")
+    st.caption("1-op-1 mapping: een rekening kan maar in één balansregel staan. Scope balans = rekeningen 0* t/m 3*.")
 
     if "balance_auto_proposals" not in st.session_state:
         st.session_state.balance_auto_proposals = []
@@ -5020,24 +5076,28 @@ def render_structured_balance_report(as_of_date, company_id=None, exclude_interc
         st.warning(f"⚠️ Balansverschil: €{verschil:,.2f}")
 
 
-def render_budget_import_tab(selected_year):
+def render_budget_import_tab(selected_year, default_company_id=None):
     """UI for downloading budget template and importing budget lines."""
     st.markdown("### 📥 Budget inlezen op rapportregelniveau")
     st.caption("Verplicht: year, month, category (key/naam), amount. Bedrijf kan in bestand of via import-scope.")
 
     tpl_col1, tpl_col2 = st.columns([1.2, 2.8])
+    default_template_index = 1 if default_company_id else 0
     with tpl_col1:
         template_scope = st.radio(
             "Template scope",
             ["Alle bedrijven", "Eén bedrijf"],
-            key="budget_template_scope"
+            key="budget_template_scope",
+            index=default_template_index
         )
     with tpl_col2:
         template_company_id = None
         if template_scope == "Eén bedrijf":
+            default_company_name = COMPANIES.get(default_company_id, list(COMPANIES.values())[0]) if default_company_id else list(COMPANIES.values())[0]
             template_company_name = st.selectbox(
                 "Template bedrijf",
                 options=list(COMPANIES.values()),
+                index=list(COMPANIES.values()).index(default_company_name) if default_company_name in COMPANIES.values() else 0,
                 key="budget_template_company"
             )
             template_company_id = [cid for cid, cname in COMPANIES.items() if cname == template_company_name][0]
@@ -5072,21 +5132,28 @@ def render_budget_import_tab(selected_year):
     )
 
     import_scope_col1, import_scope_col2 = st.columns([1.2, 2.8])
+    default_import_index = 1 if default_company_id else 0
     with import_scope_col1:
         import_scope = st.radio(
             "Importscope",
             ["Bedrijf in bestand", "Geforceerd één bedrijf"],
-            key="budget_import_scope"
+            key="budget_import_scope",
+            index=default_import_index
         )
     with import_scope_col2:
         forced_company_id = None
         if import_scope == "Geforceerd één bedrijf":
+            default_forced_name = COMPANIES.get(default_company_id, list(COMPANIES.values())[0]) if default_company_id else list(COMPANIES.values())[0]
             forced_company_name = st.selectbox(
                 "Doelbedrijf voor alle regels in upload",
                 options=list(COMPANIES.values()),
+                index=list(COMPANIES.values()).index(default_forced_name) if default_forced_name in COMPANIES.values() else 0,
                 key="budget_forced_company"
             )
             forced_company_id = [cid for cid, cname in COMPANIES.items() if cname == forced_company_name][0]
+
+    if default_company_id:
+        st.caption(f"Tip: huidige rapport-scope staat op **{COMPANIES.get(default_company_id)}**. Importscope staat daarom standaard op geforceerd bedrijf.")
 
     replace_scope = st.selectbox(
         "Importmodus",
@@ -7035,8 +7102,26 @@ def main():
         with tab_budget:
             if not budget_released:
                 st.warning("Budgetimport is vergrendeld. Rond eerst mapping af en geef import vrij via de workflow-balk bovenaan.")
+                st.caption(f"Huidige mappingdekking: {mapping_status['coverage_pct']:.0f}% (drempel 60%)")
+                tb1, tb2 = st.columns(2)
+                with tb1:
+                    if st.button("🔓 Geef nu vrij (normale check)", key="unlock_budget_workflow_tab", disabled=not mapping_status["gate_ready"]):
+                        ok, msg = set_budget_release_for_year(selected_year, True)
+                        if ok:
+                            st.success("Budgetimport vrijgegeven.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                with tb2:
+                    if st.button("🚨 Forceer vrijgave (beheer)", key="unlock_budget_workflow_force"):
+                        ok, msg = set_budget_release_for_year(selected_year, True)
+                        if ok:
+                            st.warning("Budgetimport geforceerd vrijgegeven.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
             else:
-                render_budget_import_tab(selected_year)
+                render_budget_import_tab(selected_year, default_company_id=report_company_id)
 
         with tab_variance:
             if not budget_released:
